@@ -11,7 +11,7 @@
      
  - UltraScan specific
    - demo_data.sql.xz
-     - contained demo_veloc1 demo data which can be imported into a *fresh* dbinst
+     - contains demo1_veloc1 2.A.259 demo data which can be imported into a *fresh* dbinst
        - *fresh* since it may clobber existing data
      - unxz demldata.sql.xz && mysql dbname < demo_data.sql
 
