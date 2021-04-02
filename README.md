@@ -13,5 +13,5 @@
    - demo_data.sql.xz
      - contains demo1_veloc1 2.A.259 demo data which can be imported into a *fresh* dbinst
        - *fresh* since it may clobber existing data
-     - unxz demldata.sql.xz && mysql dbname < demo_data.sql
+     - unxz demo_data.sql.xz && mysql dbname < demo_data.sql
 
