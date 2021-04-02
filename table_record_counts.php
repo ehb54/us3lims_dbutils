@@ -98,7 +98,7 @@ $tables = [];
 while( $row = mysqli_fetch_array($res) ) {
     $tables[] = $row[ "Tables_in_$lims_db" ];
 }
-debug_json( "tables", $tables);
+# debug_json( "tables", $tables);
 
 foreach ( $tables as $k => $v ) {
     $q = "select count(*) from $v";
