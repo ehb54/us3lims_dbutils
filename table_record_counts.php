@@ -11,6 +11,7 @@ usage: $self dbname {remote_config_file}
 
 list record counts of all tables in db
 if remote_config_file specified, it will be used instead of db config
+
 __EOD;
 
 if ( count( $argv ) < 2 || count( $argv ) > 3 ) {
@@ -100,8 +101,7 @@ while( $row = mysqli_fetch_array($res) ) {
 debug_json( "tables", $tables);
 
 foreach ( $tables as $k => $v ) {
-    $q = "select count(*) $v";
+    $q = "select count(*) from $v";
     $res = db_obj_result( $db_handle, $q );
-    $res = $res->{$v};
-    echo "$v $res\n";
+    echo "$v " . $res->{'count(*)'} . "\n";
 }
