@@ -2,6 +2,6 @@
 .#*
 *#
 nohup.out
-field_dep_tree_defines.php
+db_config.php
 *.svg
 *.dot

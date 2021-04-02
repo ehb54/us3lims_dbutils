@@ -16,8 +16,8 @@ requires graphviz command "dot"
 
 __EOD;
 
-$config_file = "field_dep_tree_defines.php";
-if ( !file_exists( "field_dep_tree_defines.php" ) ) {
+$config_file = "db_config.php";
+if ( !file_exists( $config_file ) ) {
     fwrite( STDERR, "$self: 
 $config_file does not exist
 
