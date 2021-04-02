@@ -1,6 +1,5 @@
 <?php
 
-
 # developer defines
 $debugcolor    = 0;
 $logging_level = 2;
@@ -17,8 +16,6 @@ requires graphviz command "dot"
 
 __EOD;
 
-# defines
-
 $config_file = "field_dep_tree_defines.php";
 if ( !file_exists( "field_dep_tree_defines.php" ) ) {
     fwrite( STDERR, "$self: 
@@ -34,9 +31,6 @@ and edit with appropriate values
 }
             
 require $config_file;
-
-# end of user defines
-
 
 if ( count( $argv ) != 2 ) {
     echo $notes;
@@ -60,7 +54,6 @@ if ( strlen( $errors ) ) {
     fwrite( STDERR, $errors );
     exit(-1);
 }
-
 
 # utility
 
@@ -263,6 +256,3 @@ $out .= "}\n";
 file_put_contents( $outdot, $out );
 $cmd = "dot -Tsvg $outdot > $outsvg";
 echo `$cmd`;
-
-
-
