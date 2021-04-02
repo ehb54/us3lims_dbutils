@@ -1,0 +1,5 @@
+<?php
+
+$dbhost        = "SET_HOST";
+$user          = "SET_USER";
+$passwd        = "SET_PASSWORD";
