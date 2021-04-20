@@ -5,3 +5,4 @@ nohup.out
 *_config.php
 *.svg
 *.dot
+dbmigrate/my.cnf
