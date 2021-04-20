@@ -15,3 +15,11 @@
        - *fresh* since it may clobber existing data
      - unxz demo_data.sql.xz && mysql dbname < demo_data.sql
 
+## dbmigrate notes
+ - ```php stage1_export_metadata.php dbhost```
+   - extracts metadata, then you can edit
+ - ```php stage2_export_databases.php dbhost```
+   - extracts databases, config.phps and packages with metadata in a tar file
+ - ```php -d mysqli.allow_local_infile=On stage3_import_databases.php export_dbhost this_dbhost```
+   - the -d mysqli is needed for importing metadata from the xml
+
