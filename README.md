@@ -29,5 +29,6 @@
    - might require setting ```set global max_allowed_packet=64*1024*1024;``` in mysql as root to avoid big record issues.
      - or in my.cnf max_allowed_packet=64M or similar
    - admin people are not updated with new system specific data nor are people adjusted to our current admins
+   - add automated table_record_counts.php to package for comparison after import
    - make sure there is sufficient disk space on the drive where this repo is mounted to handle the .tar file
      - note the sql files remain .xz'd so perhaps a bit more than double the size of the tar file is sufficient (one for the tar file itself, one for the extracted files) 
