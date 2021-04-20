@@ -16,10 +16,13 @@
      - unxz demo_data.sql.xz && mysql dbname < demo_data.sql
 
 ## dbmigrate notes
- - ```php stage1_export_metadata.php dbhost```
-   - extracts metadata, then you can edit
- - ```php stage2_export_databases.php dbhost```
-   - extracts databases, config.phps and packages with metadata in a tar file
- - ```php -d mysqli.allow_local_infile=On stage3_import_databases.php export_dbhost this_dbhost```
-   - the -d mysqli is needed for importing metadata from the xml
+ - on the server to export
+   - ```php stage1_export_metadata.php dbhost```
+     - extracts metadata, then you can edit, for example to manually remove dbinstance or adjust metadata
+   - ```php stage2_export_databases.php dbhost```
+     - extracts databases, config.phps and packages with metadata in a tar file
+   - copy the ```export-full-dbhost.tar``` file to the server to import
+ - on the server to import 
+   - ```php -d mysqli.allow_local_infile=On stage3_import_databases.php export_dbhost this_dbhost ipaddress_of_this_dbhost```
+     - the -d mysqli is needed for importing metadata from the xml
 
