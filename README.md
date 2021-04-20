@@ -15,7 +15,7 @@
        - *fresh* since it may clobber existing data
      - unxz demo_data.sql.xz && mysql dbname < demo_data.sql
 
-## dbmigrate notes
+## dbmigrate notes - also UltraScan LIMS specific
  - on the server to export
    - ```php stage1_export_metadata.php dbhost```
      - extracts metadata, then you can edit, for example to manually remove dbinstance or adjust metadata
