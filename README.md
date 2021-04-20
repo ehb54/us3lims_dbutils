@@ -25,4 +25,7 @@
  - on the server to import 
    - ```php -d mysqli.allow_local_infile=On stage3_import_databases.php export_dbhost this_dbhost ipaddress_of_this_dbhost```
      - the -d mysqli is needed for importing metadata from the xml
-
+ - todo/notes
+   - admin people are not updated with new system specific data nor are people adjusted to our current admins
+   - make sure there is sufficient disk space on the drive where this repo is mounted to handle the .tar file
+     - note the sql files remain .xz'd so perhaps a bit more than double the size of the tar file is sufficient (one for the tar file itself, one for the extracted files) 
