@@ -334,7 +334,7 @@ if ( $answer == "y" ) {
 
         $cmds = [
     "$uncompresswith $sqldata | mysql --defaults-file=$cwd/my.cnf -u root $db"
-    ,"git clone http://github.com/ehb54/us3lims_dbinst.git $htmlpath/$db"
+    ,"git clone https://github.com/ehb54/us3lims_dbinst.git $htmlpath/$db"
     ,"mkdir $htmlpath/$db/data"
     ,"chmod g+w $htmlpath/$db/data"
     ,"chown -R us3:us3 $htmlpath/$db"
