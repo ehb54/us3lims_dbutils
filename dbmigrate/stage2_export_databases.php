@@ -12,8 +12,8 @@ usage: $self metadata_dbhost {config_file}
 
 does importable mysql dumps of every database in the metadata file
 if config_file specified, it will be used instead of ../db config
-writes to ...
-my.cnf must exits in the current directory
+produces multiple compressed files and a tar file
+my.cnf must exist in the current directory
 
 __EOD;
 
@@ -149,10 +149,38 @@ foreach ( $dbnames_used as $db => $val ) {
     }
 }
 
+# get config.php's
+$srvdir = "/srv/www/htdocs/uslims3";
+foreach ( $dbnames_used as $db => $val ) {
+    $configphp = "$srvdir/$db/config.php";
+    $destphp   = "export-$metadata_dbhost-$db-config.php";
+    if ( !file_exists( $configphp ) ) {
+        $errors = "file missing: $configphp\n";
+    }
+    if ( file_exists( $destphp ) ) {
+        $errors = "You must move or remove '$destphp'\n";
+    }
+}
+
 if ( strlen( $errors ) ) {
     error_exit( "ERRORS:\n" . $errors . "Terminating" );
 }
 
+# get config.php's
+
+$configphps = [];
+foreach ( $dbnames_used as $db => $val ) {
+    $configphp = "$srvdir/$db/config.php";
+    $destphp   = "export-$metadata_dbhost-$db-config.php";
+    $cmd = "cp $configphp $destphp";
+    run_cmd( $cmd );
+    if ( !file_exists( $destphp ) ) {
+        error_exit( "missing '$destphp'\n" );
+    }
+    $configphps[] = $destphp;
+}
+
+# get data
 
 foreach ( $dbnames_used as $db => $val ) {
     $dumpfile = "export-$metadata_dbhost-$db.sql";
@@ -175,10 +203,10 @@ foreach ( $dbnames_used as $db => $val ) {
     echo "completed: compressing $dumpfile with $compresswith\n";
     $cdumped[] = $cdumpfile;
 }
-    
+
 # package
 
-$cmd = "tar cf $pkgname $metadata_file " . implode( ' ', $cdumped );
+$cmd = "tar cf $pkgname $metadata_file " . implode( ' ', $cdumped ) . ' ' . implode( ' ', $configphps );
 echo "starting: building complete package $pkgname\n";
 run_cmd( $cmd );
 if ( !file_exists( $pkgname ) ) {
