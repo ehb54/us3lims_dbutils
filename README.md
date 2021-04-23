@@ -10,8 +10,10 @@
      - returns a list of record counts
 
 ## UltraScan LIMS specific
- - uslims3_dbs.php
+ - uslims_dbs.php
    - lists all dbs with names like 'uslims3_%' except 'uslims3_global'
+ - uslims_db_variables.php
+   - lists global mysqld variables of interest
  - demo_data.sql.xz
    - contains demo1_veloc1 2.A.259 demo data which can be imported into a *fresh* dbinst
      - *fresh* since it may clobber existing data
