@@ -11,8 +11,8 @@
      
  - UltraScan specific
 ## UltraScan LIMS specific
- - uslims3_tables.php
-   - lists all dbinstance tables 
+ - uslims3_dbs.php
+   - lists all dbs with names like 'uslims3_%' except 'uslims3_global'
  - demo_data.sql.xz
    - contains demo1_veloc1 2.A.259 demo data which can be imported into a *fresh* dbinst
      - *fresh* since it may clobber existing data
