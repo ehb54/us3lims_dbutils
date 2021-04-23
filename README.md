@@ -8,8 +8,7 @@
      - general tool for this, can be used with any mysql database
    - php table_record_counts.php
      - returns a list of record counts
-     
- - UltraScan specific
+
 ## UltraScan LIMS specific
  - uslims3_dbs.php
    - lists all dbs with names like 'uslims3_%' except 'uslims3_global'
