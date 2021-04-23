@@ -180,6 +180,18 @@ foreach ( $dbnames_used as $db => $val ) {
     $configphps[] = $destphp;
 }
 
+# get record counts
+
+$reccounts = [];
+foreach ( $dbnames_used as $db => $val ) {
+    $reccount = "export-$metadata_dbhost-$db-record-counts.txt";
+    $cmd = "php ../table_record_counts.php $db ../db_config.php > $reccount";
+    run_cmd( $cmd );
+    if ( !file_exists( $reccount ) ) {
+        error_exit( "missing '$reccount'\n" );
+    }
+    $reccounts[] = $reccount;
+}
 # get data
 
 foreach ( $dbnames_used as $db => $val ) {
@@ -206,7 +218,7 @@ foreach ( $dbnames_used as $db => $val ) {
 
 # package
 
-$cmd = "tar cf $pkgname $metadata_file " . implode( ' ', $cdumped ) . ' ' . implode( ' ', $configphps );
+$cmd = "tar cf $pkgname $metadata_file " . implode( ' ', $cdumped ) . ' ' . implode( ' ', $configphps ) . ' ' . implode( ' ', $reccounts );
 echo "starting: building complete package $pkgname\n";
 run_cmd( $cmd );
 if ( !file_exists( $pkgname ) ) {
