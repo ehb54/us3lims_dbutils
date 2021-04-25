@@ -40,3 +40,47 @@ function debug_json( $msg, $json ) {
     fwrite( STDERR, json_encode( $json, JSON_PRETTY_PRINT ) );
     fwrite( STDERR, "\n" );
 }
+
+function run_cmd( $cmd ) {
+    global $debug;
+    if ( isset( $debug ) && $debug ) {
+        echo "$cmd\n";
+    }
+    $res = `$cmd 2>&1`;
+    return $res;
+}
+
+function error_exit( $msg ) {
+    fwrite( STDERR, "$msg\nTerminating due to errors." );
+    exit(-1);
+}
+
+function echoline( $str = "-" ) {
+    $out = "";
+    for ( $i = 0; $i < 80; ++$i ) {
+       $out .= $str;
+    }
+    echo "$out\n";
+}
+
+$warnings = '';
+function flush_warnings( $msg = NULL ) {
+    global $warnings;
+    if ( strlen( $warnings ) ) {
+        echo $warnings;
+        echoline();
+        $warnings = '';
+    } else {
+        if ( $msg ) {
+            echo "$msg\n";
+        }
+    }
+}
+
+$errors = '';
+function flush_errors_exit() {
+    global $errors;
+    if ( strlen( $errors ) ) {
+        error_exit( $errors );
+    }
+}
