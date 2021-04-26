@@ -166,18 +166,42 @@ $check_names[ "$listenconfig: \$servhost"  ] = trim( run_cmd( "grep -e '^\s*\$se
 $check_names[ "$listenconfig: \$host_name" ] = trim( run_cmd( "grep -e '^\s*\$host_name\s*=' $listenconfig  | tail -1 | awk -F\\\" '{ print \$2 }'" ) );
 
 ## check config.php
+$class_dirs = [];
 
 $check_names[ "$srvconfig: \$org_site"     ] = trim( run_cmd( "grep -e '^\s*\$org_site\s*=' $srvconfig  | tail -1 | awk -F\\' '{ print \$2 }'" ) );
-
 foreach ( $mysql_dbs as $k => $v ) {
     $instpath = "$wwwpath/uslims3/$k/config.php";
     $tmp_key  = "$instpath: \$org_site";
     $check_names[ $tmp_key ] = trim( run_cmd( "grep -e '^\s*\$org_site\s*=' $instpath  | tail -1 | awk -F\\' '{ print \$2 }'" ) );
+    $class_dirs [ $tmp_key ] = trim( run_cmd( "grep -e '^\s*\$class_dir\s*=' $instpath  | tail -1 | awk -F\\' '{ print \$2 }'" ) );
     if ( !preg_match( "/\/$k\$/", $check_names[ $tmp_key ] ) ) {
         $warnings .= "WARNING: $tmp_key does not end with the expected extension '\/$k'\n";
     }
     $check_names[ $tmp_key ] = preg_replace( "/\/$k\$/", "", $check_names[ $tmp_key ] );
 }    
+
+{
+    $k = "uslims3_newlims";
+    $instpath = "$wwwpath/uslims3/$k/config.php";
+    $tmp_key  = "$instpath: \$org_site";
+    $check_names[ $tmp_key ] = trim( run_cmd( "grep -e '^\s*\$org_site\s*=' $instpath  | tail -1 | awk -F\\' '{ print \$2 }'" ) );
+    $class_dirs [ $tmp_key ] = trim( run_cmd( "grep -e '^\s*\$class_dir\s*=' $instpath  | tail -1 | awk -F\\' '{ print \$2 }'" ) );
+    if ( !preg_match( "/\/$k\$/", $check_names[ $tmp_key ] ) ) {
+        $warnings .= "WARNING: $tmp_key does not end with the expected extension '\/$k'\n";
+    }
+    $check_names[ $tmp_key ] = preg_replace( "/\/$k\$/", "", $check_names[ $tmp_key ] );
+}    
+
+## list class dirs
+if ( array_unique( $class_dirs ) ) {
+    echo "OK: all instance \$class_dirs match and have value " . array_shift( $class_dirs ) . "\n";
+} else {
+    echoline();
+    foreach ( $class_dirs as $k => $v ) {
+        echo "$k class dir $v\n";
+    }
+    echoline();
+}
 
 ## validate $check_names
 
@@ -302,6 +326,25 @@ if ( get_yn_answer( "Update php variables?" ) ) {
         }
     }
     foreach ( $mysql_dbs as $k => $v ) {
+        $instpath = "$wwwpath/uslims3/$k/config.php";
+        echoline();
+        echo "Checking '$instpath'\n";
+        $org_contents = $contents = file_get_contents( $instpath );
+        if ( $contents !== false && strlen( $contents ) ) {
+            $contents = preg_replace( "/^(\\s*\\\$org_site\\s*=).*;/m", "\${1} '$new_domain/$k';", $contents );
+            if ( $org_contents == $contents ) {
+                echo "NOTICE: $instpath already contains variables set to '$new_domain', not updated\n";
+            } else {
+                backup_file( $instpath );
+                if ( false === file_put_contents( $instpath, $contents ) ) {
+                    error_exit( "could not write $instpath" );
+                }
+                echo "UPDATED: $instpath\n";
+            }
+        }
+    }
+    {
+        $k = 'uslims3_newlims';
         $instpath = "$wwwpath/uslims3/$k/config.php";
         echoline();
         echo "Checking '$instpath'\n";
