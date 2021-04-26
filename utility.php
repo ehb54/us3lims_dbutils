@@ -63,18 +63,28 @@ function echoline( $str = "-" ) {
     echo "$out\n";
 }
 
-$warnings = '';
+$warnings       = '';
+$warnings_count = 0;
 function flush_warnings( $msg = NULL ) {
     global $warnings;
+    global $warnings_count;
     if ( strlen( $warnings ) ) {
         echo $warnings;
         echoline();
         $warnings = '';
+        $warnings_count += count( explode( "\n", trim( $warnings ) ) );
+        return true;
     } else {
         if ( $msg ) {
             echo "$msg\n";
         }
+        return false;
     }
+}
+
+function warnings_summary( $msg = NULL ) {
+    global $warnings_count;
+    return "Warnings generated: $warnings_count\n";
 }
 
 $errors = '';
@@ -84,3 +94,66 @@ function flush_errors_exit() {
         error_exit( $errors );
     }
 }
+
+function get_yn_answer( $question, $quit_if_no = false ) {
+    echoline( '=' );
+    do {
+        $answer = readline( "$question (y or n) : " );
+    } while ( $answer != "y" && $answer != "n" );
+    if ( $quit_if_no && $answer == "n" ) {
+        fwrite( STDERR, "Terminated by user response.\n" );
+        exit(-1);
+    }
+    return $answer == "y";
+}
+
+$backup_dir = "";
+
+function backup_dir_init( $dir = "backup" ) {
+    global $backup_dir;
+    $backup_dir = "$dir-" . trim( run_cmd( 'date +"%Y%m%d%H%M%S"' ) );
+    mkdir( $backup_dir );
+    if ( !is_dir( $backup_dir ) ) {
+        error_exit( "Could not make backup directory $backupdir" );
+    }
+}
+
+function backup_file( $filename ) {
+    global $backup_dir;
+    if ( !file_exists( $filename ) ) {
+        error_exit( "backup_file : $filename does not exist!" );
+    }
+    if ( !strlen( $backup_dir ) ) {
+        backup_dir_init();
+    }
+    run_cmd( "cp $filename $backup_dir" );
+    echo "Original $filename backed up in to $backup_dir\n";
+}
+
+$newfile_dir = "";
+
+function newfile_dir_init( $dir = "newfile" ) {
+    global $newfile_dir;
+    $newfile_dir = "$dir-" . trim( run_cmd( 'date +"%Y%m%d%H%M%S"' ) );
+    mkdir( $newfile_dir );
+    if ( !is_dir( $newfile_dir ) ) {
+        error_exit( "Could not make newfile directory $newfiledir" );
+    }
+}
+
+function newfile_file( $filename, $contents ) {
+    global $newfile_dir;
+    if ( !strlen( $newfile_dir ) ) {
+        newfile_dir_init();
+    }
+    $outfile = "$newfile_dir/$filename";
+    if ( false === file_put_contents( $outfile, $contents ) ) {
+        error_exit( "Could not write $outfile" );
+    }
+    echo "CREATED: New file $outfile\n";
+    return $outfile;
+}
+
+
+
+

@@ -6,3 +6,8 @@ nohup.out
 *.svg
 *.dot
 dbmigrate/my.cnf
+dbmigrate/import*
+dbmigrate/export*
+dbmigrate/metadata*
+backup-*
+newfile-*
