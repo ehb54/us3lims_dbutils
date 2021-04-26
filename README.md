@@ -24,6 +24,8 @@
      6. checks httpd configs
    - optionally changes the domain name by updating the above appropriately and providing sudo commands to finalize change
      - includes support for both certbot and self-signed certs.
+     - ```php uslims_domain_info.php --change old_domain_name new_domain_name```
+       - old_domain_name is required for metadata & httpd config changes.
  - demo_data.sql.xz
    - contains demo1_veloc1 2.A.259 demo data which can be imported into a *fresh* dbinst
      - *fresh* since it may clobber existing data
