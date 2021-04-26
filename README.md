@@ -14,6 +14,16 @@
    - lists all dbs with names like 'uslims3_%' except 'uslims3_global'
  - uslims_db_variables.php
    - lists global mysqld variables of interest
+ - uslims_domain_info.php
+   - examines and validates domain name information
+     1. checks os hostname
+     2. checks newus3.metadata dbhost & limshost for status==completed
+     3. compares mysql uslims3_% databases with newus3.metadata completed hosts
+     4. checks global and dbinstance config.phps
+     5. checks listen-config.php
+     6. checks httpd configs
+    - optionally changes the domain name by updating the above appropriately and providing sudo commands to finalize change
+      - includes support for both certbot and self-signed certs.
  - demo_data.sql.xz
    - contains demo1_veloc1 2.A.259 demo data which can be imported into a *fresh* dbinst
      - *fresh* since it may clobber existing data
