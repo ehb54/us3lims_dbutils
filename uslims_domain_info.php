@@ -337,7 +337,7 @@ if ( get_yn_answer( "Update httpd config?" ) ) {
             $org_contents = $contents = file_get_contents( $httpcf );
             if ( $contents !== false && strlen( $contents ) ) {
                 $contents = preg_replace( "/$old_domain/m", "$new_domain", $contents );
-                $contents = preg_replace( '/^\s*SSL/', "# SSL", $contents );
+                $contents = preg_replace( '/^\s*(SSL|Include)/m', "# \${1}", $contents );
                 if ( $org_contents == $contents ) {
                     echo "NOTICE: $httpcf already contains variables set to '$new_domain', not updated\n";
                 } else {
