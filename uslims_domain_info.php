@@ -194,7 +194,7 @@ foreach ( $mysql_dbs as $k => $v ) {
 
 ## list class dirs
 if ( array_unique( $class_dirs ) ) {
-    echo "OK: all instance \$class_dirs match and have value " . array_shift( $class_dirs ) . "\n";
+    echo "OK: All instance \$class_dirs match and have value " . array_shift( $class_dirs ) . "\n";
 } else {
     echoline();
     foreach ( $class_dirs as $k => $v ) {
