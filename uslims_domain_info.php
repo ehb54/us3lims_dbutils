@@ -33,7 +33,8 @@ __EOD;
 
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
-if ( $new_domain_processing = $u_argv[0] == '--change' ) {
+$new_domain_processing = false;
+if ( count( $u_argv ) && $new_domain_processing = $u_argv[0] == '--change' ) {
     array_shift( $u_argv );
     if ( count( $u_argv ) < 2 ) {
         echo "$self: --change keyword requires two domain names\n";
@@ -46,7 +47,6 @@ if ( $new_domain_processing = $u_argv[0] == '--change' ) {
         exit(-1);
     }
 }
-debug_json( "u_argv", $u_argv );
 
 if ( count( $u_argv ) > 1 ) {
     echo $notes;
@@ -337,6 +337,7 @@ if ( get_yn_answer( "Update httpd config?" ) ) {
             $org_contents = $contents = file_get_contents( $httpcf );
             if ( $contents !== false && strlen( $contents ) ) {
                 $contents = preg_replace( "/$old_domain/m", "$new_domain", $contents );
+                $contents = preg_replace( '/^\s*SSL/', "# SSL", $contents );
                 if ( $org_contents == $contents ) {
                     echo "NOTICE: $httpcf already contains variables set to '$new_domain', not updated\n";
                 } else {
@@ -352,7 +353,7 @@ if ( get_yn_answer( "Update httpd config?" ) ) {
                             ;
                     } else {
                         $sudocmds .=
-                            "# might be already done:\ndnf install certbot python3-certbot-apache mod-ssl\n"
+                            "# might be already done:\ndnf install certbot python3-certbot-apache\n"
                             . "certbot --apache -d $new_domain\n"
                             ;
                     }
