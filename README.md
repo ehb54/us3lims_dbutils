@@ -20,8 +20,9 @@
      2. checks newus3.metadata dbhost & limshost for status==completed
      3. compares mysql uslims3_% databases with newus3.metadata completed hosts
      4. checks global and dbinstance config.phps
-     5. checks listen-config.php
-     6. checks httpd configs
+     5. reports on ```$class_dir```s used
+     6. checks listen-config.php
+     7. checks httpd configs
    - optionally changes the domain name by updating the above appropriately and providing sudo commands to finalize change
      - includes support for both certbot and self-signed certs.
      - ```php uslims_domain_info.php --change old_domain_name new_domain_name```
