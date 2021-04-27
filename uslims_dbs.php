@@ -7,7 +7,7 @@ $logging_level = 2;
 $self = __FILE__;
     
 $notes = <<<__EOD
-usage: $self {remote_config_file}
+usage: $self {db_config_file}
 
 list all uslims3_ databases in db
 __EOD;
@@ -42,20 +42,5 @@ require "utility.php";
 
 # main
 
-$db_handle = mysqli_connect( $dbhost, $user, $passwd );
-if ( !$db_handle ) {
-    write_logl( "could not connect to mysql: $dbhost, $user, $lims_db. exiting\n" );
-    exit(-1);
-}
-
-# make sure the db's don't already exist!
-$res = db_obj_result( $db_handle, "show databases like 'uslims3_%'", True );
-$existing_dbs = [];
-while( $row = mysqli_fetch_array($res) ) {
-    $this_db = (string)$row[0];
-    if ( $this_db != "uslims3_global" ) {
-        $existing_dbs[] = $this_db;
-    }
-}
-
+$existing_dbs = existing_dbs();
 echo implode( "\n", $existing_dbs ) . "\n";

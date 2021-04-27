@@ -51,13 +51,13 @@ function run_cmd( $cmd ) {
 }
 
 function error_exit( $msg ) {
-    fwrite( STDERR, "$msg\nTerminating due to errors." );
+    fwrite( STDERR, "$msg\nTerminating due to errors.\n" );
     exit(-1);
 }
 
-function echoline( $str = "-" ) {
+function echoline( $str = "-", $count = 80 ) {
     $out = "";
-    for ( $i = 0; $i < 80; ++$i ) {
+    for ( $i = 0; $i < $count; ++$i ) {
        $out .= $str;
     }
     echo "$out\n";
@@ -154,6 +154,50 @@ function newfile_file( $filename, $contents ) {
     return $outfile;
 }
 
+function is_admin() {
+    $user = posix_getpwuid(posix_geteuid())['name'];
+    if ( $user == 'root' ) {
+        return true;
+    }
 
+    $groupInfo = posix_getgrnam('wheel');
+    if ($groupInfo === false) {
+        return false;
+    }
 
+    return in_array( $user, $groupInfo['members'] );
+}
 
+$db_handle = NULL;
+
+function open_db() {
+    global $db_handle;
+    global $dbhost;
+    global $user;
+    global $passwd;
+    $db_handle = mysqli_connect( $dbhost, $user, $passwd );
+    if ( !$db_handle ) {
+        write_logl( "could not connect to mysql: $dbhost, $user. exiting\n" );
+        exit(-1);
+    }
+}    
+    
+function existing_dbs() {
+    global $db_handle;
+    if ( $db_handle === NULL ) {
+        open_db();
+    }
+    $res = db_obj_result( $db_handle, "show databases like 'uslims3_%'", True );
+    $existing_dbs = [];
+    while( $row = mysqli_fetch_array($res) ) {
+        $this_db = (string)$row[0];
+        if ( $this_db != "uslims3_global" ) {
+            $existing_dbs[] = $this_db;
+        }
+    }
+    return $existing_dbs;
+}
+
+function boolstr( $val, $truestr = "True", $falsestr = "" ) {
+    return $val ? $truestr : $falsestr;
+}
