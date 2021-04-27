@@ -76,7 +76,7 @@ $known_repos =
      ,"$usguipath" => [
          "use" => "gui"
          ,"buildable" => true
-         ,"build_cmd" => "module swap ultrascan/gui-build && ./makeall.sh && ./makesomo.sh"
+         ,"build_cmd" => "module swap ultrascan/gui-build && ./makeall.sh -j4 && ./makesomo.sh -j4"
          ,"git" => [
              "url" => "https://github.com/ehb54/ultrascan3.git"
              ,"branch" => "master"
@@ -101,7 +101,7 @@ $known_uses = [];
 foreach ( $known_repos as $v ) {
     $known_uses[ $v['use'] ] = 1;
 }
-$known_use_list = implode( ", array_keys( $known_uses ));
+$known_use_list = implode( ", ", array_keys( $known_uses ));
 
 $notes = <<<__EOD
 usage: $self {options} {db_config_file}
@@ -114,8 +114,8 @@ Options
 --help               : print this information and exit
     
 --update-branch      : update branch to default branch
---update-pull use    : update repos by use, currently lims, gui, mpi or all
---update-pull-build  : recompile when update-pull for gui, mpi or all. requires --update-pull be specified
+--update-pull use    : update repos by use, currently $known_use_list or all
+--update-pull-build  : recompile buildible repos. requires --update-pull also be specified
 
 
 __EOD;
@@ -352,17 +352,15 @@ if ( $update_pull ) {
     foreach ( $repos_to_update as $k ) {
         $v = $repos->{ $k };
         echo "Updating: pull in $k\n";
-        # run_cmd( "cd $k && git pull" );
-        echo "skipping pull for build testing\n"; 
+        $branch = $repos->{$k}->{'branch'};
+        run_cmd( "cd $k && git pull" );
         if ( $update_pull_build &&
              isset( $known_repos[ $k ][ 'buildable' ] ) ) {
-            echo "Updating: build in $k, this may take awhile\n";
+            echo "Updating: build in $k, this may take a while\n";
             $logfile = newfile_file( 'build' . str_replace( '/', '_', $k ) . '.log', '' );
             $cmd = "(cd $k && " . $known_repos[ $k ][ 'build_cmd' ] . ") >> $logfile";
-            $debug = 1;
             run_cmd( $cmd );
             echo "Updating: build finished\n";
-            $debug = 0;
             $notes .= "NOTE: check output for build of $k in $logfile\n";
         }
     }
