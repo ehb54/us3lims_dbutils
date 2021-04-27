@@ -23,7 +23,7 @@ $known_repos =
          ]
      ]
      ,"$us3home/lims/database/utils" => [
-         "use" => "lims"
+         "use" => "util"
          ,"git" => [
              "url" => "https://github.com/ehb54/us3lims_dbutils.git"
              ,"branch" => "main"
@@ -38,6 +38,8 @@ $known_repos =
      ]
      ,"$us3home/us3-nodb" => [
          "use" => "mpi"
+         ,"buildable" => true
+         ,"build_cmd" => "module swap ultrascan/mpi-build && ./make-uma build && ./make-uma install"
          ,"git" => [
              "url" => "https://github.com/ehb54/ultrascan3.git"
              ,"branch" => "master"
@@ -73,6 +75,8 @@ $known_repos =
      ]
      ,"$usguipath" => [
          "use" => "gui"
+         ,"buildable" => true
+         ,"build_cmd" => "module swap ultrascan/gui-build && ./makeall.sh && ./makesomo.sh"
          ,"git" => [
              "url" => "https://github.com/ehb54/ultrascan3.git"
              ,"branch" => "master"
@@ -81,11 +85,6 @@ $known_repos =
     ];
 
 # end user defines
-
-$known_uses = [];
-foreach ( $known_repos as $v ) {
-    $known_uses[ $v['use'] ] = 1;
-}
 
 # developer defines
 
@@ -98,6 +97,11 @@ $cwd  = getcwd();
 
 require "utility.php";
     
+$known_uses = [];
+foreach ( $known_repos as $v ) {
+    $known_uses[ $v['use'] ] = 1;
+}
+$known_use_list = implode( ", array_keys( $known_uses ));
 
 $notes = <<<__EOD
 usage: $self {options} {db_config_file}
@@ -140,7 +144,7 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                 error_exit( "\nOption --update-pull requires an argument\n\n$notes" );
             }
             $update_repo_use = array_shift( $u_argv );
-            if ( !isset( $known_uses[ $update_repo_use ] ) ) {
+            if ( $update_repo_use != "all" && !isset( $known_uses[ $update_repo_use ] ) ) {
                 error_exit( "\nOption --update-pull invalid use '$update_repo_use'\n\n$notes" );
             }
             $update_pull = true;
@@ -325,8 +329,46 @@ if ( $update_branch ) {
     flush_warnings( "All branches updated" );
 }
 
+$notes = "";
 
-if ( $update_repos ) {
-    echo "updating repos for use '$update_repo_use'\n";
-    echo run_cmd( "module avail" ) . "\n";
+if ( $update_pull ) {
+    echo "Checking repos for update-pull $update_repo_use\n";
+    $local_changes_repos = 0;
+    $repos_to_update = [];
+    foreach ( $repos as $k => $v ) {
+        if ( $update_repo_use == "all" ||
+             $v->{'use'} == $update_repo_use ) {
+            if ( $v->{'local_changes'} ) {
+                $local_changes_repos++;
+            } else {
+                $repos_to_update[] = $k;
+            }
+        }
+    }
+    if ( $local_changes_repos ) {
+        error_exit( "$local_changes_repos contain local changes, please correct before continuing" );
+    }
+
+    foreach ( $repos_to_update as $k ) {
+        $v = $repos->{ $k };
+        echo "Updating: pull in $k\n";
+        # run_cmd( "cd $k && git pull" );
+        echo "skipping pull for build testing\n"; 
+        if ( $update_pull_build &&
+             isset( $known_repos[ $k ][ 'buildable' ] ) ) {
+            echo "Updating: build in $k, this may take awhile\n";
+            $logfile = newfile_file( 'build' . str_replace( '/', '_', $k ) . '.log', '' );
+            $cmd = "(cd $k && " . $known_repos[ $k ][ 'build_cmd' ] . ") >> $logfile";
+            $debug = 1;
+            run_cmd( $cmd );
+            echo "Updating: build finished\n";
+            $debug = 0;
+            $notes .= "NOTE: check output for build of $k in $logfile\n";
+        }
+    }
+}
+
+if ( strlen( $notes ) ) {
+    echoline();
+    echo $notes;
 }
