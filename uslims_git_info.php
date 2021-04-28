@@ -204,8 +204,6 @@ and edit with appropriate values
     exit(-1);
 }
             
-require $use_config_file;
-
 if ( !is_admin() ) {
     error_exit( "you must have administrator privileges" );
 }
@@ -269,6 +267,7 @@ if ( !file_exists( $rev_cache ) ) {
 # update known repos
 
 if ( !$no_db ) {
+    require $use_config_file;
     $existing_dbs = existing_dbs();
     foreach ( $existing_dbs as $v ) {
         $known_repos[ "$wwwpath/uslims3/$v" ] = [
