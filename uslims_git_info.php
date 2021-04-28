@@ -116,8 +116,9 @@ Options
 
 --help               : print this information and exit
     
---clear_rev_cache    : clears the revision cache to get latest revisions
+--clear-rev-cache    : clears the revision cache to get latest revisions
 --quiet              : suppress some info messages
+--skip-unknown       : suppress reporting of discovered Use:unknown repos
 --update-branch      : update branch to default branch
 --update-pull use    : update repos by use, currently $known_use_list or all
 --update-pull-build  : recompile buildible repos. requires --update-pull also be specified
@@ -132,6 +133,7 @@ array_shift( $u_argv ); # first element is program name
 $clear_rev_cache   = false;
 $no_db             = false;
 $quiet             = false;
+$skip_unknown      = false;
 $update_branch     = false;
 $update_pull       = false;
 $update_pull_build = false;
@@ -143,9 +145,14 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             echo $notes;
             exit;
         }
-        case "--clear_rev_cache": {
+        case "--clear-rev-cache": {
             array_shift( $u_argv );
             $clear_rev_cache = true;
+            break;
+        }
+        case "--skip-unknown": {
+            array_shift( $u_argv );
+            $skip_unknown = true;
             break;
         }
         case "--no-db": {
@@ -357,19 +364,21 @@ printf( "%-60s| %-60s %1s | %-8s %1s | %-13s | %-5s %1s | %-31s| %13s |\n",
     );
 echoline( "-", 214 );
 foreach ( $repos as $k => $v ) {
-    printf( "%-60s| %-60s %1s | %-8s %1s | %-13s | %5d %1s | %-31s| %11d %1s |\n", 
-            substr( $k, 0, 60 )
-            ,substr( $v->{'remote'}, 0, 60 )
-            ,boolstr( $v->{'urldiffers'}, "Δ" )
-            ,$v->{'branch'}
-            ,boolstr( $v->{'branchdiffers'}, "Δ" )
-            ,$v->{'use'}
-            ,$v->{'revision'}->{'number'}
-            ,boolstr( $v->{'revdiffers'}, "Δ" )
-            ,$v->{'revision'}->{'date'}
-            ,$v->{'local_changes'}
-            ,boolstr( $v->{'local_changes'} > 0, "Δ" )
-        );
+    if ( !$skip_unknown || $v->{'use'} != 'unknown' ) {
+        printf( "%-60s| %-60s %1s | %-8s %1s | %-13s | %5d %1s | %-31s| %11d %1s |\n", 
+                substr( $k, 0, 60 )
+                ,substr( $v->{'remote'}, 0, 60 )
+                ,boolstr( $v->{'urldiffers'}, "Δ" )
+                ,$v->{'branch'}
+                ,boolstr( $v->{'branchdiffers'}, "Δ" )
+                ,$v->{'use'}
+                ,$v->{'revision'}->{'number'}
+                ,boolstr( $v->{'revdiffers'}, "Δ" )
+                ,$v->{'revision'}->{'date'}
+                ,$v->{'local_changes'}
+                ,boolstr( $v->{'local_changes'} > 0, "Δ" )
+            );
+    }
 }
 echoline( "-", 214 );
 
