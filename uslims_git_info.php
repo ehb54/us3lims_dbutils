@@ -229,6 +229,7 @@ $rev_info = (object)[];
 function get_rev( $url ) {
     global $rev_cache;
     global $rev_info;
+    global $quiet;
     if ( isset( $rev_info->{$url} ) ) {
         return $rev_info->{$url};
     }
