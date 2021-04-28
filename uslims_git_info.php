@@ -298,7 +298,6 @@ foreach ( $repodirs as $v ) {
         $repos->{ $v }->{ 'branchdiffers' } = $repos->{ $v }->{ 'branch' } != $known_repos[ $v ][ 'git' ][ 'branch' ];
         $repos->{ $v }->{ 'urldiffers' }    = $repos->{ $v }->{ 'remote' } != $known_repos[ $v ][ 'git' ][ 'url' ];
         $repos->{ $v }->{ 'revision' }->{ 'remote' } = get_rev( $known_repos[ $v ][ 'git' ][ 'url' ] );
-            # svn way doens't match counts on multi-branch repos :( trim( run_cmd( "cd $v && svn info " . svn_repo( $v ) . " | grep 'Last Changed Rev:' | awk '{ print \$4 }'" ) );
         $repos->{ $v }->{ 'revdiffers' }    = $repos->{ $v }->{ 'revision' }->{ 'remote' } != $repos->{ $v }->{ 'revision' }->{ 'number' };
     } else {
         $repos->{ $v }->{ 'use' } = "unknown";
@@ -315,7 +314,11 @@ foreach ( $known_repos as $k => $v ) {
         $repos->{ $k }->{ 'local_changes' }          = "";
         $repos->{ $k }->{ 'remote' }                 = "missing";
         $repos->{ $k }->{ 'branch' }                 = "missing";
-        $repos->{ $k }->{ 'use' }                    = $v;
+        $repos->{ $k }->{ 'use' }                    = $v['use'];
+        $repos->{ $k }->{ 'branchdiffers' }          = false;
+        $repos->{ $k }->{ 'urldiffers' }             = false;
+        $repos->{ $k }->{ 'revision' }->{ 'remote' } = get_rev( $known_repos[ $k ][ 'git' ][ 'url' ] );
+        $repos->{ $k }->{ 'revdiffers' }             = true;
     }
 }
         

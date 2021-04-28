@@ -11,3 +11,4 @@ dbmigrate/export*
 dbmigrate/metadata*
 backup-*
 newfile-*
+.git_info_rev_cache
