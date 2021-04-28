@@ -6,6 +6,8 @@ $us3home         = "/home/us3";
 $wwwpath         = "/srv/www/htdocs";
 $usguipath       = "/opt/ultrascan3";
 $rev_cache       = ".git_info_rev_cache";
+$us3ini          = "$us3home/lims/.us3lims.ini";
+$db_user         = "us3php";
 
 $reposearchpaths =
     [
@@ -105,7 +107,7 @@ foreach ( $known_repos as $v ) {
 $known_use_list = implode( ", ", array_keys( $known_uses ));
 
 $notes = <<<__EOD
-usage: $self {options} {db_config_file}
+usage: $self {options}
 
 list all git repo info
 must be run with root privileges
@@ -115,11 +117,11 @@ Options
 --help               : print this information and exit
     
 --clear_rev_cache    : clears the revision cache to get latest revisions
---no-db              : if the server has no database (or lims)
 --update-branch      : update branch to default branch
 --update-pull use    : update repos by use, currently $known_use_list or all
 --update-pull-build  : recompile buildible repos. requires --update-pull also be specified
 
+--no-db              : do not use database even if found. primarily for testing
 
 __EOD;
 
@@ -131,6 +133,7 @@ $no_db             = false;
 $update_branch     = false;
 $update_pull       = false;
 $update_pull_build = false;
+$ansible_run       = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
@@ -170,6 +173,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $update_pull_build = true;
             break;
         }
+        case "--ansible": {
+            array_shift( $u_argv );
+            $ansible_run = true;
+            break;
+        }
       default:
         error_exit( "\nUnknown option '$u_argv[0]'\n\n$notes" );
     }        
@@ -179,31 +187,21 @@ if ( $update_pull_build && !$update_pull ) {
     error_exit( "\nOption --update_pull_build requires --update_pull to be specified.\n\n$notes" );
 }
 
-$config_file = "db_config.php";
-if ( count( $u_argv ) == 1 ) {
-    $use_config_file = array_shift( $u_argv );
+if ( !$no_db && file_exists( $us3ini ) ) {
+    # assume lims
+    $dbhost = "localhost"; # always localhost
+    $user   = $db_user;
+    $cfgs   = parse_ini_file( $us3ini, true );
+    if ( !isset( $cfgs[ $user ] ) ) {
+        error_exit( "Ansible run: $user is not found" );
+    }
+    $passwd = $cfgs[ $user ][ 'password' ];
+    echo "found database\n";
 } else {
-    $use_config_file = $config_file;
+    $no_db = true;
+    echo "running without database, existing dbinsts, if any, will report Use:unknown\n";
 }
 
-if ( count( $u_argv ) ) {
-    echo $notes;
-    exit;
-}
-
-if ( !file_exists( $use_config_file ) && !$no_db ) {
-    fwrite( STDERR, "$self: 
-$use_config_file does not exist
-
-to fix:
-
-cp ${config_file}.template $use_config_file
-and edit with appropriate values
-")
-        ;
-    exit(-1);
-}
-            
 if ( !is_admin() ) {
     error_exit( "you must have administrator privileges" );
 }
@@ -240,6 +238,9 @@ function get_rev( $url ) {
     run_cmd( "cd $tdir && git clone $url repo" );
     $hash = trim( run_cmd( "cd $tdir/repo && git log -1 --oneline .| cut -d' ' -f1" ) );
     $rev  = trim( run_cmd( "cd $tdir/repo && git log --oneline | sed -n '/$hash/,99999p' | wc -l" ) );
+    $debug = 1;
+    run_cmd( "rm -fr $tdir/repo" );
+    $debug = 0;
     $rev_info->{ $url } = $rev;
     file_put_contents( $rev_cache, json_encode( $rev_info ) );
     
@@ -267,7 +268,6 @@ if ( !file_exists( $rev_cache ) ) {
 # update known repos
 
 if ( !$no_db ) {
-    require $use_config_file;
     $existing_dbs = existing_dbs();
     foreach ( $existing_dbs as $v ) {
         $known_repos[ "$wwwpath/uslims3/$v" ] = [
