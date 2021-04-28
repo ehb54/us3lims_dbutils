@@ -342,7 +342,7 @@ foreach ( $known_repos as $k => $v ) {
     }
 }
         
-printf( "%-60s| %-60s %1s | %-8s %1s | %-13s | %-5s %1s | %-31s| %12s\n", 
+printf( "%-60s| %-60s %1s | %-8s %1s | %-13s | %-5s %1s | %-31s| %13s |\n", 
         "Path"
         ,"Git remote url"
         ,""
@@ -355,9 +355,9 @@ printf( "%-60s| %-60s %1s | %-8s %1s | %-13s | %-5s %1s | %-31s| %12s\n",
         ,"Local changes"
         ,""
     );
-echoline( "-", 212 );
+echoline( "-", 214 );
 foreach ( $repos as $k => $v ) {
-    printf( "%-60s| %-60s %1s | %-8s %1s | %-13s | %5d %1s | %-31s| %10d %1s\n", 
+    printf( "%-60s| %-60s %1s | %-8s %1s | %-13s | %5d %1s | %-31s| %11d %1s |\n", 
             $k
             ,$v->{'remote'}
             ,boolstr( $v->{'urldiffers'}, "Δ" )
@@ -371,7 +371,7 @@ foreach ( $repos as $k => $v ) {
             ,boolstr( $v->{'local_changes'} > 0, "Δ" )
         );
 }
-echoline( "-", 212 );
+echoline( "-", 214 );
 
 if ( $update_branch ) {
     $updated     = 0;
