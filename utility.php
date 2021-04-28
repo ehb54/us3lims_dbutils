@@ -41,13 +41,16 @@ function debug_json( $msg, $json ) {
     fwrite( STDERR, "\n" );
 }
 
-function run_cmd( $cmd ) {
+function run_cmd( $cmd, $die_if_exit = true ) {
     global $debug;
     if ( isset( $debug ) && $debug ) {
         echo "$cmd\n";
     }
-    $res = `$cmd 2>&1`;
-    return $res;
+    exec( "$cmd 2>&1", $res, $res_code );
+    if ( $die_if_exit && $res_code ) {
+        error_exit( "shell command '$cmd' returned with exit status '$res_code'" );
+    }
+    return implode( "\n", $res ) . "\n";
 }
 
 function error_exit( $msg ) {
@@ -200,4 +203,14 @@ function existing_dbs() {
 
 function boolstr( $val, $truestr = "True", $falsestr = "" ) {
     return $val ? $truestr : $falsestr;
+}
+
+function tempdir( $dir = NULL, $prefix = NULL ) {
+    $template = "{$prefix}XXXXXX";
+    if ( $dir && is_dir($dir) ) {
+        $tmpdir = "--tmpdir=$dir";
+    } else {
+        $tmpdir = '--tmpdir=' . sys_get_temp_dir();
+    }
+    return exec( "mktemp -d $tmpdir $template" );
 }

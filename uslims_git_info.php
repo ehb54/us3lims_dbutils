@@ -5,6 +5,7 @@
 $us3home         = "/home/us3";
 $wwwpath         = "/srv/www/htdocs";
 $usguipath       = "/opt/ultrascan3";
+$rev_cache       = ".git_info_rev_cache";
 
 $reposearchpaths =
     [
@@ -113,6 +114,7 @@ Options
 
 --help               : print this information and exit
     
+--clear_rev_cache    : clears the revision cache to get latest revisions
 --update-branch      : update branch to default branch
 --update-pull use    : update repos by use, currently $known_use_list or all
 --update-pull-build  : recompile buildible repos. requires --update-pull also be specified
@@ -123,6 +125,7 @@ __EOD;
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
+$clear_rev_cache   = false;
 $update_branch     = false;
 $update_pull       = false;
 $update_pull_build = false;
@@ -132,6 +135,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--help": {
             echo $notes;
             exit;
+        }
+        case "--clear_rev_cache": {
+            array_shift( $u_argv );
+            $clear_rev_cache = true;
+            break;
         }
         case "--update-branch": {
             array_shift( $u_argv );
@@ -207,7 +215,49 @@ function svn_repo( $path ) {
     }
 }
 
+$rev_info = (object)[];
+function get_rev( $url ) {
+    global $rev_cache;
+    global $rev_info;
+    if ( isset( $rev_info->{$url} ) ) {
+        return $rev_info->{$url};
+    }
+
+    if ( file_exists( $rev_cache ) ) {
+        $rev_info = json_decode( file_get_contents( $rev_cache ), false );
+        if ( isset( $rev_info->{$url} ) ) {
+            return $rev_info->{$url};
+        }
+    }
+
+    $tdir = tempdir( NULL, $rev_cache );
+    echo "cloning repo $url into $tdir to get revision information\n";
+    run_cmd( "cd $tdir && git clone $url repo" );
+    $hash = trim( run_cmd( "cd $tdir/repo && git log -1 --oneline .| cut -d' ' -f1" ) );
+    $rev  = trim( run_cmd( "cd $tdir/repo && git log --oneline | sed -n '/$hash/,99999p' | wc -l" ) );
+    $rev_info->{ $url } = $rev;
+    file_put_contents( $rev_cache, json_encode( $rev_info ) );
+    
+    return $rev_info->{ $url };
+}        
+
 # main
+
+if ( $clear_rev_cache ) {
+    if ( file_exists( $rev_cache ) ) {
+        unlink( $rev_cache );
+    }
+} else {
+    if ( file_exists( $rev_cache ) ) {
+        echoline();
+        echo "Rev# cache last updated " . `stat -c "%y" $rev_cache`;
+        echoline();
+    }        
+}
+if ( !file_exists( $rev_cache ) ) {
+    echoline();
+    echo "Rev# cache will be created by cloning each of the known repos into " . sys_get_temp_dir() . "/${rev_cache}XXXXXX\n";
+}
 
 # update known repos
 
@@ -247,7 +297,8 @@ foreach ( $repodirs as $v ) {
         $repos->{ $v }->{ 'use' } = $known_repos[ $v ][ 'use' ];
         $repos->{ $v }->{ 'branchdiffers' } = $repos->{ $v }->{ 'branch' } != $known_repos[ $v ][ 'git' ][ 'branch' ];
         $repos->{ $v }->{ 'urldiffers' }    = $repos->{ $v }->{ 'remote' } != $known_repos[ $v ][ 'git' ][ 'url' ];
-        $repos->{ $v }->{ 'revision' }->{ 'remote' } = trim( run_cmd( "cd $v && svn info " . svn_repo( $v ) . " | grep 'Last Changed Rev:' | awk '{ print \$4 }'" ) );
+        $repos->{ $v }->{ 'revision' }->{ 'remote' } = get_rev( $known_repos[ $v ][ 'git' ][ 'url' ] );
+            # svn way doens't match counts on multi-branch repos :( trim( run_cmd( "cd $v && svn info " . svn_repo( $v ) . " | grep 'Last Changed Rev:' | awk '{ print \$4 }'" ) );
         $repos->{ $v }->{ 'revdiffers' }    = $repos->{ $v }->{ 'revision' }->{ 'remote' } != $repos->{ $v }->{ 'revision' }->{ 'number' };
     } else {
         $repos->{ $v }->{ 'use' } = "unknown";
