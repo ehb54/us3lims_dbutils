@@ -115,6 +115,7 @@ Options
 --help               : print this information and exit
     
 --clear_rev_cache    : clears the revision cache to get latest revisions
+--no-db              : if the server has no database (or lims)
 --update-branch      : update branch to default branch
 --update-pull use    : update repos by use, currently $known_use_list or all
 --update-pull-build  : recompile buildible repos. requires --update-pull also be specified
@@ -126,6 +127,7 @@ $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
 $clear_rev_cache   = false;
+$no_db             = false;
 $update_branch     = false;
 $update_pull       = false;
 $update_pull_build = false;
@@ -139,6 +141,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--clear_rev_cache": {
             array_shift( $u_argv );
             $clear_rev_cache = true;
+            break;
+        }
+        case "--no-db": {
+            array_shift( $u_argv );
+            $no_db = true;
             break;
         }
         case "--update-branch": {
@@ -184,7 +191,7 @@ if ( count( $u_argv ) ) {
     exit;
 }
 
-if ( !file_exists( $use_config_file ) ) {
+if ( !file_exists( $use_config_file ) && !$no_db ) {
     fwrite( STDERR, "$self: 
 $use_config_file does not exist
 
@@ -261,16 +268,18 @@ if ( !file_exists( $rev_cache ) ) {
 
 # update known repos
 
-$existing_dbs = existing_dbs();
-foreach ( $existing_dbs as $v ) {
-    $known_repos[ "$wwwpath/uslims3/$v" ] = [
-        "use" => "lims"
-        ,"git" =>
-        [
-         "url" => "https://github.com/ehb54/us3lims_dbinst.git"
-         ,"branch" => "master"
-        ]
-    ];
+if ( !$no_db ) {
+    $existing_dbs = existing_dbs();
+    foreach ( $existing_dbs as $v ) {
+        $known_repos[ "$wwwpath/uslims3/$v" ] = [
+            "use" => "lims"
+            ,"git" =>
+            [
+             "url" => "https://github.com/ehb54/us3lims_dbinst.git"
+             ,"branch" => "master"
+            ]
+            ];
+    }
 }
 
 $repodirs = [];
@@ -295,12 +304,14 @@ foreach ( $repodirs as $v ) {
     $repos->{ $v }->{ 'revision' }->{ 'remote' } = NULL;
     if ( isset( $known_repos[ $v ] ) ) {
         $repos->{ $v }->{ 'use' } = $known_repos[ $v ][ 'use' ];
-        $repos->{ $v }->{ 'branchdiffers' } = $repos->{ $v }->{ 'branch' } != $known_repos[ $v ][ 'git' ][ 'branch' ];
-        $repos->{ $v }->{ 'urldiffers' }    = $repos->{ $v }->{ 'remote' } != $known_repos[ $v ][ 'git' ][ 'url' ];
+        $repos->{ $v }->{ 'branchdiffers' }          = $repos->{ $v }->{ 'branch' } != $known_repos[ $v ][ 'git' ][ 'branch' ];
+        $repos->{ $v }->{ 'urldiffers' }             = $repos->{ $v }->{ 'remote' } != $known_repos[ $v ][ 'git' ][ 'url' ];
         $repos->{ $v }->{ 'revision' }->{ 'remote' } = get_rev( $known_repos[ $v ][ 'git' ][ 'url' ] );
-        $repos->{ $v }->{ 'revdiffers' }    = $repos->{ $v }->{ 'revision' }->{ 'remote' } != $repos->{ $v }->{ 'revision' }->{ 'number' };
+        $repos->{ $v }->{ 'revdiffers' }             = $repos->{ $v }->{ 'revision' }->{ 'remote' } != $repos->{ $v }->{ 'revision' }->{ 'number' };
     } else {
         $repos->{ $v }->{ 'use' } = "unknown";
+        $repos->{ $v }->{ 'revision' }->{ 'remote' } = get_rev( $repos->{ $v }->{ 'remote' } );
+        $repos->{ $v }->{ 'revdiffers' }             = $repos->{ $v }->{ 'revision' }->{ 'remote' } != $repos->{ $v }->{ 'revision' }->{ 'number' };
     }
 }
 
