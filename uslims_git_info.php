@@ -117,6 +117,7 @@ Options
 --help               : print this information and exit
     
 --clear_rev_cache    : clears the revision cache to get latest revisions
+--quiet              : suppress some info messages
 --update-branch      : update branch to default branch
 --update-pull use    : update repos by use, currently $known_use_list or all
 --update-pull-build  : recompile buildible repos. requires --update-pull also be specified
@@ -130,6 +131,7 @@ array_shift( $u_argv ); # first element is program name
 
 $clear_rev_cache   = false;
 $no_db             = false;
+$quiet             = false;
 $update_branch     = false;
 $update_pull       = false;
 $update_pull_build = false;
@@ -171,6 +173,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--update-pull-build": {
             array_shift( $u_argv );
             $update_pull_build = true;
+            break;
+        }
+        case "--quiet": {
+            array_shift( $u_argv );
+            $quiet = true;
             break;
         }
         case "--ansible": {
@@ -234,7 +241,9 @@ function get_rev( $url ) {
     }
 
     $tdir = tempdir( NULL, $rev_cache );
-    echo "cloning repo $url into $tdir to get revision information\n";
+    if ( !$quiet ) {
+        echo "cloning repo $url into $tdir to get revision information\n";
+    }
     run_cmd( "cd $tdir && git clone $url repo" );
     $hash = trim( run_cmd( "cd $tdir/repo && git log -1 --oneline .| cut -d' ' -f1" ) );
     $rev  = trim( run_cmd( "cd $tdir/repo && git log --oneline | sed -n '/$hash/,99999p' | wc -l" ) );
@@ -254,13 +263,13 @@ if ( $clear_rev_cache ) {
         unlink( $rev_cache );
     }
 } else {
-    if ( file_exists( $rev_cache ) ) {
+    if ( !$quiet && file_exists( $rev_cache ) ) {
         echoline();
         echo "Rev# cache last updated " . `stat -c "%y" $rev_cache`;
         echoline();
     }        
 }
-if ( !file_exists( $rev_cache ) ) {
+if ( !$quiet && !file_exists( $rev_cache ) ) {
     echoline();
     echo "Rev# cache will be created by cloning each of the known repos into " . sys_get_temp_dir() . "/${rev_cache}XXXXXX\n";
 }
