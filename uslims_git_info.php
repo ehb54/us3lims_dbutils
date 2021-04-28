@@ -283,7 +283,7 @@ if ( !$no_db ) {
 
 $repodirs = [];
 foreach ( $reposearchpaths as $v ) {
-    $repodirs = array_merge( $repodirs, array_filter( explode( "\n", trim( run_cmd( "find $v -name '*.git' | sed 's/.git\$//' | sed 's/\/\$//'" ) ) ) ) );
+    $repodirs = array_merge( $repodirs, array_filter( explode( "\n", trim( run_cmd( "find $v -name '*.git' 2>/dev/null | sed 's/.git\$//' | sed 's/\/\$//'" ) ) ) ) );
 }
 
 $repos = (object)[];
