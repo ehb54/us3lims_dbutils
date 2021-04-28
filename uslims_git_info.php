@@ -359,7 +359,7 @@ echoline( "-", 214 );
 foreach ( $repos as $k => $v ) {
     printf( "%-60s| %-60s %1s | %-8s %1s | %-13s | %5d %1s | %-31s| %11d %1s |\n", 
             $k
-            ,$v->{'remote'}
+            ,substr( $v->{'remote'}, 0, 60 )
             ,boolstr( $v->{'urldiffers'}, "Δ" )
             ,$v->{'branch'}
             ,boolstr( $v->{'branchdiffers'}, "Δ" )
