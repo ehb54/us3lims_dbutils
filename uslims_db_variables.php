@@ -24,6 +24,17 @@ $variables_of_interest = [
     ,"thread_cache_size"
     ,"query_cache_type"
     ,"query_cache_size"
+    ,"innodb_data_home_dir"
+    ,"innodb_datafile_path"
+    ,"innodb_log_group_home_dir"
+    ,"innodb_buffer_pool_size"
+    ,"innodb_additional_mem_pool_size"
+    ,"innodb_log_file_size"
+    ,"innodb_log_buffer_size"
+    ,"innodb_flush_log_at_trx_commit"
+    ,"innodb_lock_wait_timeout"
+    ,"general_log"
+    ,"general_log_file"
     ];
 # end of developer defines
 

@@ -193,7 +193,7 @@ foreach ( $mysql_dbs as $k => $v ) {
 }    
 
 ## list class dirs
-if ( array_unique( $class_dirs ) ) {
+if ( count( array_unique( $class_dirs ) ) == 1 ) {
     echo "OK: All instance \$class_dirs match and have value " . array_shift( $class_dirs ) . "\n";
 } else {
     echoline();
@@ -223,7 +223,7 @@ $httpd_https_names = [];
 foreach ( $http_configs as $v ) {
     preg_match( '/^http-(.*).conf$/', $v, $matches );
     if ( count( $matches ) != 2 ) {
-        $warnings .= "WARNING: $httpdconfigdir: could not find domain name in $v, this file will be ignored\n";
+        $warnings .= "WARNING: $httpdconfigdir: could not find any domain name matching http-*conf\n";
     } else {
         $httpd_http_names[] = $matches[1];
     }
@@ -232,7 +232,7 @@ foreach ( $http_configs as $v ) {
 foreach ( $https_configs as $v ) {
     preg_match( '/^https-(.*).conf$/', $v, $matches );
     if ( count( $matches ) != 2 ) {
-        $warnings .= "WARNING: $httpdconfigdir: could not find domain name in $v, this file will be ignored\n";
+        $warnings .= "WARNING: $httpdconfigdir: could not find any domain name matching https-*conf\n";
     } else {
         $httpd_https_names[] = $matches[1];
     }

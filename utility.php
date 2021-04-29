@@ -75,7 +75,7 @@ function flush_warnings( $msg = NULL ) {
         echo $warnings;
         echoline();
         $warnings = '';
-        $warnings_count += count( explode( "\n", trim( $warnings ) ) );
+        $warnings_count += count( explode( "\n", $warnings ) );
         return true;
     } else {
         if ( $msg ) {
@@ -87,7 +87,7 @@ function flush_warnings( $msg = NULL ) {
 
 function warnings_summary( $msg = NULL ) {
     global $warnings_count;
-    return "Warnings generated: $warnings_count\n";
+    return "Warnings generated\n"; # : $warnings_count\n";
 }
 
 $errors = '';
