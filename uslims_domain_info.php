@@ -73,6 +73,7 @@ and edit with appropriate values
     exit(-1);
 }
             
+file_perms_must_be( $use_config_file );
 require $use_config_file;
 
 $db_handle = mysqli_connect( $dbhost, $user, $passwd, "" );

@@ -142,6 +142,7 @@ function newfile_dir_init( $dir = "newfile" ) {
     if ( !is_dir( $newfile_dir ) ) {
         error_exit( "Could not make newfile directory $newfiledir" );
     }
+    return $newfile_dir;
 }
 
 function newfile_file( $filename, $contents ) {
@@ -213,4 +214,17 @@ function tempdir( $dir = NULL, $prefix = NULL ) {
         $tmpdir = '--tmpdir=' . sys_get_temp_dir();
     }
     return exec( "mktemp -d $tmpdir $template" );
+}
+
+function file_perms_must_be( $file, $least_restrictive = "600" ) {
+    $least_restrictive = octdec( $least_restrictive );
+    if ( !file_exists( $file ) ) {
+        error_exit( "file permissions check: file '$file' does not exist" );
+    }
+    $perms = fileperms( $file ) & octdec( "777" );
+    $remainder = ( $perms | $least_restrictive ) - $least_restrictive;
+    if ( $remainder ) {
+        error_exit( sprintf( "Permissions on '$file' are too lenient, fix with:\nchmod %o $file", $least_restrictive ) );
+    }
+    return;
 }

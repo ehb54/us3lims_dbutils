@@ -9,6 +9,9 @@ dbmigrate/my.cnf
 dbmigrate/import*
 dbmigrate/export*
 dbmigrate/metadata*
+dbupgrade/my.cnf
+dbupgrade/import*
+dbupgrade/export*
 backup-*
 newfile-*
 .git_info_rev_cache

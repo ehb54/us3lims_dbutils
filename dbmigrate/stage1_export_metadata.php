@@ -41,39 +41,9 @@ and edit with appropriate values
     exit(-1);
 }
             
+require "../utility.php";
+file_perms_must_be( $use_config_file );
 require $use_config_file;
-
-# utility routines
-
-function run_cmd( $cmd ) {
-    global $debug;
-    if ( isset( $debug ) && $debug ) {
-        echo "$cmd\n";
-    }
-    $res = `$cmd 2>&1`;
-    return $res;
-}
-    
-function error_exit( $msg ) {
-    fwrite( STDERR, "$msg\n" );
-    exit(-1);
-}
-
-function debug_json( $msg, $json ) {
-    fwrite( STDERR,  "$msg\n" );
-    fwrite( STDERR, json_encode( $json, JSON_PRETTY_PRINT ) );
-    fwrite( STDERR, "\n" );
-}
-
-function echoline( $str = "-" ) {
-    $out = "";
-    for ( $i = 0; $i < 80; ++$i ) {
-       $out .= $str;
-    }
-    echo "$out\n";
-}
-
-# end utility routines
 
 $metadata_file = "metadata-$metadata_dbhost.xml";
 

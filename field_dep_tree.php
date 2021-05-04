@@ -30,6 +30,8 @@ and edit with appropriate values
     exit(-1);
 }
             
+require "utility.php";
+file_perms_must_be( $config_file );
 require $config_file;
 
 if ( count( $argv ) != 2 ) {
@@ -54,8 +56,6 @@ if ( strlen( $errors ) ) {
     fwrite( STDERR, $errors );
     exit(-1);
 }
-
-require "utility.php";
 
 # main
 

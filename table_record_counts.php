@@ -41,8 +41,9 @@ and edit with appropriate values
     exit(-1);
 }
             
-require $use_config_file;
 require "utility.php";
+file_perms_must_be( $use_config_file );
+require $use_config_file;
 
 # main
 
