@@ -36,6 +36,14 @@ $variables_of_interest = [
     ,"general_log"
     ,"general_log_file"
     ];
+
+$show_status =
+    [
+     "Threads_connected"
+     ,"Max_used_connections"
+    ]
+    ;
+
 # end of developer defines
 
 $self = __FILE__;
@@ -85,13 +93,25 @@ if ( !$db_handle ) {
     exit(-1);
 }
 
+echoline();
+echo "Globals:\n";
+
 $res = db_obj_result( $db_handle, "show global variables", true );
 $variables = [];
 while( $row = mysqli_fetch_array($res) ) {
     $var = $row[0];
     $val = $row[1];
     if ( in_array( $var, $variables_of_interest ) ) {
-        echo "$var $val\n";
+        printf( "%-40s %s\n", $var, $val );
     }
 }
+echoline();
+echo "Status:\n";
 
+foreach ( $show_status as $v ) {
+    $res = db_obj_result( $db_handle, "show status where variable_name = '$v'" );
+    $val = sprintf( "%s", $res->{'Value'} );
+    printf( "%-40s %s\n", $v, $val );
+}
+
+echoline();
