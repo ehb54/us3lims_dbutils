@@ -71,6 +71,15 @@ echo implode( "\n", array_keys( $dbnames_used ) );
 echo "\n";
 echoline( '=' );
 
+# verfiy existing metadata
+echo "Checking for valid metadata\n";
+foreach ( $dbnames_used as $k => $v ) {
+    $query = "select * from newus3.metadata where dbname='$k'";
+    db_obj_result( $db_handle, $query );
+}
+echo "All metadata found\n";
+echoline( '=' );
+
 # make & change to directory
 newfile_dir_init( "export-$use_dbhost" );
 if ( !chdir( $newfile_dir ) ) {
@@ -142,4 +151,4 @@ if ( !file_exists( "../$pkgname" ) ) {
 }
 echo "completed: building complete package $pkgname\n";
 echoline( '=' );
-echo "Now run stage2_reimport_dbs.php\n";
+echo "Now run # php stage2_import_dbinsts.php $use_dbhost\n";

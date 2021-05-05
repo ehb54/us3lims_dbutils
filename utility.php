@@ -13,7 +13,7 @@ function write_logl( $msg, $this_level = 0 ) {
 function db_obj_result( $db_handle, $query, $expectedMultiResult = false ) {
     $result = mysqli_query( $db_handle, $query );
 
-    if ( !$result || !$result->num_rows ) {
+    if ( !$result || ( is_object( $result ) && !$result->num_rows ) ) {
         if ( $result ) {
             # $result->free_result();
         }
@@ -24,14 +24,18 @@ function db_obj_result( $db_handle, $query, $expectedMultiResult = false ) {
         exit;
     }
 
-    if ( $result->num_rows > 1 && !$expectedMultiResult ) {
+    if ( is_object( $result ) && $result->num_rows > 1 && !$expectedMultiResult ) {
         write_logl( "WARNING: db query returned " . $result->num_rows . " rows : $query" );
     }    
 
     if ( $expectedMultiResult ) {
         return $result;
     } else {
-        return mysqli_fetch_object( $result );
+        if ( is_object( $result ) ) {
+            return mysqli_fetch_object( $result );
+        } else {
+            return $result;
+        }
     }
 }
 
@@ -158,10 +162,13 @@ function newfile_file( $filename, $contents ) {
     return $outfile;
 }
 
-function is_admin() {
+function is_admin( $must_be_root = true ) {
     $user = posix_getpwuid(posix_geteuid())['name'];
     if ( $user == 'root' ) {
         return true;
+    }
+    if ( !$must_be_root ) {
+        return false;
     }
 
     $groupInfo = posix_getgrnam('wheel');

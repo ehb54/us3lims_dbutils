@@ -1,6 +1,10 @@
 <?php
 
 $self = __FILE__;
+# user defines
+$us3home         = "/home/us3";
+$us3ini          = "$us3home/lims/.us3lims.ini";
+
 # developer defines
 $logging_level = 2;
 # end of developer defines
@@ -78,6 +82,19 @@ if ( !file_exists( $pkgname ) ) {
     error_exit( "Package file '$pkgname' not found. Terminating\n" );
 }
 
+# parse ini for us3php 
+if ( file_exists( $us3ini ) ) {
+    # assume lims
+    $us3php = "us3php";
+    $cfgs   = parse_ini_file( $us3ini, true );
+    if ( !isset( $cfgs[ $us3php ] ) ) {
+        error_exit( "user $us3php not found in $us3ini" );
+    }
+    $us3phppw = $cfgs[ $us3php ][ 'password' ];
+} else {
+    error_exit( "file $us3ini not found" );
+}
+
 $workdir = newfile_dir_init( "import-$use_dbhost" );
 
 if ( !chdir( $workdir ) ) {
@@ -121,26 +138,32 @@ if ( strlen( $errors ) ) {
     error_exit( "ERRORS:\n" . $errors . "Terminating" );
 }
 
-error_exit( "not yet" );
+# verfiy existing metadata
+echo "Checking for valid metadata\n";
+foreach ( $dbnames_used as $db => $v ) {
+    $query = "select * from newus3.metadata where dbname='$db'";
+    db_obj_result( $db_handle, $query );
+}
+echo "All metadata found\n";
+echoline( '=' );
+
+get_yn_answer( "Have you made a binary backup using uslims_db_binary_backup.php?", true );
+get_yn_answer( "Are you really sure the binary backup is good?", true );
 
 ## ---> VERIFY dbs in metadata, also in stage1 !
 
-if ( get_yn_answer( "drop existing dbinsts from the database?" ) ) {
-# mysql for doing this
-# checked on database rename to backup old, but was reported dangerous!
-}
-
-# make sure the db's don't already exist!
-$res = db_obj_result( $db_handle, "show databases like 'uslims3_%'", True );
-$existing_dbs = [];
-while( $row = mysqli_fetch_array($res) ) {
-    $this_db = (string)$row[0];
-    if ( $this_db != "uslims3_global" ) {
-        $existing_dbs[ $this_db ] = 1;
+if ( get_yn_answer( "drop existing dbinstance from the database (THIS CAN NOT BE UNDONE!)?" ) ) {
+    # checked on database rename to backup old, but was reported dangerous!
+    foreach ( $dbnames_used as $db => $v ) {
+        echoline();
+        echo "Dropping dbinstance: $db\n";
+        $query = "drop database $db";
+        db_obj_result( $db_handle, $query );
     }
 }
 
-# debug_json( "exitsing_dbs", $existing_dbs );
+# make sure the db's don't already exist!
+$existing_dbs = array_fill_keys( existing_dbs(), 1 );
 
 $errors = "";
 foreach ( $dbnames_used as $db => $val ) {
@@ -154,11 +177,17 @@ if ( strlen( $errors ) ) {
 
 # create dbinstances
 
+$cfgs   = parse_ini_file( $us3ini, true );
+
+
+
 if ( get_yn_answer( "create dbinstances?" ) ) {
     foreach ( $dbnames_used as $db => $val ) {
+        echoline();
+        echo "Creating dbinstance: $db\n";
         $sqldata = "export-$use_dbhost-$db.sql.$compressext";
         if ( !file_exists( $sqldata ) ) {
-            error_exit( "File '$sqldata' missing. Terminating" );
+            error_exit( "File '$sqldata' missing." );
         }
 # get metadata
         $query = "select * from newus3.metadata where dbname='$db'";
@@ -169,11 +198,6 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
         $secure_pw   = $res->{ 'secure_pw' };
         $querys = [
     "CREATE database $db",
-    "GRANT ALL ON $db.* TO '$dbuser'@'localhost' IDENTIFIED BY '$dbpasswd'",
-    "GRANT ALL ON $db.* TO '$dbuser'@'%' IDENTIFIED BY '$dbpasswd'",
-    "GRANT EXECUTE ON $db.* TO '$secure_user'@'%' IDENTIFIED BY '$secure_pw' REQUIRE SSL",
-    "GRANT ALL ON $db.* TO 'us3php'@'localhost'",
-    "GRANT ALL ON $db.* TO 'us3php'@'$use_dbhost'"
         ];
         foreach ( $querys as $q ) {
     # echo "query: $q\n";
@@ -194,7 +218,12 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
             }
         }
         $querys = [
-    "delete from $db.abstractCenterpiece"
+    "GRANT ALL ON $db.* TO '$dbuser'@'localhost' IDENTIFIED BY '$dbpasswd'"
+    ,"GRANT ALL ON $db.* TO '$dbuser'@'%' IDENTIFIED BY '$dbpasswd'"
+    ,"GRANT EXECUTE ON $db.* TO '$secure_user'@'%' IDENTIFIED BY '$secure_pw' REQUIRE SSL"
+    ,"GRANT ALL ON $db.* TO 'us3php'@'localhost' IDENTIFIED by '$us3phppw'"
+    ,"GRANT ALL ON $db.* TO 'us3php'@'$use_dbhost' IDENTIFIED by '$us3phppw'"
+    ,"delete from $db.abstractCenterpiece"
     ,"delete from $db.abstractRotor"
     ,"delete from $db.bufferComponent"
     ,"delete from $db.editedData"
@@ -223,3 +252,23 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
     }
 }
 
+# verify table record counts
+
+echoline();
+echo "Verifying record counts\n";
+foreach ( $dbnames_used as $db => $val ) {
+    echoline();
+    echo "Verifying record counts for $db\n";
+    $e_reccount = "export-$use_dbhost-$db-record-counts.txt";
+    $i_reccount = "import-$use_dbhost-$db-record-counts.txt";
+    $cmd = "php ../../table_record_counts.php $db ../../db_config.php > $i_reccount";
+    run_cmd( $cmd );
+    if ( !file_exists( $i_reccount ) ) {
+        echo  "ERROR: could not create '$i_reccount'\n";
+    } else {
+        echoline();
+        $cmd = "diff $e_reccount $i_reccount";
+        echo "$cmd :\n";
+        echo run_cmd( $cmd );
+    }
+}

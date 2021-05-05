@@ -35,6 +35,7 @@ $variables_of_interest = [
     ,"innodb_lock_wait_timeout"
     ,"general_log"
     ,"general_log_file"
+    ,"datadir"
     ];
 
 $show_status =
@@ -87,11 +88,7 @@ require $use_config_file;
 
 # main
 
-$db_handle = mysqli_connect( $dbhost, $user, $passwd );
-if ( !$db_handle ) {
-    write_logl( "could not connect to mysql: $dbhost, $user, $lims_db. exiting\n" );
-    exit(-1);
-}
+open_db();
 
 echoline();
 echo "Globals:\n";

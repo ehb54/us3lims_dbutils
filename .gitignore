@@ -15,3 +15,4 @@ dbupgrade/export*
 backup-*
 newfile-*
 .git_info_rev_cache
+mariadb-binary-backup-*
