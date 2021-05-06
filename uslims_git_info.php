@@ -8,6 +8,7 @@ $usguipath       = "/opt/ultrascan3";
 $rev_cache       = ".git_info_rev_cache";
 $us3ini          = "$us3home/lims/.us3lims.ini";
 $db_user         = "us3php";
+$coresparallel   = "4";
 
 $reposearchpaths =
     [
@@ -79,7 +80,7 @@ $known_repos =
      ,"$usguipath" => [
          "use" => "gui"
          ,"buildable" => true
-         ,"build_cmd" => "module swap ultrascan/gui-build && ./makeall.sh -j4 && ./makesomo.sh -j4"
+         ,"build_cmd" => "module swap ultrascan/gui-build && ./makeall.sh -j$coresparallel && ./makesomo.sh -j$coresparallel"
          ,"git" => [
              "url" => "https://github.com/ehb54/ultrascan3.git"
              ,"branch" => "master"
