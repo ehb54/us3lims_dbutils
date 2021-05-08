@@ -52,10 +52,12 @@ require $use_config_file;
 
 $myconf = "my.cnf";
 if ( !file_exists( $myconf ) ) {
-   error_exit( "create a file '$myconf' in the current directory with the following contents:\n" .
-   "[mysqldump]\n" .
-   "password=YOUR_ROOT_DB_PASSWORD\n"
-   );
+   error_exit( 
+       "create a file '$myconf' in the current directory with the following contents:\n"
+       . "[mysqldump]\n"
+       . "password=YOUR_ROOT_DB_PASSWORD\n"
+       . "max_allowed_packet=128M\n"
+       );
 }
 file_perms_must_be( $myconf );
 
@@ -159,11 +161,13 @@ foreach ( $dbnames_used as $db => $val ) {
 $reccounts = [];
 foreach ( $dbnames_used as $db => $val ) {
     $reccount = "export-$metadata_dbhost-$db-record-counts.txt";
+    echo "starting: table record counts from $db to $reccount\n";
     $cmd = "php ../table_record_counts.php $db ../db_config.php > $reccount";
     run_cmd( $cmd );
     if ( !file_exists( $reccount ) ) {
         error_exit( "missing '$reccount'\n" );
     }
+    echo "finished: table record counts from $db to $reccount\n";
     $reccounts[] = $reccount;
 }
 # get data
