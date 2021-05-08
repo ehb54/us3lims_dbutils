@@ -118,6 +118,7 @@ Options
 --help               : print this information and exit
     
 --clear-rev-cache    : clears the revision cache to get latest revisions
+--diff-report        : shows git diff details for local changes
 --quiet              : suppress some info messages
 --skip-unknown       : suppress reporting of discovered Use:unknown repos
 --update-branch      : update branch to default branch
@@ -132,6 +133,7 @@ $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
 $clear_rev_cache   = false;
+$diff_report       = false;
 $no_db             = false;
 $quiet             = false;
 $skip_unknown      = false;
@@ -149,6 +151,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--clear-rev-cache": {
             array_shift( $u_argv );
             $clear_rev_cache = true;
+            break;
+        }
+        case "--diff-report": {
+            array_shift( $u_argv );
+            $diff_report = true;
             break;
         }
         case "--skip-unknown": {
@@ -383,6 +390,25 @@ foreach ( $repos as $k => $v ) {
 }
 echoline( "-", 214 );
 
+if ( $diff_report ) {
+    $diff_run = false;
+
+    foreach ( $repos as $k => $v ) {
+        if ( $v->{'local_changes'} > 0 ) {
+            echoline( "=" );
+            echo "git changes\nrepo: " . $v->{'remote'} . "\ndirectory: $k\n";
+            echoline( "=" );
+            echo run_cmd( "cd $k && git diff" );
+            $diff_run = true;
+        }
+    }
+    if ( !$diff_run ) {
+        echoline( "=" );
+        echo "no local changes to report\n";
+    }           
+    echoline( "=" );
+}    
+
 if ( $update_branch ) {
     $updated     = 0;
     $tot_differs = 0;
@@ -414,23 +440,31 @@ if ( $update_branch ) {
 }
 
 $notes = "";
-
 if ( $update_pull ) {
     echo "Checking repos for update-pull $update_repo_use\n";
     $local_changes_repos = 0;
-    $repos_to_update = [];
+    $missing_repos       = 0;
+    $repos_to_update     = [];
     foreach ( $repos as $k => $v ) {
-        if ( $update_repo_use == "all" ||
-             $v->{'use'} == $update_repo_use ) {
-            if ( $v->{'local_changes'} ) {
-                $local_changes_repos++;
-            } else {
-                $repos_to_update[] = $k;
+        if ( $v->{ 'remote' } != "missing" ) {
+            if ( $update_repo_use == "all" ||
+                 $v->{'use'} == $update_repo_use ) {
+                if ( $v->{'local_changes'} ) {
+                    $local_changes_repos++;
+                } else {
+                    $repos_to_update[] = $k;
+                }
             }
+        } else {
+            $missing_repos++;
         }
     }
     if ( $local_changes_repos ) {
         error_exit( "$local_changes_repos contain local changes, please correct before continuing" );
+    }
+
+    if ( $missing_repos ) {
+        $notes .= "NOTICE: $missing_repos missing repo(s) will not be updated\n";
     }
 
     foreach ( $repos_to_update as $k ) {
