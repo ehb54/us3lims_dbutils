@@ -10,10 +10,14 @@
      - returns a list of record counts
 
 ## UltraScan LIMS specific
- - uslims_dbs.php
-   - lists all dbs with names like 'uslims3_%' except 'uslims3_global'
+ - uslims_binary_db_backup.php
+   - creates a binary backup of the mysql database in a unique directory
+ - uslims_db_schemas.php
+   - creates diff-able schema dumps with stored procedures, events and triggers for each dbinstance found in the database
  - uslims_db_variables.php
    - lists global mysqld variables of interest
+ - uslims_dbs.php
+   - lists all dbs with names like 'uslims3_%' except 'uslims3_global'
  - uslims_domain_info.php
    - examines and validates domain name information
      1. checks os hostname
@@ -35,7 +39,8 @@
      - *fresh* since it may clobber existing data
    - unxz demo_data.sql.xz && mysql dbname < demo_data.sql
 
-### dbmigrate notes
+### dbmigrate
+ - use : move dbinstances from one server to another
  - on the server to export
    - ```php stage0_metadata_dbhosts.php```
      - lists the dbname, dbhost & limshost in the database where status==completed 
@@ -54,3 +59,11 @@
    - add validation of table_record_counts in package for comparison after import
    - make sure there is sufficient disk space on the drive where this repo is mounted to handle the .tar file
      - note the sql files remain .xz'd so perhaps a bit more than double the size of the tar file is sufficient (one for the tar file itself, one for the extracted files) 
+
+### dbupgrade
+  - use: upgrade existing dbinstances on a server to the latest us3_sql sql & procedures 
+  - stage1_export_dbinsts.php
+    - exports all dbinstances and record counts
+  - stage2_import_dbinsts.php
+    - drops dbinstance databases, creates new from latest us3_sql, imports stage1 exported data, compares record counts
+ 
