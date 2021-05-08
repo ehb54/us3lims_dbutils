@@ -394,12 +394,14 @@ if ( $diff_report ) {
     $diff_run = false;
 
     foreach ( $repos as $k => $v ) {
-        if ( $v->{'local_changes'} > 0 ) {
-            echoline( "=" );
-            echo "git changes\nrepo: " . $v->{'remote'} . "\ndirectory: $k\n";
-            echoline( "=" );
-            echo run_cmd( "cd $k && git diff" );
-            $diff_run = true;
+        if ( !$skip_unknown || $v->{'use'} != 'unknown' ) {
+            if ( $v->{'local_changes'} > 0 ) {
+                echoline( "=" );
+                echo "git changes\nrepo: " . $v->{'remote'} . "\ndirectory: $k\n";
+                echoline( "=" );
+                echo run_cmd( "cd $k && git diff" );
+                $diff_run = true;
+            }
         }
     }
     if ( !$diff_run ) {
