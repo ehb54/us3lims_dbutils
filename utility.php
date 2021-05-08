@@ -235,3 +235,16 @@ function file_perms_must_be( $file, $least_restrictive = "600" ) {
     }
     return;
 }
+
+function get_slurm_cores( $cores = 4, $slurmconf = "/etc/slurm/slurm.conf" ) {
+    if ( !file_exists( $slurmconf ) ) {
+        return $cores;
+    }
+    $res = run_cmd( 'grep -e "^\s*NodeName\s*=\\s*localhost" ' . $slurmconf );
+    preg_match( '/Procs=(\d+)\s/', $res, $matches );
+    if ( count( $matches ) != 2 ) {
+        return $cores;
+    }
+    
+    return intval( $matches[1] * 2 );
+}

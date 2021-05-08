@@ -1,5 +1,7 @@
 <?php
 
+require "utility.php";
+
 # user defines
 
 $us3home         = "/home/us3";
@@ -8,7 +10,8 @@ $usguipath       = "/opt/ultrascan3";
 $rev_cache       = ".git_info_rev_cache";
 $us3ini          = "$us3home/lims/.us3lims.ini";
 $db_user         = "us3php";
-$coresparallel   = "4";
+$slurmconf       = "/etc/slurm/slurm.conf"; 
+$coresparallel   = get_slurm_cores( 4, $slurmconf );
 
 $reposearchpaths =
     [
@@ -17,10 +20,12 @@ $reposearchpaths =
      ,$wwwpath
     ];
 
+# user defines continued
 $known_repos =
     [
      "$us3home/lims/database/sql" => [
          "use" => "lims"
+         ,"own" => "us3:us3"
          ,"git" => [
              "url" => "https://github.com/ehb54/us3_sql.git"
              ,"branch" => "master"
@@ -28,6 +33,7 @@ $known_repos =
      ]
      ,"$us3home/lims/database/utils" => [
          "use" => "util"
+         ,"own" => "us3:us3"
          ,"git" => [
              "url" => "https://github.com/ehb54/us3lims_dbutils.git"
              ,"branch" => "main"
@@ -35,6 +41,7 @@ $known_repos =
      ]
      ,"$us3home/lims/bin" => [
          "use" => "lims"
+         ,"own" => "us3:us3"
          ,"git" => [
              "url" => "https://github.com/ehb54/us3lims_gridctl.git"
              ,"branch" => "master"
@@ -42,6 +49,7 @@ $known_repos =
      ]
      ,"$us3home/us3-nodb" => [
          "use" => "mpi"
+         ,"own" => "us3:us3"
          ,"buildable" => true
          ,"build_cmd" => "module swap ultrascan/mpi-build && ./make-uma build && ./make-uma install"
          ,"git" => [
@@ -51,6 +59,7 @@ $known_repos =
      ]
      ,"$wwwpath/common" => [
          "use" => "lims"
+         ,"own" => "us3:apache"
          ,"git" => [
              "url" => "https://github.com/ehb54/us3lims_common.git"
              ,"branch" => "master"
@@ -58,6 +67,7 @@ $known_repos =
      ]
      ,"$wwwpath/common/class/ultrascan-airavata-bridge" => [
          "use" => "lims"
+         ,"own" => "us3:apache"
          ,"git" => [
              "url" => "https://github.com/SciGaP/ultrascan-airavata-bridge.git"
              ,"branch" => "master"
@@ -65,6 +75,7 @@ $known_repos =
      ]
      ,"$wwwpath/uslims3" => [
          "use" => "lims"
+         ,"own" => "us3:apache"
          ,"git" => [
              "url" => "https://github.com/ehb54/us3lims_webinfo.git"
              ,"branch" => "master"
@@ -72,6 +83,7 @@ $known_repos =
      ]
      ,"$wwwpath/uslims3/uslims3_newlims" => [
          "use" => "lims"
+         ,"own" => "us3:apache"
          ,"git" => [
              "url" => "https://github.com/ehb54/us3lims_newinst.git"
              ,"branch" => "master"
@@ -79,6 +91,7 @@ $known_repos =
      ]
      ,"$usguipath" => [
          "use" => "gui"
+         ,"own" => "usadmin:usadmin"
          ,"buildable" => true
          ,"build_cmd" => "module swap ultrascan/gui-build && ./makeall.sh -j$coresparallel && ./makesomo.sh -j$coresparallel"
          ,"git" => [
@@ -99,7 +112,6 @@ $logging_level = 2;
 $self = __FILE__;
 $cwd  = getcwd();
 
-require "utility.php";
     
 $known_uses = [];
 foreach ( $known_repos as $v ) {
@@ -471,17 +483,25 @@ if ( $update_pull ) {
 
     foreach ( $repos_to_update as $k ) {
         $v = $repos->{ $k };
+        echoline();
         echo "Updating: pull in $k\n";
         $branch = $repos->{$k}->{'branch'};
         run_cmd( "cd $k && git pull" );
         if ( $update_pull_build &&
              isset( $known_repos[ $k ][ 'buildable' ] ) ) {
             echo "Updating: build in $k, this may take a while\n";
+            echo "Using $coresparallel cores to build if supported\n";
             $logfile = newfile_file( 'build' . str_replace( '/', '_', $k ) . '.log', '' );
             $cmd = "(cd $k && " . $known_repos[ $k ][ 'build_cmd' ] . ") >> $logfile";
             run_cmd( $cmd );
             echo "Updating: build finished\n";
             $notes .= "NOTE: check output for build of $k in $logfile\n";
+        }
+        if ( isset( $known_repos[ $k ][ 'own' ] ) ) {
+            $own = $known_repos[ $k ][ 'own' ];
+            echo "Updating: permissions of $k to $own\n";
+            run_cmd( "chown -R $own $k" );
+            echo "Updating: permissions updated\n";
         }
     }
 }
