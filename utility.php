@@ -167,7 +167,7 @@ function is_admin( $must_be_root = true ) {
     if ( $user == 'root' ) {
         return true;
     }
-    if ( !$must_be_root ) {
+    if ( $must_be_root ) {
         return false;
     }
 
