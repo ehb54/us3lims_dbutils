@@ -70,10 +70,12 @@ require $use_config_file;
 
 $myconf = "my.cnf";
 if ( !file_exists( $myconf ) ) {
-   error_exit( "create a file '$myconf' in the current directory with the following contents:\n" .
-   "[client]\n" .
-   "password=YOUR_ROOT_DB_PASSWORD\n"
-   );
+    error_exit( 
+        "create a file '$myconf' in the current directory with the following contents:\n"
+        . "[client]\n"
+        . "password=YOUR_ROOT_DB_PASSWORD\n"
+        . "max_allowed_packet=256M\n"
+        );
 }
 file_perms_must_be( $myconf );
 

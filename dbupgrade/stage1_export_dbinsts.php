@@ -54,7 +54,7 @@ if ( !file_exists( $myconf ) ) {
        "create a file '$myconf' in the current directory with the following contents:\n"
        . "[mysqldump]\n"
        . "password=YOUR_ROOT_DB_PASSWORD\n"
-       . "max_allowed_packet=128M\n"
+       . "max_allowed_packet=256M\n"
        );
 }
 file_perms_must_be( $myconf );
