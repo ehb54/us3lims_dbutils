@@ -7,21 +7,48 @@ $logging_level = 2;
 $self = __FILE__;
     
 $notes = <<<__EOD
-usage: $self {db_config_file}
+usage: $self {options} {db_config_file}
 
 list all uslims3_ databases in db
+
+Options
+
+--help               : print this information and exit
+
+--times              : display last update time information
 __EOD;
 
-if ( count( $argv ) < 1 || count( $argv ) > 2 ) {
-    echo $notes;
-    exit;
+$u_argv = $argv;
+array_shift( $u_argv ); # first element is program name
+
+$times               = false;
+
+while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
+    switch( $u_argv[ 0 ] ) {
+        case "--help": {
+            echo $notes;
+            exit;
+        }
+        case "--times": {
+            array_shift( $u_argv );
+            $times = true;
+            break;
+        }
+      default:
+        error_exit( "\nUnknown option '$u_argv[0]'\n\n$notes" );
+    }        
 }
 
 $config_file = "db_config.php";
-if ( count( $argv ) == 2 ) {
-    $use_config_file = $argv[ 1 ];
+if ( count( $u_argv ) ) {
+    $use_config_file = shift( $u_argv );
 } else {
     $use_config_file = $config_file;
+}
+
+if ( count( $u_argv ) ) {
+    echo $notes;
+    exit;
 }
 
 if ( !file_exists( $use_config_file ) ) {
@@ -44,4 +71,38 @@ require $use_config_file;
 # main
 
 $existing_dbs = existing_dbs();
-echo implode( "\n", $existing_dbs ) . "\n";
+if ( !$times ) {
+    echo implode( "\n", $existing_dbs ) . "\n";
+    exit;
+}
+
+if ( $times ) {
+    $query   = "show variables where variable_name = 'datadir'";
+    $res     = db_obj_result( $db_handle, $query );
+    $datadir = $res->{'Value'};
+    
+    $dashlen = 130;
+    echoline( '-', $dashlen );
+    echo "Note: Last update time in DB will be empty after service restart\n";
+    echoline( '-', $dashlen );
+
+    printf(
+        "%-30s | %19s | %s\n"
+        ,"DB"
+        ,"Last update time DB"
+        ,"Last modification time of .frm & .ibd in $datadir"
+        );
+    echoline( '-', $dashlen );
+    foreach ( $existing_dbs as $db ) {
+        $query = "select max(update_time) from information_schema.tables where table_schema='$db'";
+        $res   = db_obj_result( $db_handle, $query );
+
+        $mtime = preg_replace( '/\.\d+ \+\d{4} /', ' ', trim( run_cmd( "cd $datadir/$db && stat -c \$'%y %n' *{ibd,frm} | sort -n | head -1" ) ) );
+        printf(
+            "%-30s | %19s | %s\n"
+            ,$db
+            ,$res->{'max(update_time)'}
+            ,$mtime
+            );
+    }
+}
