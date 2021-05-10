@@ -41,7 +41,7 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
 
 $config_file = "db_config.php";
 if ( count( $u_argv ) ) {
-    $use_config_file = shift( $u_argv );
+    $use_config_file = array_shift( $u_argv );
 } else {
     $use_config_file = $config_file;
 }
