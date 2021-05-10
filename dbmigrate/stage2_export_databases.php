@@ -8,7 +8,7 @@ $compressext  = "xz";
 # $debug = 1;
 
 $notes = <<<__EOD
-usage: $self metadata_dbhost {config_file}
+usage: $self metadata_dbhost sql-git-rev# {config_file}
 
 does importable mysql dumps of every database in the metadata file
 if config_file specified, it will be used instead of ../db config
@@ -17,16 +17,20 @@ my.cnf must exist in the current directory
 
 __EOD;
 
-if ( count( $argv ) < 2 || count( $argv ) > 3 ) {
+$u_argv = $argv;
+array_shift( $u_argv );
+
+if ( count( $u_argv ) < 2 || count( $u_argv ) > 3 ) {
     echo $notes;
     exit;
 }
 
-$metadata_dbhost = $argv[ 1 ];
+$metadata_dbhost = array_shift( $u_argv );
+$schema_rev      = array_shift( $u_argv );
 
 $config_file = "../db_config.php";
-if ( count( $argv ) == 3 ) {
-    $use_config_file = $argv[ 2 ];
+if ( count( $u_argv ) ) {
+    $use_config_file = array_shift( $u_argv );
 } else {
     $use_config_file = $config_file;
 }
@@ -43,12 +47,15 @@ and edit with appropriate values
     ;
     exit(-1);
 }
+
+if ( count( $u_argv ) ) {
+    echo $notes;
+    exit;
+}    
             
 require "../utility.php";
 file_perms_must_be( $use_config_file );
 require $use_config_file;
-
-# utility routines
 
 $myconf = "my.cnf";
 if ( !file_exists( $myconf ) ) {
@@ -72,10 +79,14 @@ if ( !file_exists( $metadata_file ) ) {
     error_exit( "ERROR: file $metadata_file does not exist!" );
 }
 
-
 $metadata = simplexml_load_string( file_get_contents( $metadata_file ) );
 if ( isset( $debug ) && $debug ) {
     debug_json( "json of metadata", $metadata );
+}
+
+$schema_file = "../schema_rev$schema_rev.sql";
+if ( !file_exists( $schema_file ) ) {
+    error_exit( "$schema_file not found" );
 }
 
 $dbnames      = [];
@@ -103,7 +114,6 @@ if ( count( $dbnames_dupd ) ) {
     error_exit( "Terminating" );
 }
 
-    
 echoline( '=' );
 echo "found " . count( $dbnames_used ) . " unique dbname records as follows\n";
 echoline();
@@ -172,9 +182,26 @@ foreach ( $dbnames_used as $db => $val ) {
 }
 # get data
 
+echoline( '=' );
+echo "exporting data\n";
+echoline();
+
+$extra_files = [];
 foreach ( $dbnames_used as $db => $val ) {
     $dumpfile = "export-$metadata_dbhost-$db.sql";
-    $cmd = "mysqldump --defaults-file=my.cnf -u root --no-create-info --complete-insert $db > $dumpfile";
+    $cmd = "mysqldump --defaults-file=my.cnf -u root --no-create-info --complete-insert";
+    $ignore_tables = explode( "\n", trim( run_cmd( "cd .. && php uslims_table_diffs.php --only-extras --rev $schema_rev $db" ) ) );
+    if ( count( $ignore_tables ) ) {
+        $tables_ignored       = implode( "\n", $ignore_tables ) . "\n";
+        $tables_ignored_fname = "export-$metadata_dbhost-$db-tables-ignored.txt";
+        file_put_contents( $tables_ignored_fname, $tables_ignored );
+        $extra_files[] = $tables_ignored_fname;
+        echo "WARNING : " . count( $ignore_tables ) . " tables ignored in $db : " . implode( ' ', $ignore_tables ) . "\n";
+    }
+    foreach ( $ignore_tables as $ignore_table ) {
+        $cmd .= " --ignore-table=$db.$ignore_table";
+    }
+    $cmd .= " $db > $dumpfile";
     echo "starting: exporting $db to $dumpfile\n";
     run_cmd( $cmd );
     if ( !file_exists( $dumpfile ) ) {
@@ -196,7 +223,7 @@ foreach ( $dbnames_used as $db => $val ) {
 
 # package
 
-$cmd = "tar cf $pkgname $metadata_file " . implode( ' ', $cdumped ) . ' ' . implode( ' ', $configphps ) . ' ' . implode( ' ', $reccounts );
+$cmd = "tar cf $pkgname $metadata_file " . implode( ' ', $cdumped ) . ' ' . implode( ' ', $configphps ) . ' ' . implode( ' ', $reccounts ) . implode( ' ', $extra_files );
 echo "starting: building complete package $pkgname\n";
 run_cmd( $cmd );
 if ( !file_exists( $pkgname ) ) {
