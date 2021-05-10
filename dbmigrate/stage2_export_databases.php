@@ -191,7 +191,7 @@ $extra_files = [];
 foreach ( $dbnames_used as $db => $val ) {
     $dumpfile = "export-$metadata_dbhost-$db.sql";
     $cmd = "mysqldump --defaults-file=my.cnf -u root --no-create-info --complete-insert";
-    $retval = explode( "\n", trim( run_cmd( "cd .. && php uslims_table_diffs.php --only-extras --rev $schema_rev $db" ) ) );
+    $retval = trim( run_cmd( "cd .. && php uslims_table_diffs.php --only-extras --rev $schema_rev $db" ) );
     if ( strlen( $retval ) ) {
         $ignore_tables = explode( "\n", $retval );
     } else {
