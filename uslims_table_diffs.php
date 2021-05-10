@@ -130,7 +130,7 @@ foreach ( $schema_tables as $table => $v ) {
 
 if ( $only_extras ) {
     if ( count( $in_db_not_schema ) ) {
-        echo implode( "\n", $in_db_not_schema ) . "\n";
+        echo implode( "\n", array_keys($in_db_not_schema ) ) . "\n";
     }
     exit;
 }
