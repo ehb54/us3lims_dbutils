@@ -6,7 +6,7 @@ $us3home         = "/home/us3";
 $us3sql          = "$us3home/lims/database/sql";
 
 # end of user defines
-
+require "utility.php";
 
 $self = __FILE__;
     
@@ -20,7 +20,7 @@ Options
 
 --help               : print this information and exit
 --only-extras        : only report extra tables present in dbname not present in schema_rev#.sql
-
+--rev #              : specify revision # for sql instead of autodetecting
 
 __EOD;
 
@@ -28,6 +28,7 @@ $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
 $only_extras = false;
+$user_rev    = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
@@ -38,7 +39,13 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
        case "--only-extras": {
             array_shift( $u_argv );
             $only_extras = true;
-            exit;
+            break;
+        }
+       case "--rev": {
+            array_shift( $u_argv );
+            $user_rev = true;
+            $rev = array_shift( $u_argv );
+            break;
         }
       default:
         error_exit( "\nUnknown option '$u_argv[0]'\n\n$notes" );
@@ -77,14 +84,15 @@ and edit with appropriate values
     exit(-1);
 }
             
-require "utility.php";
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
 # get rev #
 
-$hash = trim( run_cmd( "cd $us3sql && git log -1 --oneline .| cut -d' ' -f1" ) );
-$rev  = trim( run_cmd( "cd $us3sql && git log --oneline | sed -n '/$hash/,99999p' | wc -l" ) );
+if ( !$user_rev ) {
+    $hash = trim( run_cmd( "cd $us3sql && git log -1 --oneline .| cut -d' ' -f1" ) );
+    $rev  = trim( run_cmd( "cd $us3sql && git log --oneline | sed -n '/$hash/,99999p' | wc -l" ) );
+}
 
 $schema_file = "schema_rev$rev.sql";
 if ( !file_exists( $schema_file ) ) {
@@ -121,7 +129,9 @@ foreach ( $schema_tables as $table => $v ) {
 }
 
 if ( $only_extras ) {
-    echo implode( "\n", $in_db_not_schema ) . "\n";
+    if ( count( $in_db_not_schema ) ) {
+        echo implode( "\n", $in_db_not_schema ) . "\n";
+    }
     exit;
 }
 
