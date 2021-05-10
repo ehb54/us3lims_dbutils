@@ -145,10 +145,15 @@ $extra_files = [];
 foreach ( $dbnames_used as $db => $val ) {
     $dumpfile = "export-$use_dbhost-$db.sql";
     $cmd = "mysqldump --defaults-file=../my.cnf -u root --no-create-info --complete-insert";
-    $ignore_tables = explode( "\n", trim( run_cmd( "cd ../.. && php uslims_table_diffs.php --only-extras --rev $schema_rev $db" ) ) );
+    $retval = trim( run_cmd( "cd ../.. && php uslims_table_diffs.php --only-extras --rev $schema_rev $db" ) );
+    if ( strlen( $retval ) ) {
+        $ignore_tables = explode( "\n", $retval );
+    } else {
+        $ignore_tables = [];
+    }
     if ( count( $ignore_tables ) ) {
         $tables_ignored       = implode( "\n", $ignore_tables ) . "\n";
-        $tables_ignored_fname = "export-$metadata_dbhost-$db-tables-ignored.txt";
+        $tables_ignored_fname = "export-$use_dbhost-$db-tables-ignored.txt";
         file_put_contents( $tables_ignored_fname, $tables_ignored );
         $extra_files[] = $tables_ignored_fname;
         echo "WARNING : " . count( $ignore_tables ) . " tables ignored in $db : " . implode( ' ', $ignore_tables ) . "\n";
@@ -178,7 +183,7 @@ foreach ( $dbnames_used as $db => $val ) {
 
 # package
 
-$cmd = "tar cf ../$pkgname " . implode( ' ', $cdumped ) . ' ' . ' ' . implode( ' ', $reccounts ) . implode( ' ', $extra_files );
+$cmd = "tar cf ../$pkgname " . implode( ' ', $cdumped ) . ' ' . implode( ' ', $reccounts ) . ' ' . implode( ' ', $extra_files );
 echo "starting: building complete package $pkgname\n";
 run_cmd( $cmd );
 if ( !file_exists( "../$pkgname" ) ) {
