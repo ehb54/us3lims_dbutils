@@ -8,25 +8,30 @@ $compressext  = "xz";
 # $debug = 1;
 
 $notes = <<<__EOD
-usage: $self dbhost {config_file}
+usage: $self dbhost sql-git-rev# {config_file}
 
 does importable mysql dumps of every uslims3_% database found
 if config_file specified, it will be used instead of ../db config
 produces multiple compressed files and a tar file
 my.cnf must exist in the current directory
 
+
 __EOD;
 
-if ( count( $argv ) < 2 || count( $argv ) > 3 ) {
+$u_argv = $argv;
+array_shift( $u_argv );
+
+if ( count( $u_argv ) < 2 || count( $u_argv ) > 3 ) {
     echo $notes;
     exit;
 }
 
-$use_dbhost = $argv[ 1 ];
+$use_dbhost = array_shift( $u_argv );
+$schema_rev = array_shift( $u_argv );
 
 $config_file = "../db_config.php";
-if ( count( $argv ) == 3 ) {
-    $use_config_file = $argv[ 2 ];
+if ( count( $u_argv ) ) {
+    $use_config_file = array_shift( $u_argv );
 } else {
     $use_config_file = $config_file;
 }
@@ -43,6 +48,11 @@ and edit with appropriate values
     ;
     exit(-1);
 }
+            
+if ( count( $u_argv ) ) {
+    echo $notes;
+    exit;
+}    
             
 include "../utility.php";
 file_perms_must_be( $use_config_file );
@@ -62,6 +72,11 @@ file_perms_must_be( $myconf );
 $pkgname = "export-full-$use_dbhost.tar";
 if ( file_exists( $pkgname ) ) {
     error_exit( "You must move or remove '$pkgname'. Terminating\n" );
+}
+
+$schema_file = "../schema_rev$schema_rev.sql";
+if ( !file_exists( $schema_file ) ) {
+    error_exit( "$schema_file not found" );
 }
 
 $dbnames_used = array_fill_keys( existing_dbs(), 1 );
@@ -122,10 +137,26 @@ foreach ( $dbnames_used as $db => $val ) {
 }
 
 # get data
+echoline( '=' );
+echo "exporting data\n";
+echoline();
 
+$extra_files = [];
 foreach ( $dbnames_used as $db => $val ) {
     $dumpfile = "export-$use_dbhost-$db.sql";
-    $cmd = "mysqldump --defaults-file=../my.cnf -u root --no-create-info --complete-insert $db > $dumpfile";
+    $cmd = "mysqldump --defaults-file=../my.cnf -u root --no-create-info --complete-insert";
+    $ignore_tables = explode( "\n", trim( run_cmd( "cd ../.. && php uslims_table_diffs.php --only-extras --rev $schema_rev $db" ) ) );
+    if ( count( $ignore_tables ) ) {
+        $tables_ignored       = implode( "\n", $ignore_tables ) . "\n";
+        $tables_ignored_fname = "export-$metadata_dbhost-$db-tables-ignored.txt";
+        file_put_contents( $tables_ignored_fname, $tables_ignored );
+        $extra_files[] = $tables_ignored_fname;
+        echo "WARNING : " . count( $ignore_tables ) . " tables ignored in $db : " . implode( ' ', $ignore_tables ) . "\n";
+    }
+    foreach ( $ignore_tables as $ignore_table ) {
+        $cmd .= " --ignore-table=$db.$ignore_table";
+    }
+    $cmd .= " $db > $dumpfile";
     echo "starting: exporting $db to $dumpfile\n";
     run_cmd( $cmd );
     if ( !file_exists( $dumpfile ) ) {
@@ -147,7 +178,7 @@ foreach ( $dbnames_used as $db => $val ) {
 
 # package
 
-$cmd = "tar cf ../$pkgname " . implode( ' ', $cdumped ) . ' ' . ' ' . implode( ' ', $reccounts );
+$cmd = "tar cf ../$pkgname " . implode( ' ', $cdumped ) . ' ' . ' ' . implode( ' ', $reccounts ) . implode( ' ', $extra_files );
 echo "starting: building complete package $pkgname\n";
 run_cmd( $cmd );
 if ( !file_exists( "../$pkgname" ) ) {
