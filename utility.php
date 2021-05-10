@@ -52,7 +52,7 @@ function run_cmd( $cmd, $die_if_exit = true ) {
     }
     exec( "$cmd 2>&1", $res, $res_code );
     if ( $die_if_exit && $res_code ) {
-        error_exit( "shell command '$cmd' returned with exit status '$res_code'" );
+        error_exit( "shell command '$cmd' returned result:\n" . implode( "\n", $res ) . "\nand with exit status '$res_code'" );
     }
     return implode( "\n", $res ) . "\n";
 }

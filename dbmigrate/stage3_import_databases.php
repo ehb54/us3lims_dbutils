@@ -78,34 +78,41 @@ if ( !file_exists( $myconf ) ) {
 }
 file_perms_must_be( $myconf );
 
-$pkgname = "export-full-$export_dbhost.tar";
-if ( !file_exists( $pkgname ) ) {
-    error_exit( "Package file '$pkgname' not found. Terminating\n" );
-}
-
 $workdir = "import-$export_dbhost";
-if ( file_exists( $workdir ) ) {
-    error_exit( "$workdir exists, remove or rename" );
-}
-
-if ( !mkdir( $workdir ) ) {
-    error_exit( "could not make directory $workdir" );
-}
-
-if ( !chdir( $workdir ) ) {
-    error_exit( "could not change to directory $workdir" );
-}
-
+$pkgname = "export-full-$export_dbhost.tar";
 $db_handle = mysqli_connect( $dbhost, $user, $passwd, "" );
+
 if ( !$db_handle ) {
     write_logl( "could not connect to mysql: $dbhost, $user exiting\n" );
     exit(-1);
 }
 
-$cmd = "tar xf ../$pkgname";
-echo "starting: extracting $pkgname in $workdir\n";
-run_cmd( $cmd );
-echo "finished: extracting $pkgname in $workdir\n";
+if ( get_yn_answer( "extract tar?" ) ) {
+    if ( !file_exists( $pkgname ) ) {
+        error_exit( "Package file '$pkgname' not found. Terminating\n" );
+    }
+
+    if ( file_exists( $workdir ) ) {
+        error_exit( "$workdir exists, remove or rename" );
+    }
+
+    if ( !mkdir( $workdir ) ) {
+        error_exit( "could not make directory $workdir" );
+    }
+
+    if ( !chdir( $workdir ) ) {
+        error_exit( "could not change to directory $workdir" );
+    }
+
+    $cmd = "tar xf ../$pkgname";
+    echo "starting: extracting $pkgname in $workdir\n";
+    run_cmd( $cmd );
+    echo "finished: extracting $pkgname in $workdir\n";
+} else {
+    if ( !chdir( $workdir ) ) {
+        error_exit( "could not change to directory $workdir" );
+    }
+}
 
 $metadata_file = "metadata-$export_dbhost.xml";
 
