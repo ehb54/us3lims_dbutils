@@ -225,6 +225,7 @@ do {
 } while ( $answer != "y" && $answer != "n" );
 
 if ( $answer == "y" ) {
+    $create_php = get_yn_answer( "clone php and makeconfig" );
     foreach ( $dbnames_used as $db => $val ) {
         $sqldata = "export-$export_dbhost-$db.sql.$compressext";
         if ( !file_exists( $sqldata ) ) {
@@ -282,17 +283,28 @@ if ( $answer == "y" ) {
 
         $cmds = [
     "$uncompresswith $sqldata | mysql --defaults-file=$cwd/my.cnf -u root $db"
-    ,"git clone https://github.com/ehb54/us3lims_dbinst.git $htmlpath/$db"
-    ,"mkdir $htmlpath/$db/data"
-    ,"chmod g+w $htmlpath/$db/data"
-    ,"chown -R us3:us3 $htmlpath/$db"
-    ,"php /srv/www/htdocs/uslims3/uslims3_newlims/makeconfig.php $db $this_dbhost $this_ipaddr"
-        ];
+            ];
         foreach ( $cmds as $c ) {
             echo "running: $c\n";
             $res = run_cmd( $c );
             if ( trim( $res ) != '' ) {
                 echo "command returns: $res\n";
+            }
+        }
+        if ( $create_php ) {
+            $cmds = [
+    "git clone https://github.com/ehb54/us3lims_dbinst.git $htmlpath/$db"
+    ,"mkdir $htmlpath/$db/data"
+    ,"chmod g+w $htmlpath/$db/data"
+    ,"chown -R us3:us3 $htmlpath/$db"
+    ,"php /srv/www/htdocs/uslims3/uslims3_newlims/makeconfig.php $db $this_dbhost $this_ipaddr"
+                ];
+            foreach ( $cmds as $c ) {
+                echo "running: $c\n";
+                $res = run_cmd( $c );
+                if ( trim( $res ) != '' ) {
+                    echo "command returns: $res\n";
+                }
             }
         }
     }
