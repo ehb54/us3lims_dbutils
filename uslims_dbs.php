@@ -20,6 +20,7 @@ Options
 
 __EOD;
 
+require "utility.php";
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
@@ -66,7 +67,6 @@ and edit with appropriate values
     exit(-1);
 }
             
-require "utility.php";
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
