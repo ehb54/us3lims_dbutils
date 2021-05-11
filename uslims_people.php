@@ -16,7 +16,7 @@ Options
 
 --help               : print this information and exit
 
---add-missing        : add missing entries from dbinstance.people
+--admins             : list userlevel + advancelevel >= 4 in all dbs and exit
 --db dbname          : restrict results to dbname (can be specified multiple times)
 --only-deltas        : only display deltas
 --quiet              : minimal output    
@@ -29,21 +29,17 @@ $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
 $use_dbs             = [];
-$update              = false;
-$add_missing         = false;
+
+$admins              = false;
 $only_deltas         = false;
 $quiet               = false;
+$update              = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
         case "--help": {
             echo $notes;
             exit;
-        }
-        case "--add-missing": {
-            array_shift( $u_argv );
-            $add_missing = true;
-            break;
         }
         case "--db": {
             array_shift( $u_argv );
@@ -58,6 +54,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--update": {
             array_shift( $u_argv );
             $update = true;
+            break;
+        }
+        case "--admins": {
+            array_shift( $u_argv );
+            $admins = true;
             break;
         }
         case "--quiet": {
@@ -153,6 +154,54 @@ if ( !$quiet ) {
     }
     sort( $out );
     echo implode( '', $out );
+}
+
+# admin report
+if ( $admins ) {
+
+    $linelen = 136;
+    $header = 
+        sprintf(
+            "%-30s | %-20s | %-20s | %-30s | %-9s | %-12s\n"
+            ,'username'
+            ,'fname'
+            ,'lname'
+            ,'email'
+            ,'userlevel'
+            ,'advancelevel'
+        )
+        . echoline( '-', $linelen, false )
+        ;
+
+    foreach ( $use_dbs as $db ) {
+        $res = db_obj_result( $db_handle, "select * from $db.people", True );
+        $out         = [];
+        $found_users = [];
+        while( $row = mysqli_fetch_array($res) ) {
+            if ( $row[ 'userlevel' ] + $row[ 'advancelevel' ] >= 4 ) {
+                $out[] =
+                    sprintf(
+                        "%-30s | %-20s | %-20s | %-30s | %-9s | %-12s\n"
+                        ,$row['username']
+                        ,$row['fname']
+                        ,$row['lname']
+                        ,$row['email']
+                        ,$row['userlevel']
+                        ,$row['advancelevel']
+                    );
+            }
+        }
+
+        echoline( "=", $linelen );
+        echo "$db.people:\n";
+        echoline( '-', $linelen );
+        echo $header;
+        sort( $out );
+        echo implode( '', $out );
+    }
+
+    echoline( "=", $linelen );
+    exit;
 }
 
 # default behavior : check existance, password and email match
