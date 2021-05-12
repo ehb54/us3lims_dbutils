@@ -93,7 +93,7 @@ $known_repos =
          "use" => "gui"
          ,"own" => "usadmin:usadmin"
          ,"buildable" => true
-         ,"build_cmd" => "module swap ultrascan/gui-build && ./makeall.sh -j$coresparallel && ./makesomo.sh -j$coresparallel"
+         ,"build_cmd" => "module swap ultrascan/gui-build && ./makeall.sh -j__coresparallel__ && ./makesomo.sh -j__coresparallel__"
          ,"git" => [
              "url" => "https://github.com/ehb54/ultrascan3.git"
              ,"branch" => "master"
@@ -136,6 +136,7 @@ Options
 --update-branch      : update branch to default branch
 --update-pull use    : update repos by use, currently $known_use_list or all
 --update-pull-build  : recompile buildible repos. requires --update-pull also be specified
+--cores #            : use core count instead of discoverd count for --update-pull-build if supported
 
 --no-db              : do not use database even if found. primarily for testing
 
@@ -163,6 +164,14 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--clear-rev-cache": {
             array_shift( $u_argv );
             $clear_rev_cache = true;
+            break;
+        }
+        case "--cores": {
+            array_shift( $u_argv );
+            $coresparallel = array_shift( $u_argv );
+            if ( !is_numeric( $coresparallel ) || false !== strpos( $coresparallel, '.' ) || intval( $coresparallel ) < 1 ) {
+                error_exit( "--cores requires an integer value argument of at least 1, '$coresparallel' given" );
+            }
             break;
         }
         case "--diff-report": {
@@ -275,9 +284,7 @@ function get_rev( $url ) {
     run_cmd( "cd $tdir && git clone $url repo" );
     $hash = trim( run_cmd( "cd $tdir/repo && git log -1 --oneline .| cut -d' ' -f1" ) );
     $rev  = trim( run_cmd( "cd $tdir/repo && git log --oneline | sed -n '/$hash/,99999p' | wc -l" ) );
-    $debug = 1;
     run_cmd( "rm -fr $tdir/repo" );
-    $debug = 0;
     $rev_info->{ $url } = $rev;
     file_put_contents( $rev_cache, json_encode( $rev_info ) );
     
@@ -492,7 +499,8 @@ if ( $update_pull ) {
             echo "Updating: build in $k, this may take a while\n";
             echo "Using $coresparallel cores to build if supported\n";
             $logfile = newfile_file( 'build' . str_replace( '/', '_', $k ) . '.log', '' );
-            $cmd = "(cd $k && " . $known_repos[ $k ][ 'build_cmd' ] . ") >> $logfile";
+            $build_cmd = preg_replace( '/__coresparallel__/', $coresparallel, $known_repos[ $k ][ 'build_cmd' ] );
+            $cmd = "(cd $k && $build_cmd) >> $logfile";
             run_cmd( $cmd );
             echo "Updating: build finished\n";
             $notes .= "NOTE: check output for build of $k in $logfile\n";
