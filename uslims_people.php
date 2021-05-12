@@ -250,7 +250,7 @@ foreach ( $use_dbs as $db ) {
                         "select username from $db.people "
                         . "where email='" . $this_newus3_person[ 'email' ] . "'"
                         ;
-                    if ( $this_res = db_obj_result( $db_handle, $query ) ) {
+                    if ( $this_res = db_obj_result( $db_handle, $query, false, true ) ) {
                         $warning .=
                             sprintf(
                                 "WARNING: email not updated when trying to update $db.people for username '%s' : there already exists another username '%s' with the requested email '%s'\n"
@@ -305,9 +305,7 @@ foreach ( $use_dbs as $db ) {
                     . " where email='"   . $newus3_person[ 'email' ] . "'"
                     . " and ( username is null or  username!='" . $newus3_person[ 'username' ] . "' )"
                     ;
-                echo "check query: $query\n";
-                if ( $this_res = db_obj_result( $db_handle, $query ) ) {
-                    debug_json( "check query result", $this_res );
+                if ( $this_res = db_obj_result( $db_handle, $query, false, true ) ) {
                     if ( get_yn_answer(
                              sprintf(
                                  "When trying to update $db.people username '%s': there exists username '%s' with email '%s', update this record instead"

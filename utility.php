@@ -10,12 +10,15 @@ function write_logl( $msg, $this_level = 0 ) {
     }
 }
 
-function db_obj_result( $db_handle, $query, $expectedMultiResult = false ) {
+function db_obj_result( $db_handle, $query, $expectedMultiResult = false, $emptyok = false ) {
     $result = mysqli_query( $db_handle, $query );
 
     if ( !$result || ( is_object( $result ) && !$result->num_rows ) ) {
         if ( $result ) {
             # $result->free_result();
+        }
+        if ( $emptyok ) {
+            return false;
         }
         write_logl( "db query failed : $query\ndb query error: " . mysqli_error($db_handle) . "\n" );
         if ( $result ) {
