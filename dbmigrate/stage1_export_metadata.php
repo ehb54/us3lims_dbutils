@@ -149,6 +149,9 @@ if ( count( $dbnames_dupd ) ) {
     echoline();
 }
 
+sort( $use_dbs );
+ksort( $dbnames_used );
+
 if ( count( $use_dbs ) &&
     $use_dbs != array_keys( $dbnames_used ) ) {
     error_exit( 
