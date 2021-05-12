@@ -8,18 +8,62 @@ $compressext  = "xz";
 # $debug = 1;
 
 $notes = <<<__EOD
-usage: $self metadata_dbhost sql-git-rev# {config_file}
+
+usage: $self {options} metadata_dbhost sql-git-rev# {config_file}
 
 does importable mysql dumps of every database in the metadata file
 if config_file specified, it will be used instead of ../db config
 produces multiple compressed files and a tar file
 my.cnf must exist in the current directory
 
+Options
+
+--help                           : print this information and exit
+
+--rename from_db_name to_db_name : optionally rename specific databases, can be specified multiple times
+
 
 __EOD;
 
+require "../utility.php";
+
 $u_argv = $argv;
 array_shift( $u_argv );
+
+$db_rename = [];
+
+while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
+    switch( $u_argv[ 0 ] ) {
+        case "--help": {
+            echo $notes;
+            exit;
+        }
+        case "--rename": {
+            array_shift( $u_argv );
+            if ( count( $u_argv ) < 2 ) {
+               error_exit( "--rename requires two arguments" );
+            }
+            $from_name = array_shift( $u_argv );
+            $to_name   = array_shift( $u_argv );
+            if ( array_key_exists( $from_name, $db_rename ) ) {
+                error_exit( "ERROR: --rename $from_name $to_name duplicate from name specified" );
+            }
+            if ( in_array( $to_name, $db_rename ) ) {
+                error_exit( "ERROR: --rename $from_name $to_name duplicate to name specified" );
+            }
+            if ( !preg_match( '/^uslims3_/', $from_name ) || !preg_match( '/^uslims3_/', $to_name ) ) {
+                error_exit( "ERROR: --rename $from_name $to_name must both begin with uslims3_" );
+            }
+            if ( $from_name == $to_name ) {
+                error_exit( "ERROR: --rename $from_name $to_name are both the same name" );
+            }    
+            $db_rename[ $from_name ] = $to_name;
+            break;
+        }
+      default:
+        error_exit( "\nUnknown option '$u_argv[0]'\n\n$notes" );
+    }        
+}
 
 if ( count( $u_argv ) < 2 || count( $u_argv ) > 3 ) {
     echo $notes;
@@ -54,7 +98,6 @@ if ( count( $u_argv ) ) {
     exit;
 }    
             
-require "../utility.php";
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
@@ -62,6 +105,8 @@ $myconf = "my.cnf";
 if ( !file_exists( $myconf ) ) {
    error_exit( 
        "create a file '$myconf' in the current directory with the following contents:\n"
+       . "[client]\n"
+       . "password=YOUR_ROOT_DB_PASSWORD\n"
        . "[mysqldump]\n"
        . "password=YOUR_ROOT_DB_PASSWORD\n"
        . "max_allowed_packet=256M\n"
@@ -83,6 +128,45 @@ if ( !file_exists( $metadata_file ) ) {
 $metadata = simplexml_load_string( file_get_contents( $metadata_file ) );
 if ( isset( $debug ) && $debug ) {
     debug_json( "json of metadata", $metadata );
+}
+
+$extra_files = [];
+
+if ( count( $db_rename ) ) {
+    $metadata_rename = simplexml_load_string( file_get_contents( $metadata_file ) );
+    $metadata_rename_file = "metadata-$metadata_dbhost-renamed.xml";
+    $metadata_done   = [];
+    foreach ( $metadata_rename->row as $row ) {
+        $f_dbname = (string) $row->field[2];
+        echo "f_dbname = $f_dbname\n";
+        if ( array_key_exists( $f_dbname, $db_rename ) ) {
+            $t_dbname      = $db_rename[ $f_dbname ];
+            $t_inst        = preg_replace( '/^uslims3_/', '', $t_dbname );
+            $t_inst_full   = preg_replace( '/\(.*$/', '', $row->field[0] ) . " ($t_inst)";
+            $t_dbuser      = "${t_inst}_user";
+            $t_secure_user = "${t_inst}_sec";
+
+            $row->field[0] = $t_inst_full;
+            $row->field[1] = $t_inst;
+            $row->field[2] = $t_dbname;
+            $row->field[3] = $t_dbuser;
+            $row->field[5] = $t_secure_user;
+        }
+        $metadata_done[ $f_dbname ] = 1;
+    }
+    $notfound = [];
+    foreach ( $db_rename as $k => $v ) {
+        if ( !array_key_exists( $k, $metadata_done ) ) {
+            $notfound[] = $k;
+        }
+    }
+    if ( count( $notfound ) ) {
+        error_exit( "missing databases for specified --rename : " . implode( ' ', $notfound ) );
+    }
+    if ( !file_put_contents( $metadata_rename_file, $metadata_rename->asXML() ) ) {
+        error_exit( "could not create $metadata_rename_file" );
+    }
+    $extra_files[] = $metadata_rename_file;
 }
 
 $schema_file = "../schema_rev$schema_rev.sql";
@@ -126,7 +210,12 @@ echoline( '=' );
 $errors = "";
 
 foreach ( $dbnames_used as $db => $val ) {
-    $dumpfile = "export-$metadata_dbhost-$db.sql";
+    if ( array_key_exists( $db, $db_rename ) ) {
+        $to_db = $db_rename[ $db ];
+    } else {
+        $to_db = $db;
+    }
+    $dumpfile = "export-$metadata_dbhost-$to_db.sql";
     $cdumpfile = "$dumpfile.$compressext";
     if ( file_exists( $dumpfile ) ) {
         $errors .= "You must move or remove '$dumpfile'\n";
@@ -136,11 +225,16 @@ foreach ( $dbnames_used as $db => $val ) {
     }
 }
 
-# get config.php's
+# check config.php's
 $srvdir = "/srv/www/htdocs/uslims3";
 foreach ( $dbnames_used as $db => $val ) {
+    if ( array_key_exists( $db, $db_rename ) ) {
+        $to_db = $db_rename[ $db ];
+    } else {
+        $to_db = $db;
+    }
     $configphp = "$srvdir/$db/config.php";
-    $destphp   = "export-$metadata_dbhost-$db-config.php";
+    $destphp   = "export-$metadata_dbhost-$to_db-config.php";
     if ( !file_exists( $configphp ) ) {
         $errors = "file missing: $configphp\n";
     }
@@ -157,8 +251,13 @@ if ( strlen( $errors ) ) {
 
 $configphps = [];
 foreach ( $dbnames_used as $db => $val ) {
+    if ( array_key_exists( $db, $db_rename ) ) {
+        $to_db = $db_rename[ $db ];
+    } else {
+        $to_db = $db;
+    }
     $configphp = "$srvdir/$db/config.php";
-    $destphp   = "export-$metadata_dbhost-$db-config.php";
+    $destphp   = "export-$metadata_dbhost-$to_db-config.php";
     $cmd = "cp $configphp $destphp";
     run_cmd( $cmd );
     if ( !file_exists( $destphp ) ) {
@@ -171,7 +270,12 @@ foreach ( $dbnames_used as $db => $val ) {
 
 $reccounts = [];
 foreach ( $dbnames_used as $db => $val ) {
-    $reccount = "export-$metadata_dbhost-$db-record-counts.txt";
+    if ( array_key_exists( $db, $db_rename ) ) {
+        $to_db = $db_rename[ $db ];
+    } else {
+        $to_db = $db;
+    }
+    $reccount = "export-$metadata_dbhost-$to_db-record-counts.txt";
     echo "starting: table record counts from $db to $reccount\n";
     $cmd = "php ../table_record_counts.php $db ../db_config.php > $reccount";
     run_cmd( $cmd );
@@ -187,9 +291,13 @@ echoline( '=' );
 echo "exporting data\n";
 echoline();
 
-$extra_files = [];
 foreach ( $dbnames_used as $db => $val ) {
-    $dumpfile = "export-$metadata_dbhost-$db.sql";
+    if ( array_key_exists( $db, $db_rename ) ) {
+        $to_db = $db_rename[ $db ];
+    } else {
+        $to_db = $db;
+    }
+    $dumpfile = "export-$metadata_dbhost-$to_db.sql";
     $cmd = "mysqldump --defaults-file=my.cnf -u root --no-create-info --complete-insert";
     $retval = trim( run_cmd( "cd .. && php uslims_table_diffs.php --only-extras --rev $schema_rev $db" ) );
     if ( strlen( $retval ) ) {

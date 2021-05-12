@@ -87,6 +87,10 @@ if ( !$db_handle ) {
     exit(-1);
 }
 
+if ( !ini_get("mysqli.allow_local_infile") ) {
+    echo "WARNING: metadata will not be importable since you did not specify php -d mysqli.allow_local_infile=On on the command line\n";
+}
+
 if ( get_yn_answer( "extract tar?" ) ) {
     if ( !file_exists( $pkgname ) ) {
         error_exit( "Package file '$pkgname' not found. Terminating\n" );
@@ -120,6 +124,11 @@ if ( !file_exists( $metadata_file ) ) {
     error_exit( "ERROR: file $metadata_file does not exist!" );
 }
 
+$metadata_rename_file = "metadata-$export_dbhost-renamed.xml";
+if ( file_exists( $metadata_rename_file ) ) {
+    echo "NOTICE: using renamed dbnames from $metadata_rename_file\n";
+    $metadata_file = $metadata_rename_file;
+}
 
 $metadata = simplexml_load_string( file_get_contents( $metadata_file ) );
 if ( isset( $debug ) && $debug ) {
@@ -196,13 +205,12 @@ if ( strlen( $errors ) ) {
     error_exit( "ERRORS:\n" . $errors . "Terminating" );
 }
 
-do {
-    $answer = readline( "load metadata? (y or n) : " );
-} while ( $answer != "y" && $answer != "n" );
-
 # load metadata
 
-if ( $answer == "y" ) {
+if ( get_yn_answer( "load metadata?" ) ) {
+    if ( !ini_get("mysqli.allow_local_infile") ) {
+        error_exit( "metadata will not be importable since you did not specify php -d mysqli.allow_local_infile=On on the command line\n" );
+    }
     echo "loading metadata from $metadata_file\n";
     $query = "LOAD XML LOCAL INFILE '$metadata_file' INTO TABLE newus3.metadata";
     $res = mysqli_query( $db_handle, $query );
@@ -220,13 +228,12 @@ if ( $answer == "y" ) {
 
 # create dbinstances
 
-do {
-    $answer = readline( "create dbinstances? (y or n) : " );
-} while ( $answer != "y" && $answer != "n" );
-
-if ( $answer == "y" ) {
+if ( get_yn_answer( "create dbinstances" ) ) {
     $create_php = get_yn_answer( "clone php and makeconfig" );
     foreach ( $dbnames_used as $db => $val ) {
+        echoline( '=' );
+        echo "Importing $db\n";
+        echoline();
         $sqldata = "export-$export_dbhost-$db.sql.$compressext";
         if ( !file_exists( $sqldata ) ) {
             error_exit( "File '$sqldata' missing. Terminating" );
