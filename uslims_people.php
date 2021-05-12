@@ -19,8 +19,8 @@ Options
 --admins             : list userlevel + advancelevel >= 4 in all dbs and exit
 --db dbname          : restrict results to dbname (can be specified multiple times)
 --only-deltas        : only display deltas
---quiet              : minimal output    
---update             : update dbinstance.people fname, lname, email & passwords to match newus3.people
+--quiet              : minimal output 
+--update             : update dbinstance.people fname, lname to match newus3.people and populate if non-existent
 
 
 __EOD;
@@ -116,11 +116,11 @@ if ( !count( $use_dbs ) ) {
 open_db();
 
 $res = db_obj_result( $db_handle, "select * from newus3.people", True );
-$newus3_people     = [];
-$newus3_byusername = [];
+$newus3_people  = [];
+$newus3_byemail = [];
 while( $row = mysqli_fetch_array($res) ) {
     $newus3_people[] = $row;
-    $newus3_byusername[ $row[ 'username' ] ] = $row;
+    $newus3_byemail[ $row[ 'email' ] ] = $row;
 }
 
 # debug_json( "newus3peopld", $newus3_people );
@@ -175,8 +175,8 @@ if ( $admins ) {
 
     foreach ( $use_dbs as $db ) {
         $res = db_obj_result( $db_handle, "select * from $db.people", True );
-        $out         = [];
-        $found_users = [];
+        $out          = [];
+        $found_emails = [];
         while( $row = mysqli_fetch_array($res) ) {
             if ( $row[ 'userlevel' ] + $row[ 'advancelevel' ] >= 4 ) {
                 $out[] =
@@ -208,14 +208,14 @@ if ( $admins ) {
 $linelen = 120;
 $header = 
     sprintf(
-        "%-30s | %-20s %1s | %-20s %1s | %-30s %1s | %2s\n"
+        "%-30s %1s | %-20s %1s | %-20s %1s | %-30s | %2s\n"
         ,'username'
+        ,''
         ,'fname'
         ,''
         ,'lname'
         ,''
         ,'email'
-        ,''
         ,'pw'
     )
     . echoline( '-', $linelen, false )
@@ -224,21 +224,21 @@ $header =
 foreach ( $use_dbs as $db ) {
     $res = db_obj_result( $db_handle, "select * from $db.people", True );
     $out         = [];
-    $found_users = [];
+    $found_emails = [];
     while( $row = mysqli_fetch_array($res) ) {
-        if ( array_key_exists( $row[ 'username' ], $newus3_byusername ) ) {
-            $found_users[ $row['username'] ] = 1;
-            $this_newus3_person = $newus3_byusername[ $row[ 'username' ] ];
+        if ( array_key_exists( $row[ 'email' ], $newus3_byemail ) ) {
+            $found_emails[ $row['email'] ] = 1;
+            $this_newus3_person = $newus3_byemail[ $row[ 'email' ] ];
             $out[] =
                 sprintf(
-                    "%-30s | %-20s %1s | %-20s %1s | %-30s %1s | %2s\n"
+                    "%-30s %1s | %-20s %1s | %-20s %1s | %-30s | %2s\n"
                     ,$row['username']
+                    ,boolstr( $row[ 'username' ] != $this_newus3_person[ 'username' ], "Δ" )
                     ,$row['fname']
                     ,boolstr( $row[ 'fname' ] != $this_newus3_person[ 'fname' ], "Δ" )
                     ,$row['lname']
                     ,boolstr( $row[ 'lname' ] != $this_newus3_person[ 'lname' ], "Δ" )
                     ,$row['email']
-                    ,boolstr( $row[ 'email' ] != $this_newus3_person[ 'email' ], "Δ" )
                     ,boolstr( $row[ 'password' ] != $this_newus3_person[ 'password' ], "Δ" )
                 );
             if ( $update && strpos( end( $out ), "Δ" ) ) {
@@ -246,20 +246,20 @@ foreach ( $use_dbs as $db ) {
                     "update $db.people set "
                     . "fname='"           . $this_newus3_person[ 'fname' ]    . "'"
                     . ", lname='"         . $this_newus3_person[ 'lname' ]    . "'"
-                    . ", email='"         . $this_newus3_person[ 'email' ]    . "'"
+                    . ", username='"      . $this_newus3_person[ 'username' ] . "'"
                     . ", password='"      . $this_newus3_person[ 'password' ] . "'"
-                    . " where username='" . $this_newus3_person[ 'username' ] . "'"
+                    . " where email='"    . $this_newus3_person[ 'email' ]    . "'"
                     ;
                 db_obj_result( $db_handle, $query );
             }
         }
     }
     foreach ( $newus3_people as $newus3_person ) {
-        if ( !array_key_exists( $newus3_person[ 'username' ], $found_users ) ) {
+        if ( !array_key_exists( $newus3_person[ 'email' ], $found_emails ) ) {
             $out[] =
                 sprintf(
                     "%-30s | %-20s %1s | %-20s %1s | %-30s %1s | %2s\n"
-                    ,$newus3_person[ 'username' ]
+                    ,"missing"
                     ,"missing"
                     ,"Δ"
                     ,"missing"
