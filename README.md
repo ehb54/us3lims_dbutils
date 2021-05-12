@@ -49,9 +49,12 @@
      - lists the dbname, dbhost & limshost in the database where status==completed 
    - ```php stage1_export_metadata.php dbhost```
      - extracts metadata, then you can edit, for example to manually remove dbinstance or adjust metadata
+     - optionally extracts named databases (see --help for usage details)
    - ```php stage2_export_databases.php dbhost```
      - extracts databases, config.phps and packages with metadata in a tar file
+     - optionally renames databases (see --help for usage details)
    - copy the ```export-full-dbhost.tar``` file to the server to import
+     - can also be used in-place in combination with renaming
  - on the server to import 
    - ```php -d mysqli.allow_local_infile=On stage3_import_databases.php export_dbhost this_dbhost ipaddress_of_this_dbhost```
      - the -d mysqli is needed for importing metadata from the xml
