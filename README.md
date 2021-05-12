@@ -59,9 +59,9 @@
  - on the server to import 
    - ```php -d mysqli.allow_local_infile=On stage3_import_databases.php export_dbhost this_dbhost ipaddress_of_this_dbhost```
      - the -d mysqli is needed for importing metadata from the xml
+   - ```php uslims_people.php --update```
+     - to set the newus3.people and pws in the newly created databases
  - todo/notes
-   - might require setting ```set global max_allowed_packet=64*1024*1024;``` in mysql as root to avoid big record issues.
-     - or in my.cnf max_allowed_packet=64M or similar, but this requires a restart of the mysql server
    - admin people are not updated with new system specific data nor are people adjusted to our current admins
    - add validation of table_record_counts in package for comparison after import
    - make sure there is sufficient disk space on the drive where this repo is mounted to handle the .tar file
