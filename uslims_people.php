@@ -119,16 +119,20 @@ $res = db_obj_result( $db_handle, "select * from newus3.people", True );
 $newus3_people     = [];
 $newus3_byusername = [];
 while( $row = mysqli_fetch_array($res) ) {
-    $newus3_people[] = $row;
-    $newus3_byusername[ $row[ 'username' ] ] = $row;
+    if ( !strlen( $row[ 'username' ] ) ) {
+        $warnings .= "WARNING: empty username in newus3.people with email '" . $row['email'] . "' : this entry will be ignored\n";
+    } else {
+        $newus3_people[] = $row;
+        $newus3_byusername[ $row[ 'username' ] ] = $row;
+    }
 }
+flush_warnings();
 
 # debug_json( "newus3peopld", $newus3_people );
 
 # list usernames in newus3.people
 
 if ( !$quiet ) {
-    echo "newus3.people:\n";
     $linelen = 109;
     echoline( "=", $linelen );
     echo "newus3.people:\n";
