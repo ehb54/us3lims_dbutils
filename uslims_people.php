@@ -19,8 +19,8 @@ Options
 --admins             : list userlevel + advancelevel >= 4 in all dbs and exit
 --db dbname          : restrict results to dbname (can be specified multiple times)
 --only-deltas        : only display deltas
---quiet              : minimal output 
---update             : update dbinstance.people fname, lname to match newus3.people and populate if non-existent
+--quiet              : minimal output    
+--update             : update dbinstance.people fname, lname, email & passwords to match newus3.people
 
 
 __EOD;
@@ -116,11 +116,11 @@ if ( !count( $use_dbs ) ) {
 open_db();
 
 $res = db_obj_result( $db_handle, "select * from newus3.people", True );
-$newus3_people  = [];
-$newus3_byemail = [];
+$newus3_people     = [];
+$newus3_byusername = [];
 while( $row = mysqli_fetch_array($res) ) {
     $newus3_people[] = $row;
-    $newus3_byemail[ $row[ 'email' ] ] = $row;
+    $newus3_byusername[ $row[ 'username' ] ] = $row;
 }
 
 # debug_json( "newus3peopld", $newus3_people );
@@ -175,8 +175,8 @@ if ( $admins ) {
 
     foreach ( $use_dbs as $db ) {
         $res = db_obj_result( $db_handle, "select * from $db.people", True );
-        $out          = [];
-        $found_emails = [];
+        $out         = [];
+        $found_users = [];
         while( $row = mysqli_fetch_array($res) ) {
             if ( $row[ 'userlevel' ] + $row[ 'advancelevel' ] >= 4 ) {
                 $out[] =
@@ -208,14 +208,14 @@ if ( $admins ) {
 $linelen = 120;
 $header = 
     sprintf(
-        "%-30s %1s | %-20s %1s | %-20s %1s | %-30s | %2s\n"
+        "%-30s | %-20s %1s | %-20s %1s | %-30s %1s | %2s\n"
         ,'username'
-        ,''
         ,'fname'
         ,''
         ,'lname'
         ,''
         ,'email'
+        ,''
         ,'pw'
     )
     . echoline( '-', $linelen, false )
@@ -224,42 +224,71 @@ $header =
 foreach ( $use_dbs as $db ) {
     $res = db_obj_result( $db_handle, "select * from $db.people", True );
     $out         = [];
-    $found_emails = [];
+    $found_users = [];
     while( $row = mysqli_fetch_array($res) ) {
-        if ( array_key_exists( $row[ 'email' ], $newus3_byemail ) ) {
-            $found_emails[ $row['email'] ] = 1;
-            $this_newus3_person = $newus3_byemail[ $row[ 'email' ] ];
+        if ( array_key_exists( $row[ 'username' ], $newus3_byusername ) ) {
+            $found_users[ $row['username'] ] = 1;
+            $this_newus3_person = $newus3_byusername[ $row[ 'username' ] ];
+            $this_email_diff    = $row[ 'email' ] != $this_newus3_person[ 'email' ];
             $out[] =
                 sprintf(
-                    "%-30s %1s | %-20s %1s | %-20s %1s | %-30s | %2s\n"
+                    "%-30s | %-20s %1s | %-20s %1s | %-30s %1s | %2s\n"
                     ,$row['username']
-                    ,boolstr( $row[ 'username' ] != $this_newus3_person[ 'username' ], "Δ" )
                     ,$row['fname']
                     ,boolstr( $row[ 'fname' ] != $this_newus3_person[ 'fname' ], "Δ" )
                     ,$row['lname']
                     ,boolstr( $row[ 'lname' ] != $this_newus3_person[ 'lname' ], "Δ" )
                     ,$row['email']
+                    ,boolstr( $this_email_diff, "Δ" )
                     ,boolstr( $row[ 'password' ] != $this_newus3_person[ 'password' ], "Δ" )
                 );
             if ( $update && strpos( end( $out ), "Δ" ) ) {
-                $query =
-                    "update $db.people set "
-                    . "fname='"           . $this_newus3_person[ 'fname' ]    . "'"
-                    . ", lname='"         . $this_newus3_person[ 'lname' ]    . "'"
-                    . ", username='"      . $this_newus3_person[ 'username' ] . "'"
-                    . ", password='"      . $this_newus3_person[ 'password' ] . "'"
-                    . " where email='"    . $this_newus3_person[ 'email' ]    . "'"
-                    ;
+                $no_dup_email = true;
+                if ( $this_email_diff ) {
+                    # extra query to check if we need an update instead
+                    $query =
+                        "select username from $db.people "
+                        . "where email='" . $this_newus3_person[ 'email' ] . "'"
+                        ;
+                    if ( $this_res = db_obj_result( $db_handle, $query ) ) {
+                        $warning .=
+                            sprintf(
+                                "WARNING: email not updated when trying to update $db.people for username '%s' : there already exists another username '%s' with the requested email '%s'\n"
+                                ,$row['username']
+                                ,$this_res->{'username'}
+                                ,$this_newus3_person[ 'email' ]
+                            );
+                        $no_dup_email = false;
+                    }
+                }
+                if ( $no_dup_email ) {
+                    $query =
+                        "update $db.people set "
+                        . "fname='"           . $this_newus3_person[ 'fname' ]    . "'"
+                        . ", lname='"         . $this_newus3_person[ 'lname' ]    . "'"
+                        . ", email='"         . $this_newus3_person[ 'email' ]    . "'"
+                        . ", password='"      . $this_newus3_person[ 'password' ] . "'"
+                        . " where username='" . $this_newus3_person[ 'username' ] . "'"
+                        ;
+                } else {
+                    $query =
+                        "update $db.people set "
+                        . "fname='"           . $this_newus3_person[ 'fname' ]    . "'"
+                        . ", lname='"         . $this_newus3_person[ 'lname' ]    . "'"
+                        . ", password='"      . $this_newus3_person[ 'password' ] . "'"
+                        . " where username='" . $this_newus3_person[ 'username' ] . "'"
+                        ;
+                }
                 db_obj_result( $db_handle, $query );
             }
         }
     }
     foreach ( $newus3_people as $newus3_person ) {
-        if ( !array_key_exists( $newus3_person[ 'email' ], $found_emails ) ) {
+        if ( !array_key_exists( $newus3_person[ 'username' ], $found_users ) ) {
             $out[] =
                 sprintf(
                     "%-30s | %-20s %1s | %-20s %1s | %-30s %1s | %2s\n"
-                    ,"missing"
+                    ,$newus3_person[ 'username' ]
                     ,"missing"
                     ,"Δ"
                     ,"missing"
@@ -270,26 +299,54 @@ foreach ( $use_dbs as $db ) {
                 );
 
             if ( $update ) {
+                # check if email already exists in another record
                 $query =
-                    "insert into $db.people set "
-                    . "personGUID='"     . uuid() . "'"
-                    . ", username='"     . $newus3_person[ 'username' ]     . "'"
-                    . ", lname='"        . $newus3_person[ 'lname' ]        . "'"
-                    . ", fname='"        . $newus3_person[ 'fname' ]        . "'"
-                    . ", organization='" . $newus3_person[ 'organization' ] . "'"
-                    . ", address='"      . $newus3_person[ 'address' ]      . "'"
-                    . ", city='"         . $newus3_person[ 'city' ]         . "'"
-                    . ", state='"        . $newus3_person[ 'state' ]        . "'"
-                    . ", zip='"          . $newus3_person[ 'zip' ]          . "'"
-                    . ", country='"      . $newus3_person[ 'country' ]      . "'"
-                    . ", phone='"        . $newus3_person[ 'phone' ]        . "'"
-                    . ", email='"        . $newus3_person[ 'email' ]        . "'"
-                    . ", password='"     . $newus3_person[ 'password' ]     . "'"
-                    . ", userlevel="     . $newus3_person[ 'userlevel' ]
-                    . ", activated="     . $newus3_person[ 'activated' ]
-                    . ", signup=now()"
+                    "select username from $db.people"
+                    . " where email='"   . $newus3_person[ 'email' ] . "'"
+                    . " and ( username is null or  username!='" . $newus3_person[ 'username' ] . "' )"
                     ;
-                db_obj_result( $db_handle, $query );
+                echo "check query: $query\n";
+                if ( $this_res = db_obj_result( $db_handle, $query ) ) {
+                    debug_json( "check query result", $this_res );
+                    if ( get_yn_answer(
+                             sprintf(
+                                 "When trying to update $db.people username '%s': there exists username '%s' with email '%s', update this record instead"
+                                 ,$newus3_person['username']
+                                 ,$this_res->{'username'}
+                                 ,$newus3_person[ 'email' ]
+                             ) ) ) {
+                        $query =
+                            "update $db.people set "
+                            . "username='"        . $newus3_person[ 'username' ] . "'"
+                            . ", fname='"         . $newus3_person[ 'fname' ]    . "'"
+                            . ", lname='"         . $newus3_person[ 'lname' ]    . "'"
+                            . ", password='"      . $newus3_person[ 'password' ] . "'"
+                            . " where email='"    . $newus3_person[ 'email' ]    . "'"
+                            ;
+                        db_obj_result( $db_handle, $query );
+                    }
+                } else {
+                    $query =
+                        "insert into $db.people set "
+                        . "personGUID='"     . uuid() . "'"
+                        . ", username='"     . $newus3_person[ 'username' ]     . "'"
+                        . ", lname='"        . $newus3_person[ 'lname' ]        . "'"
+                        . ", fname='"        . $newus3_person[ 'fname' ]        . "'"
+                        . ", organization='" . $newus3_person[ 'organization' ] . "'"
+                        . ", address='"      . $newus3_person[ 'address' ]      . "'"
+                        . ", city='"         . $newus3_person[ 'city' ]         . "'"
+                        . ", state='"        . $newus3_person[ 'state' ]        . "'"
+                        . ", zip='"          . $newus3_person[ 'zip' ]          . "'"
+                        . ", country='"      . $newus3_person[ 'country' ]      . "'"
+                        . ", phone='"        . $newus3_person[ 'phone' ]        . "'"
+                        . ", email='"        . $newus3_person[ 'email' ]        . "'"
+                        . ", password='"     . $newus3_person[ 'password' ]     . "'"
+                        . ", userlevel="     . $newus3_person[ 'userlevel' ]
+                        . ", activated="     . $newus3_person[ 'activated' ]
+                        . ", signup=now()"
+                        ;
+                    db_obj_result( $db_handle, $query );
+                }
             }
         }
     }
@@ -309,6 +366,7 @@ foreach ( $use_dbs as $db ) {
             echo "$db.people: all ok\n";
         }
     }
+    flush_warnings();
 }
 
 if ( !$quiet ) {
