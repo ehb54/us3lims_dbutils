@@ -16,6 +16,7 @@
    - creates diff-able schema dumps with stored procedures, events and triggers for each dbinstance found in the database
  - uslims_db_variables.php
    - lists global mysqld variables of interest
+   - also lists status of Threads_connected & Max_used_connections
  - uslims_dbs.php
    - lists all dbs with names like 'uslims3_%' except 'uslims3_global'
    - optionally lists times of last update - both from database and the innodb files themselves (see --help for details) 
