@@ -36,9 +36,10 @@
  - uslims_git_info.php
    - for all expected and discovered repos, reports path, url, branch, use, rev#, rev date, local changes, and deltas
    - also allows updating to expected branches, git pull, and build (for gui & mpi)
+   - optional "diff report" (see --help for details)
  - uslims_people.php
    - lists and optionally updates dbinsts.people from newus3.people
-   - optional administrator report (lists people with userlevel+advancelevel >= 4 )
+   - optional administrator report (lists people with userlevel+advancelevel >= 3 )
  - demo_data.sql.xz
    - contains demo1_veloc1 2.A.259 demo data which can be imported into a *fresh* dbinst
      - *fresh* since it may clobber existing data
