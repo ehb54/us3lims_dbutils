@@ -18,7 +18,7 @@
    - lists global mysqld variables of interest
  - uslims_dbs.php
    - lists all dbs with names like 'uslims3_%' except 'uslims3_global'
-   - optionally lists times of last update - both from databbase and the innodb files themselves (see --help for details) 
+   - optionally lists times of last update - both from database and the innodb files themselves (see --help for details) 
  - uslims_domain_info.php
    - examines and validates domain name information
      1. checks os hostname
