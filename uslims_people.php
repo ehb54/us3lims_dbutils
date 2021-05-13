@@ -16,7 +16,7 @@ Options
 
 --help               : print this information and exit
 
---admins             : list userlevel + advancelevel >= 4 in all dbs and exit
+--admins             : list userlevel + advancelevel >= 3 in all dbs and exit
 --db dbname          : restrict results to dbname (can be specified multiple times)
 --only-deltas        : only display deltas
 --quiet              : minimal output    
@@ -163,10 +163,10 @@ if ( !$quiet ) {
 # admin report
 if ( $admins ) {
 
-    $linelen = 136;
+    $linelen = 146;
     $header = 
         sprintf(
-            "%-30s | %-20s | %-20s | %-30s | %-9s | %-12s\n"
+            "%-30s | %-20s | %-20s | %-40s | %-9s | %-12s\n"
             ,'username'
             ,'fname'
             ,'lname'
@@ -182,10 +182,10 @@ if ( $admins ) {
         $out         = [];
         $found_users = [];
         while( $row = mysqli_fetch_array($res) ) {
-            if ( $row[ 'userlevel' ] + $row[ 'advancelevel' ] >= 4 ) {
+            if ( $row[ 'userlevel' ] + $row[ 'advancelevel' ] >= 3 ) {
                 $out[] =
                     sprintf(
-                        "%-30s | %-20s | %-20s | %-30s | %-9s | %-12s\n"
+                        "%-30s | %-20s | %-20s | %-40s | %-9s | %-12s\n"
                         ,$row['username']
                         ,$row['fname']
                         ,$row['lname']
