@@ -122,6 +122,19 @@ if ( !count( $use_dbs ) ) {
 
 open_db();
 
+# email report
+if ( $emails ) {
+    $emails_found = [];
+    foreach ( $use_dbs as $db ) {
+        $res = db_obj_result( $db_handle, "select email from $db.people", True );
+        while( $row = mysqli_fetch_array($res) ) {
+            $emails_found[ $row['email'] ] = 1;
+        }
+    }
+    echo implode( "\n", array_keys( $emails_found ) ) . "\n";
+    exit;
+}
+
 $res = db_obj_result( $db_handle, "select * from newus3.people", True );
 $newus3_people     = [];
 $newus3_byusername = [];
@@ -135,18 +148,6 @@ while( $row = mysqli_fetch_array($res) ) {
 }
 flush_warnings();
 
-# report emails
-if ( $emails ) {
-    $emails_found = [];
-    foreach ( $use_dbs as $db ) {
-        $res = db_obj_result( $db_handle, "select email from $db.people", True );
-        while( $row = mysqli_fetch_array($res) ) {
-            $emails_found[ $row['email'] ] = 1;
-        }
-    }
-    echo implode( "\n", array_keys( $emails_found ) ) . "\n";
-    exit;
-}
 
 
 # debug_json( "newus3peopld", $newus3_people );
