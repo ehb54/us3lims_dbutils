@@ -17,6 +17,7 @@ Options
 --help               : print this information and exit
 
 --admins             : list userlevel + advancelevel >= 3 in all dbs and exit
+--emails             : output all email addresses from every db.people and exit
 --db dbname          : restrict results to dbname (can be specified multiple times)
 --only-deltas        : only display deltas
 --quiet              : minimal output    
@@ -34,6 +35,7 @@ $admins              = false;
 $only_deltas         = false;
 $quiet               = false;
 $update              = false;
+$emails              = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
@@ -49,6 +51,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--only-deltas": {
             array_shift( $u_argv );
             $only_deltas = true;
+            break;
+        }
+        case "--emails": {
+            array_shift( $u_argv );
+            $emails = true;
             break;
         }
         case "--update": {
@@ -127,6 +134,20 @@ while( $row = mysqli_fetch_array($res) ) {
     }
 }
 flush_warnings();
+
+# report emails
+if ( $emails ) {
+    $emails_found = [];
+    foreach ( $use_dbs as $db ) {
+        $res = db_obj_result( $db_handle, "select email from $db.people", True );
+        while( $row = mysqli_fetch_array($res) ) {
+            $emails_found[ $row['email'] ] = 1;
+        }
+    }
+    echo implode( "\n", array_keys( $emails_found ) ) . "\n";
+    exit;
+}
+
 
 # debug_json( "newus3peopld", $newus3_people );
 
