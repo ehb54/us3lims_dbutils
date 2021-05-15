@@ -131,6 +131,7 @@ if ( $emails ) {
             $emails_found[ $row['email'] ] = 1;
         }
     }
+    ksort( $emails_found );
     echo implode( "\n", array_keys( $emails_found ) ) . "\n";
     exit;
 }
