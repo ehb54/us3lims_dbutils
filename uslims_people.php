@@ -128,7 +128,7 @@ if ( $emails ) {
     foreach ( $use_dbs as $db ) {
         $res = db_obj_result( $db_handle, "select email from $db.people", True );
         while( $row = mysqli_fetch_array($res) ) {
-            $emails_found[ $row['email'] ] = 1;
+            $emails_found[ strtolower( $row['email'] ) ] = 1;
         }
     }
     ksort( $emails_found );
