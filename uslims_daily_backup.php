@@ -87,7 +87,7 @@ if ( !file_exists( $schema_file ) ) {
 
 $dbnames_used = array_fill_keys( existing_dbs(), 1 );
 
-$date = trim( run_cmd( 'date +"%Y%m%d"' ) );
+$date = trim( run_cmd( 'date +"%y%m%d"' ) );
 
 echoline( '=' );
 echo "found " . count( $dbnames_used ) . " unique dbname records as follows\n";
