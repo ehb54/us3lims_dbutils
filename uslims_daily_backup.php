@@ -26,7 +26,7 @@ if ( count( $u_argv ) < 0 || count( $u_argv ) > 1 ) {
     exit;
 }
 
-$config_file = "db_config.php";
+$config_file = "$hdir/db_config.php";
 if ( count( $u_argv ) ) {
     $use_config_file = array_shift( $u_argv );
 } else {
@@ -69,7 +69,7 @@ if ( strlen( $errors ) ) {
     error_exit( $errors );
 }
 
-$myconf = "my.cnf";
+$myconf = "$hdir/my.cnf";
 if ( !file_exists( $myconf ) ) {
    error_exit( 
        "create a file '$myconf' in the current directory with the following contents:\n"
@@ -80,7 +80,7 @@ if ( !file_exists( $myconf ) ) {
 }
 file_perms_must_be( $myconf );
 
-$schema_file = "schema_rev$backup_sql_rev.sql";
+$schema_file = "$hdir/schema_rev$backup_sql_rev.sql";
 if ( !file_exists( $schema_file ) ) {
     error_exit( "$schema_file not found" );
 }
