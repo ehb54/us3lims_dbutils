@@ -1,5 +1,9 @@
 <?php
 
-$dbhost        = "SET_HOST";
-$user          = "SET_USER";
-$passwd        = "SET_PASSWORD";
+$dbhost         = "SET_HOST";
+$user           = "SET_USER";
+$passwd         = "SET_PASSWORD";
+
+$backup_dir     = "/srv/data/backups";   # directory for daily backups
+$backup_count   = 7;                     # number of backups to keep per uslims3_ database
+$backup_sql_rev = 215;                   # table schema comparison for extra tables
