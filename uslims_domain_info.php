@@ -7,11 +7,13 @@ $listenconfig   = "$us3bin/listen-config.php";
 $wwwpath        = "/srv/www/htdocs";
 $srvconfig      = "$wwwpath/uslims3/config.php";
 $httpdconfigdir = "/etc/httpd/conf.d";
+
 $ssl_self_dir   = "/etc/httpd/ssl";
 $ssl_self_key   = "self-priv.key";
 $ssl_self_cert  = "self-cert.key";
 $ssl_self_csr   = "self-csr.key";
-
+$www_uslims     = "/srv/www/htdocs/uslims3";
+    
 # end user defines
 
 # developer defines
@@ -26,26 +28,58 @@ $cwd  = getcwd();
 require "utility.php";
     
 $notes = <<<__EOD
-usage: $self {--change old_domain_name new_domain_name} {remote_config_file}
+usage: $self {options} {remote_config_file}
 
-list all domain name info
+list and change domain name info
+
+Options
+
+--help                           : print this information and exit
+
+--change old_domain new_domain   : display last update time information
+--redirect domain                : setup redirects for these domains (can be specified multiple times)
+
 __EOD;
 
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
+
 $new_domain_processing = false;
-if ( count( $u_argv ) && $new_domain_processing = $u_argv[0] == '--change' ) {
-    array_shift( $u_argv );
-    if ( count( $u_argv ) < 2 ) {
-        echo "$self: --change keyword requires two domain names\n";
-        exit(-1);
-    }
-    $old_domain = array_shift( $u_argv );
-    $new_domain = array_shift( $u_argv );
-    if ( $old_domain == $new_domain ) {
-        echo "$self: --change old domain can not be the same as new domain\n";
-        exit(-1);
-    }
+$redirects             = [];
+
+while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
+    switch( $u_argv[ 0 ] ) {
+        case "--help": {
+            echo $notes;
+            exit;
+        }
+        case "--change": {
+            array_shift( $u_argv );
+            if ( count( $u_argv ) < 2 ) {
+                echo "$self: --change option requires two domain names\n";
+                exit(-1);
+            }
+            $new_domain_processing = true;
+            $old_domain = array_shift( $u_argv );
+            $new_domain = array_shift( $u_argv );
+            if ( $old_domain == $new_domain ) {
+                echo "$self: --change old domain can not be the same as new domain\n";
+                exit(-1);
+            }
+            break;
+        }
+        case "--redirect": {
+            array_shift( $u_argv );
+            if ( count( $u_argv ) < 1 ) {
+                echo "$self: --redirect option requires a domain name\n";
+                exit(-1);
+            }
+            $redirects[] = array_shift( $u_argv );
+            break;
+        }
+      default:
+        error_exit( "\nUnknown option '$u_argv[0]'\n\n$notes" );
+    }        
 }
 
 if ( count( $u_argv ) > 1 ) {
@@ -75,6 +109,17 @@ and edit with appropriate values
             
 file_perms_must_be( $use_config_file );
 require $use_config_file;
+
+$errors = "";
+if ( !isset( $server_admin ) ) {
+    $errors .= "\$server_admin must be set in $use_config_file\n";
+}
+if ( !isset( $self_signed_certs ) ) {
+    $errors .= "\$self_signed_certs must be set in $use_config_file\n";
+}
+if ( strlen( $errors ) ) {
+    error_exit( $errors );
+}
 
 $db_handle = mysqli_connect( $dbhost, $user, $passwd, "" );
 if ( !$db_handle ) {
@@ -366,7 +411,9 @@ if ( get_yn_answer( "Update php variables?" ) ) {
 
 }
 
-$sudocmds = '';
+$sudocmdscp   = '';
+$sudocmds     = '';
+$sudocmdspost = '';
 
 if ( get_yn_answer( "Update httpd config?" ) ) {
     foreach ( [ "http", "https" ] as $v ) {
@@ -375,38 +422,94 @@ if ( get_yn_answer( "Update httpd config?" ) ) {
         $httpcf        = "$httpdconfigdir/$httpcfbase";
         $httpcfnew     = "$httpdconfigdir/$httpcfbasenew";
         echo "Checking '$httpcf'\n";
-        if ( !file_exists( $httpcf ) ) {
-            echo "WARNING: '$httpcf' does not exist, skipping\n";
+        if ( file_exists( $httpcf ) ) {
+            $sudocmdscp .= "rm $httpcf\n";
+        }
+        if ( $v == "http" ) {
+            $contents = <<<__EOD
+<VirtualHost *:80>
+  ServerName "$new_domain"
+  Redirect "/" https://$new_domain/
+</VirtualHost>
+
+__EOD;
         } else {
-            $org_contents = $contents = file_get_contents( $httpcf );
-            if ( $contents !== false && strlen( $contents ) ) {
-                $contents = preg_replace( "/$old_domain/m", "$new_domain", $contents );
-                $contents = preg_replace( '/^\s*(SSL|Include)/m', "# \${1}", $contents );
-                if ( $org_contents == $contents ) {
-                    echo "NOTICE: $httpcf already contains variables set to '$new_domain', not updated\n";
-                } else {
-                    $newfile = newfile_file( $httpcfbasenew, $contents );
-                    $sudocmds .= "cp $cwd/$newfile $httpdconfigdir && rm $httpcf\n";
+            $contents = <<<__EOD
+<IfModule mod_ssl.c>
+  <VirtualHost *:443>
+    ServerAdmin $server_admin
+    DocumentRoot $www_uslims
+    ServerName "$new_domain"
+    ErrorLog "/var/log/httpd/$new_domain-error.log"
+    CustomLog "/var/log/httpd/$new_domain-access.log" combined
+    SSLEngine on                
+
+__EOD;
+            if ( $self_signed_certs ) {
+                $contents = <<<__EOD
+SSLCertificateFile $ssl_self_dir/$ssl_self_cert
+SSLCertificateKeyFile $ssl_self_dir/$ssl_self_key
+
+__EOD;
+                $sudocmds .=
+                    "openssl genrsa -out $ssl_self_dir/$ssl_self_key 2048\n"
+                    . "openssl req -new -key $ssl_self_dir/$ssl_self_key -out $ssl_self_dir/$ssl_self_csr\n"
+                    . "openssl x509 -in $ssl_self_dir/$ssl_self_csr -out $ssl_self_dir/$ssl_self_cert -req -signkey $ssl_self_dir/$ssl_self_key -days 3650\n"
+                    ;
+            } else {
+                $sudocmds .=
+                    "# dnf on next line might be already done:\ndnf install certbot python3-certbot-apache\n"
+                    . "certbot --apache -d $new_domain\n"
+                    ;
+            }
+            $contents .= <<<__EOD
+  </VirtualHost>
+</IfModule>
+
+__EOD;
+        }
+        $newfile = newfile_file( $httpcfbasenew, $contents );
+        $sudocmdscp .= "cp $cwd/$newfile $httpdconfigdir\n";
+        if ( $v == "http" && !$self_signed_certs ) {
+            $sudocmdspost .= "cp $cwd/$newfile $httpdconfigdir\n";
+        }
+    }
+    
+    if ( count( $redirects ) ) {
+        foreach ( $redirects as $v ) {
+            {
+                $httpcfbasenew = "http-$v.conf";
+                $contents = <<<__EOD
+<VirtualHost *:80>
+   ServerName "$v"
+   Redirect "/" https://$new_domain/
+</VirtualHost>
+
+__EOD;
+                $newfile = newfile_file( $httpcfbasenew, $contents );
+                $sudocmdscp     .= "cp $cwd/$newfile $httpdconfigdir\n";
+                if ( !$self_signed_certs ) {
+                    $sudocmdspost .= "cp $cwd/$newfile $httpdconfigdir\n";
                 }
-                if ( $v == 'https' ) {
-                    if ( preg_match( '/ssl\/self-/m', $contents ) ) {
-                        $sudocmds .=
-                            "openssl genrsa -out $ssl_self_dir/$ssl_self_key 2048\n"
-                            . "openssl req -new -key $ssl_self_dir/$ssl_self_key -out $ssl_self_dir/$ssl_self_csr\n"
-                            . "openssl x509 -in $ssl_self_dir/$ssl_self_csr -out $ssl_self_dir/$ssl_self_cert -req -signkey $ssl_self_dir/$ssl_self_key -days 3650\n"
-                            ;
-                    } else {
-                        $sudocmds .=
-                            "# might be already done:\ndnf install certbot python3-certbot-apache\n"
-                            . "certbot --apache -d $new_domain\n"
-                            ;
-                    }
-                } 
+            }
+            {
+                $httpscfbasenew = "https-$v.conf";
+                $contents = <<<__EOD
+<IfModule mod_ssl.c>
+  <VirtualHost *:443>
+    ServerName "$v"
+    Redirect "/" https://$new_domain/
+  </VirtualHost>
+</IfModule>
+
+__EOD;
+                $newfile = newfile_file( $httpscfbasenew, $contents );
+                $sudocmdscp .= "cp $cwd/$newfile $httpdconfigdir\n";
+                $sudocmds .= "certbot --apache -d $v\n";
             }
         }
     }
 }
-
 
 if ( get_yn_answer( "Restart uslims services?" ) ) {
     echoline();
@@ -415,10 +518,19 @@ if ( get_yn_answer( "Restart uslims services?" ) ) {
 
 echoline( '=' );
 $sudocmds = trim( $sudocmds );
-echo "to complete domain conversion run under sudo:
+echo "to complete domain conversion run under sudo (in this order!):\n";
+echoline( '-' );
+echo "unalias cp
+unalias rm
+
 hostnamectl set-hostname $new_domain
+
+$sudocmdscp
 $sudocmds
+
+$sudocmdspost
 service httpd restart
 ";
+echoline( '-' );
 
 
