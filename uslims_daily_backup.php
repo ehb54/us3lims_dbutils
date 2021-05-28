@@ -56,14 +56,23 @@ file_perms_must_be( $use_config_file );
 require $use_config_file;
 
 $errors = "";
+if ( !isset( $backup_logs ) ) {
+    $errors .= "\$backup_logs is not set in $use_config_file\n";
+}
 if ( !isset( $backup_dir ) ) {
     $errors .= "\$backup_dir is not set in $use_config_file\n";
 }
 if ( !isset( $backup_count ) ) {
     $errors .= "\$backup_count is not set in $use_config_file\n";
 }
-if ( !isset( $backup_sql_rev) ) {
-    $errors .= "\$backup_sql_rev is not set in $use_config_file\n";
+if ( !isset( $backup_host ) ) {
+    $errors .= "\$backup_host is not set in $use_config_file\n";
+}
+if ( !isset( $backup_rsync) ) {
+    $errors .= "\$backup_rsync is not set in $use_config_file\n";
+}
+if ( !isset( $backup_user) ) {
+    $errors .= "\$backup_user is not set in $use_config_file\n";
 }
 if ( strlen( $errors ) ) {
     error_exit( $errors );
@@ -80,9 +89,8 @@ if ( !file_exists( $myconf ) ) {
 }
 file_perms_must_be( $myconf );
 
-$schema_file = "$hdir/schema_rev$backup_sql_rev.sql";
-if ( !file_exists( $schema_file ) ) {
-    error_exit( "$schema_file not found" );
+if ( !is_admin( false ) ) {
+   error_exit( "This program must be run by root or a sudo enabled user" );
 }
 
 $dbnames_used = array_fill_keys( existing_dbs(), 1 );
@@ -107,7 +115,10 @@ if ( !chdir( $backup_dir ) ) {
    error_exit( "Could not change to directory $newfile_dir" );
 }
 
-# first check if any expected outputs exist!
+$logf = "$backup_logs/$backup_host-$date.log";
+
+run_cmd( "echo $backup_host Mysqldump Error Log : `date` > $logf" );
+
 $errors = "";
 
 # get data
@@ -118,30 +129,16 @@ echoline();
 $extra_files = [];
 foreach ( $dbnames_used as $db => $val ) {
     $dumpfile = "$db-dump-$date.sql";
-    $cmd = "mysqldump --defaults-file=$hdir/my.cnf -u root --no-create-info --complete-insert";
-    $retval = trim( run_cmd( "cd $hdir && php uslims_table_diffs.php --only-extras --rev $backup_sql_rev $db" ) );
-    if ( strlen( $retval ) ) {
-        $ignore_tables = explode( "\n", $retval );
-    } else {
-        $ignore_tables = [];
-    }
-    if ( count( $ignore_tables ) ) {
-        $tables_ignored       = implode( "\n", $ignore_tables ) . "\n";
-        $tables_ignored_fname = "export-$use_dbhost-$db-tables-ignored.txt";
-#        file_put_contents( $tables_ignored_fname, $tables_ignored );
-#        $extra_files[] = $tables_ignored_fname;
-        echo "WARNING : " . count( $ignore_tables ) . " tables ignored in $db : " . implode( ' ', $ignore_tables ) . "\n";
-    }
-    foreach ( $ignore_tables as $ignore_table ) {
-        $cmd .= " --ignore-table=$db.$ignore_table";
-    }
-    $cmd .= " $db > $dumpfile";
+    $cmd = "mysqldump --defaults-file=$myconf -u root $db > $dumpfile 2>> $logf";
     echo "starting: exporting $db to $dumpfile\n";
     run_cmd( $cmd );
     if ( !file_exists( $dumpfile ) ) {
         error_exit( "Error exporting '$dumpfile' terminating" );
     }
     echo "complete: exporting $db to $dumpfile\n";
+    run_cmd( "sudo chown $backup_user:$backup_user $dumpfile" );
+    run_cmd( "sudo chmod 400 $dumpfile" );
+
     $dumped[] = $dumpfile;
 
     $cdumpfile = "$dumpfile.$compressext";
@@ -152,9 +149,36 @@ foreach ( $dbnames_used as $db => $val ) {
         error_exit( "Error compressing '$cdumpfile' terminating" );
     }
     echo "completed: compressing $dumpfile with $compresswith\n";
+    run_cmd( "sudo chown $backup_user:$backup_user $cdumpfile" );
+    run_cmd( "sudo chmod 400 $cdumpfile" );
+    $cdumped[] = $cdumpfile;
+}
+
+## export all GRANTS
+# also dump the grant table in the form of a script to re-establish
+# be sure to edit and remove problematic ones, i.e., root
+{
+    $db = "GRANTS";
+    $dumpfile = "uslims3_$db-dump-$date.sql";
+    echo "starting: exporting GRANTS to $dumpfile\n";
+$cmd = "(mysql --defaults-file=$myconf -B -N -u root -e \"SELECT DISTINCT CONCAT( 'SHOW GRANTS FOR ''', user, '''@''', host, ''';') AS query FROM mysql.user\" | mysql --defaults-file=$myconf -u root | sed 's/\(GRANT .*\)/\\1;/;s/^\(Grants for .*\)/## \\1 ##/;/##/{x;p;x;}' > $dumpfile) 2>> $logf";
+    run_cmd( $cmd );
+    echo "complete: exporting $db to $dumpfile\n";
+    $cdumpfile = "$dumpfile.$compressext";
+    echo "starting: compressing $dumpfile with $compresswith\n";
+    $cmd = "$compresswith $dumpfile";
+    run_cmd( $cmd );
+    if ( !file_exists( $cdumpfile ) ) {
+        error_exit( "Error compressing '$cdumpfile' terminating" );
+    }
+    echo "completed: compressing $dumpfile with $compresswith\n";
+    run_cmd( "sudo chown $backup_user:$backup_user $cdumpfile" );
+    run_cmd( "sudo chmod 400 $cdumpfile" );
     $cdumped[] = $cdumpfile;
 }
  
+run_cmd( "sudo chown $backup_user:$backup_user $logf" );
+run_cmd( "sudo chmod 400 $logf" );
 # check for old backups
 foreach ( $dbnames_used as $db => $val ) {
     $cmd = "ls -1t $db-dump*.sql.$compressext";
@@ -168,6 +192,11 @@ foreach ( $dbnames_used as $db => $val ) {
 
 
 echoline( '=' );
-echo "completed: backup files are in $backup_dir\n";
+echo "completed:
+backup files are in: $backup_dir
+          log is in: $logf\n";
 echoline( '=' );
+if ( $backup_rsync ) {
+    run_cmd( "cd $hdir && php uslims_daily_rsync.php" );
+}
 

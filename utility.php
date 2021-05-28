@@ -168,8 +168,12 @@ function newfile_file( $filename, $contents ) {
     return $outfile;
 }
 
-function is_admin( $must_be_root = true ) {
+function is_admin( $must_be_root = true, $as_user = "" ) {
     $user = posix_getpwuid(posix_geteuid())['name'];
+    if ( strlen( $as_user ) ) {
+        return $user == $as_user;
+    }
+        
     if ( $user == 'root' ) {
         return true;
     }

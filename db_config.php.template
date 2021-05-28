@@ -4,9 +4,17 @@ $dbhost            = "SET_HOST";
 $user              = "SET_USER";
 $passwd            = "SET_PASSWORD";
 
+$backup_logs       = "/srv/data/log";
 $backup_dir        = "/srv/data/sqldumps";  # directory for daily backups
 $backup_count      = 7;                     # number of backups to keep per uslims3_ database
-$backup_sql_rev    = 215;                   # table schema comparison for extra tables
+$backup_host       = "js229.genapp.rocks";
+$backup_rsync      = false;                 # force rsync after backup
+$backup_user       = "usadmin";
+
+$rsync_logs        = "/srv/data/log";
+$rsync_host        = "js-169-33.jetstream-cloud.org";  # later backup.aucsolutions.com
+$rsync_user        = $backup_user;
+$rsync_path        = "/backup";
 
 $server_admin      = "user@example.com";    # for domain name updates
 $self_signed_certs = false;                 # set to true for self signed
