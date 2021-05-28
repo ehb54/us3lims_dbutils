@@ -106,16 +106,21 @@ echoline( '=' );
 
 # make & change to directory
 if ( !is_dir( $backup_dir ) ) {
-   mkdir( $backup_dir );
+    mkdir( $backup_dir );
+    run_cmd( "sudo chown $backup_user:$backup_user $backup_dir" );
 }
 
 echo "hdir is $hdir\n";
 
 if ( !chdir( $backup_dir ) ) {
-   error_exit( "Could not change to directory $newfile_dir" );
+    error_exit( "Could not change to directory $newfile_dir" );
 }
 
 $logf = "$backup_logs/$backup_host-$date.log";
+if ( !is_dir( $backup_logs ) ) {
+    mkdir( $backup_logs, 0700 );
+    run_cmd( "sudo chown $backup_user:$backup_user $backup_logs" );
+}
 
 run_cmd( "echo $backup_host Mysqldump Error Log : `date` > $logf" );
 

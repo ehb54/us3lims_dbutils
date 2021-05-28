@@ -80,6 +80,7 @@ $date = trim( run_cmd( 'date +"%y%m%d"' ) );
 # make & change to directory
 if ( !is_dir( $backup_dir ) ) {
    mkdir( $backup_dir );
+   run_cmd( "sudo chown $rsync_user:$rsync_user $backup_dir" );
 }
 
 if ( !is_admin( false ) ) {
