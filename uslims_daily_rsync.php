@@ -75,7 +75,7 @@ if ( strlen( $errors ) ) {
     error_exit( $errors );
 }
 
-$date = trim( run_cmd( 'date +"%y%m%d"' ) );
+$date = trim( run_cmd( 'date +"%y%m%d%H"' ) );
 
 # make & change to directory
 if ( !is_dir( $backup_dir ) ) {

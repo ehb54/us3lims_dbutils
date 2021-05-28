@@ -95,7 +95,7 @@ if ( !is_admin( false ) ) {
 
 $dbnames_used = array_fill_keys( existing_dbs(), 1 );
 
-$date = trim( run_cmd( 'date +"%y%m%d"' ) );
+$date = trim( run_cmd( 'date +"%y%m%d%H"' ) );
 
 echoline( '=' );
 echo "found " . count( $dbnames_used ) . " unique dbname records as follows\n";
