@@ -7,7 +7,7 @@ $passwd            = "SET_PASSWORD";
 $backup_logs       = "/srv/data/log";
 $backup_dir        = "/srv/data/sqldumps";  # directory for daily backups
 $backup_count      = 7;                     # number of backups to keep per uslims3_ database
-$backup_host       = "js229.genapp.rocks";
+$backup_host       = "SET_HOSTNAME";
 $backup_rsync      = false;                 # force rsync after backup
 $backup_user       = "usadmin";
 
