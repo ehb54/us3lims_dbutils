@@ -12,7 +12,7 @@ $backup_rsync      = false;                 # force rsync after backup
 $backup_user       = "usadmin";
 
 $rsync_logs        = "/srv/data/log";
-$rsync_host        = "js-169-33.jetstream-cloud.org";  # later backup.aucsolutions.com
+$rsync_host        = "backup.aucsolutions.com";
 $rsync_user        = $backup_user;
 $rsync_path        = "/backup";
 

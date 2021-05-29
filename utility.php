@@ -303,3 +303,56 @@ function uuid() {
         mt_rand(0, 65535), mt_rand(0, 65535), mt_rand(0, 65535) // 48 bits for "node" 
     ); 
 }
+
+function is_locked( $php ) {
+    global $lock_dir;
+    if ( !isset( $lock_dir ) ) {
+        error_exit( "is_locked(): \$lock_dir is not set" );
+    }
+    $lock_file        = "$lock_dir/" . basename( $php ) . ".lock";
+    $expected_cmdline = basename( $php );
+    $isstale = false;
+
+    if ( !file_exists($lock_file) ) {
+        # echo "file $lock_file does not exist\n";
+        return false;
+    }
+
+    if ( is_link($lock_file) ) {
+        # echo "is_link(" . $lock_file . ") true\n";
+        if ( ( $link = readlink( $lock_file ) ) === FALSE ) {
+            $isstale = true;
+            # echo "is stale 1\n";
+        }
+    } else {
+        $isstale = true;
+        # echo "is stale 2\n";
+    }
+    #    echo "tryLock() 2\n";
+
+    if ( !$isstale && is_dir( $link ) ) {
+        # make sure the cmdline exists & matches expected
+        $cmdline_file = $link . "/cmdline";
+        echo "cmdline_file = $cmdline_file\n";
+        if ( ($cmdline = file_get_contents( $cmdline_file )) === FALSE ) {
+            # echo "could not get contents of $cmdline_file\n";
+            $isstale = true;
+            # echo "is stale 3\n";
+        } else {
+            # remove nulls
+            $cmdline = str_replace("\0", "", $cmdline);
+            if ( strpos( $cmdline, $expected_cmdline ) === false ) {
+                # echo "unexpected contents of $cmdline_file\n";
+                $isstale = true;
+                # echo "is stale 4 \n";
+            }
+        }
+    }
+    #    echo "tryLock() 3\n";
+
+    if (is_link($lock_file) && !is_dir($lock_file)) {
+        $isstale = true;
+    }
+    
+    return !$isstale;
+}

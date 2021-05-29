@@ -3,8 +3,12 @@
 $self = __FILE__;
 $hdir = __DIR__;
 
-$compresswith = "gzip";
+$compresswith = "gzip -f";
 $compressext  = "gz";
+
+$us3bin    = exec( "ls -d ~us3/lims/bin" );
+include_once "$us3bin/listen-config.php";
+$rsync_php  = "uslims_daily_rsync.php";
 
 # $debug = 1;
 
@@ -92,6 +96,18 @@ file_perms_must_be( $myconf );
 if ( !is_admin( false ) ) {
    error_exit( "This program must be run by root or a sudo enabled user" );
 }
+
+if ( is_locked( $rsync_php ) ) {
+    error_exit( "$rsync_php is currently running" );
+} else {
+#    echo "$rsync_php is not running\n";
+}
+
+// lock
+if ( isset( $lock_dir ) ) {
+   $lock_main_script_name  = __FILE__;
+   require "$us3bin/lock.php";
+} 
 
 $dbnames_used = array_fill_keys( existing_dbs(), 1 );
 
@@ -202,6 +218,9 @@ backup files are in: $backup_dir
           log is in: $logf\n";
 echoline( '=' );
 if ( $backup_rsync ) {
-    run_cmd( "cd $hdir && php uslims_daily_rsync.php" );
+    echo "starting: run $rsync_php\n";
+    run_cmd( "cd $hdir && php $rsync_php" );
+    echo "completed: run $rsync_php\n";
+    echoline( '=' );
 }
 
