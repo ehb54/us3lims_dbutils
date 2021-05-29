@@ -3,8 +3,8 @@
 $self = __FILE__;
 $hdir = __DIR__;
 
-$compresswith = "gzip";
-$compressext  = "gz";
+$us3bin    = exec( "ls -d ~us3/lims/bin" );
+include_once "$us3bin/listen-config.php";
 
 # $debug = 1;
 
@@ -100,8 +100,15 @@ $cmd = "runuser -l $rsync_user -c \"ssh -o StrictHostKeyChecking=no $rsync_user@
 run_cmd( $cmd, false );
 
 $logf = "$rsync_logs/remote-$backup_host-$date.log";
-
+ 
+run_cmd( "(echo -n 'rsync not started due to file lock: ' && date) > $logf", false );
+// lock
+if ( isset( $lock_dir ) ) {
+   $lock_main_script_name  = __FILE__;
+   require "$us3bin/lock.php";
+} 
 run_cmd( "(echo -n 'rsync started: ' && date) > $logf", false );
+
 $cmd = "sudo -u $rsync_user rsync -av -e 'ssh -l usadmin' --rsync-path='sudo rsync' --delete $backup_dir $rsync_user@$rsync_host:$rsync_path/$backup_host 2>&1 >> $logf";
 run_cmd( $cmd );
 run_cmd( "(echo -n 'rsync finished: ' && date) >> $logf", false );
