@@ -1,14 +1,16 @@
 <?php
 
-$self = __FILE__;
-$hdir = __DIR__;
+$self                 = __FILE__;
+$hdir                 = __DIR__;
 
-$compresswith = "gzip -f";
-$compressext  = "gz";
+$compresswith         = "gzip -f";
+$compressext          = "gz";
 
-$us3bin    = exec( "ls -d ~us3/lims/bin" );
-include_once "$us3bin/listen-config.php";
-$rsync_php  = "uslims_daily_rsync.php";
+$us3bin               = exec( "ls -d ~us3/lims/bin" );
+include_once          "$us3bin/listen-config.php";
+$rsync_php            = "uslims_daily_rsync.php";
+
+$duration_status_file = "$hdir/.uslims_backup_stats";
 
 # $debug = 1;
 date_default_timezone_set('UTC');
@@ -233,6 +235,104 @@ if ( $backup_rsync ) {
     dt_store_now( "rsync end" );
 }
 
+# duration status
+
+{
+    if ( file_exists( $duration_status_file ) ) {
+        $duration_info = json_decode( file_get_contents( $duration_status_file ), false );
+    } else {
+        $duration_info = (object)[];
+        $duration_info->backup    = [];
+        $duration_info->backup_dt = [];
+        $duration_info->rsync     = [];
+        $duration_info->rsync_dt  = [];
+    }
+
+    $duration_info->backup[]    = dt_store_duration( "backup start", "backup end" );
+    $duration_info->backup_dt[] = dt_store_get     ( "backup start" );
+    if ( $backup_rsync ) {
+        $duration_info->rsync[]    = dt_store_duration( "rsync start", "rsync end" );
+        $duration_info->rsync_dt[] = dt_store_get     ( "rsync start" );
+    }
+
+    file_put_contents( $duration_status_file, json_encode( $duration_info ) );
+
+    # compute statistics
+    $duration_stats = [];
+    $n = 5;
+
+    $duration_stats[ "count"           ] = count( $duration_info->backup );
+    $duration_stats[ "count last"      ] = min( $n, count( $duration_info->backup ) );
+    $duration_stats[ "backup min"      ] = min( $duration_info->backup );
+    $duration_stats[ "backup max"      ] = max( $duration_info->backup );
+    $duration_stats[ "backup avg"      ] = sprintf( "%.2f", array_sum( $duration_info->backup ) / count( $duration_info->backup ) );
+    $duration_stats[ "backup min last" ] = min( array_slice( $duration_info->backup, -$n ) );
+    $duration_stats[ "backup max last" ] = max( array_slice( $duration_info->backup, -$n ) );
+    $duration_stats[ "backup avg last" ] = sprintf( "%.2f", array_sum( array_slice( $duration_info->backup, -$n ) ) / $duration_stats[ "count last" ] );
+    $duration_report =
+        "Backup Duration report\n"
+        . echoline( "-", 80, false )
+        . sprintf( 
+              "Number of backups registered   %s\n"
+            . "\n"
+            . "Minimum backup time            %s minutes\n"
+            . "Maximum backup time            %s minutes\n"
+            . "Average backup time            %s minutes\n"
+            ,$duration_stats[ "count"      ]
+            ,$duration_stats[ "backup min" ]
+            ,$duration_stats[ "backup max" ]
+            ,$duration_stats[ "backup avg" ]
+            )
+        ;
+
+    if ( $duration_stats[ "count" ] > $duration_stats[ "count last" ]  ) {
+        $duration_report .=
+            sprintf( 
+                  "\n"
+                . "Minimum backup time [last $n]   %s minutes\n"
+                . "Maximum backup time [last $n]   %s minutes\n"
+                . "Average backup time [last $n]   %s minutes\n"
+                ,$duration_stats[ "backup min last" ]
+                ,$duration_stats[ "backup max last" ]
+                ,$duration_stats[ "backup avg last" ]
+                )
+            ;
+        }
+
+    if ( $backup_rsync ) {
+        $duration_stats[ "rsync min"      ] = min( $duration_info->rsync );
+        $duration_stats[ "rsync max"      ] = max( $duration_info->rsync );
+        $duration_stats[ "rsync avg"      ] = sprintf( "%.2f", array_sum( $duration_info->rsync ) / count( $duration_info->rsync ) );
+        $duration_stats[ "rsync min last" ] = min( array_slice( $duration_info->rsync, -$n ) );
+        $duration_stats[ "rsync max last" ] = max( array_slice( $duration_info->rsync, -$n ) );
+        $duration_stats[ "rsync avg last" ] = sprintf( "%.2f", array_sum( array_slice( $duration_info->rsync, -$n ) ) / $duration_stats[ "count last" ] );
+        $duration_report .=
+            sprintf( 
+                  "\n"
+                . "Minimum rsync time             %s minutes\n"
+                . "Maximum rsync time             %s minutes\n"
+                . "Average rsync time             %s minutes\n"
+                ,$duration_stats[ "rsync min" ]
+                ,$duration_stats[ "rsync max" ]
+                ,$duration_stats[ "rsync avg" ]
+                )
+            ;
+        if ( $duration_stats[ "count" ] > $duration_stats[ "count last" ]  ) {
+            $duration_report .=
+                sprintf( 
+                      "\n"
+                    . "Minimum rsync time [last $n]    %s minutes\n"
+                    . "Maximum rsync time [last $n]    %s minutes\n"
+                    . "Average rsync time [last $n]    %s minutes\n"
+                    ,$duration_stats[ "rsync min last" ]
+                    ,$duration_stats[ "rsync max last" ]
+                    ,$duration_stats[ "rsync avg last" ]
+                    )
+                ;
+        }
+    }
+}
+
 $summary_report = 
     sprintf( "Backup summary
 %s
@@ -302,7 +402,11 @@ Rsync destination  %s:%s
             ,$rsync_path
             );
     }
-    $summary_report .= echoline( '=', 80, false );
+    $summary_report .= 
+        echoline( '=', 80, false )
+        . $duration_report
+        . echoline( '=', 80, false )
+        ;
     
     if ( !mail( 
                $backup_email_address

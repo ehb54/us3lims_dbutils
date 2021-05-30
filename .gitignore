@@ -15,6 +15,7 @@ dbupgrade/export*
 backup-*
 newfile-*
 .git_info_rev_cache
+.uslims_backup_stats
 mariadb-binary-backup-*
 schemas-*
 my.cnf
