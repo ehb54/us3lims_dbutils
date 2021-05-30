@@ -1,20 +1,22 @@
 <?php
 
-$dbhost            = "SET_HOST";
-$user              = "SET_USER";
-$passwd            = "SET_PASSWORD";
+$dbhost               = "SET_HOST";
+$user                 = "SET_USER";
+$passwd               = "SET_PASSWORD";
 
-$backup_logs       = "/srv/data/log";
-$backup_dir        = "/srv/data/sqldumps";  # directory for daily backups
-$backup_count      = 7;                     # number of backups to keep per uslims3_ database
-$backup_host       = "SET_HOSTNAME";
-$backup_rsync      = false;                 # force rsync after backup
-$backup_user       = "usadmin";
+$backup_logs          = "/srv/data/log";
+$backup_dir           = "/srv/data/sqldumps";  # directory for daily backups
+$backup_count         = 7;                     # number of backups to keep per uslims3_ database
+$backup_host          = "SET_HOSTNAME";
+$backup_rsync         = false;                 # force rsync after backup
+$backup_user          = "usadmin";             # owner of the backup files
+$backup_email_reports = false;
+$backup_email_address = "SET_EMAIL";           # 
 
-$rsync_logs        = "/srv/data/log";
-$rsync_host        = "backup.aucsolutions.com";
-$rsync_user        = $backup_user;
-$rsync_path        = "/backup";
+$rsync_logs           = "/srv/data/log";
+$rsync_host           = "backup.aucsolutions.com";
+$rsync_user           = $backup_user;          # user for rsync ssh to $rsync_host
+$rsync_path           = "/backup";
 
-$server_admin      = "user@example.com";    # for domain name updates
-$self_signed_certs = false;                 # set to true for self signed
+$server_admin         = "SET_EMAIL";           # for domain name updates
+$self_signed_certs    = false;                 # set to true for self signed

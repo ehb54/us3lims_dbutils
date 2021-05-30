@@ -71,6 +71,12 @@ if ( !isset( $rsync_logs ) ) {
 if ( !isset( $backup_host ) ) {
     $errors .= "\$backup_host is not set in $use_config_file\n";
 }
+if ( !isset( $backup_email_reports ) ) {
+    $errors .= "\$backup_email_reports is not set in $use_config_file\n";
+}
+if ( $backup_email_reports && !isset( $backup_email_address ) ) {
+    $errors .= "\$backup_email_address is not set in $use_config_file\n";
+}
 if ( strlen( $errors ) ) {
     error_exit( $errors );
 }
@@ -80,7 +86,7 @@ $date = trim( run_cmd( 'date +"%y%m%d%H"' ) );
 # make & change to directory
 if ( !is_dir( $backup_dir ) ) {
    mkdir( $backup_dir );
-   run_cmd( "sudo chown $rsync_user:$rsync_user $backup_dir" );
+   backup_rsync_run_cmd( "sudo chown $rsync_user:$rsync_user $backup_dir" );
 }
 
 if ( !is_admin( false ) ) {
@@ -88,29 +94,29 @@ if ( !is_admin( false ) ) {
 }
 
 if ( !chdir( $backup_dir ) ) {
-   error_exit( "Could not change to directory $newfile_dir" );
+   backup_rsync_failure( "Could not change to directory $newfile_dir" );
 }
 
 if ( !is_dir( $rsync_logs ) ) {
     mkdir( $rsync_logs, 0700 );
-    run_cmd( "sudo chown $rsync_user:$rsync_user $rsync_logs" );
+    backup_rsync_run_cmd( "sudo chown $rsync_user:$rsync_user $rsync_logs" );
 }
 
 $cmd = "runuser -l $rsync_user -c \"ssh -o StrictHostKeyChecking=no $rsync_user@$rsync_host -C 'sudo mkdir $rsync_path'\"";
-run_cmd( $cmd, false );
+backup_rsync_run_cmd( $cmd, false );
 
 $logf = "$rsync_logs/remote-$backup_host-$date.log";
  
-run_cmd( "(echo -n 'rsync not started due to file lock: ' && date) > $logf", false );
+backup_rsync_run_cmd( "(echo -n 'rsync not started due to file lock: ' && date) > $logf", false );
 // lock
 if ( isset( $lock_dir ) ) {
    $lock_main_script_name  = __FILE__;
    require "$us3bin/lock.php";
 } 
-run_cmd( "(echo -n 'rsync started: ' && date) > $logf", false );
+backup_rsync_run_cmd( "(echo -n 'rsync started: ' && date) > $logf", false );
 
 $cmd = "sudo -u $rsync_user rsync -av -e 'ssh -l usadmin' --rsync-path='sudo rsync' --delete $backup_dir $rsync_user@$rsync_host:$rsync_path/$backup_host 2>&1 >> $logf";
-run_cmd( $cmd );
-run_cmd( "(echo -n 'rsync finished: ' && date) >> $logf", false );
-run_cmd( "sudo chown $rsync_user:$rsync_user $logf" );
+backup_rsync_run_cmd( $cmd );
+backup_rsync_run_cmd( "(echo -n 'rsync finished: ' && date) >> $logf", false );
+backup_rsync_run_cmd( "sudo chown $rsync_user:$rsync_user $logf" );
 

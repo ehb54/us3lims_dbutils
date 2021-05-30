@@ -356,3 +356,81 @@ function is_locked( $php ) {
     
     return !$isstale;
 }
+
+$dt_store_array = [];
+
+function dt_duration_minutes ( $datetime_start, $datetime_end ) {
+    return ($datetime_end->getTimestamp() - $datetime_start->getTimestamp()) / 60;
+}
+
+function dt_now () {
+    return new DateTime( "now" );
+}
+
+function dt_store_now( $name ) {
+    global $dt_store_array;
+    $dt_store_array[ $name ] = dt_now();
+}
+
+function dt_store_get( $name ) {
+    global $dt_store_array;
+    if ( !array_key_exists( $name, $dt_store_array ) ) {
+        error_exit( "dt_store_get() : \$dt_array does not contain key '$name'" );
+    }
+    return $dt_store_array[ $name ];
+}
+
+function dt_store_get_printable( $name ) {
+    $dt = dt_store_get( $name );
+    return $dt->format( DATE_ATOM );
+}
+
+function dt_store_duration( $name_start, $name_end ) {
+    return sprintf( "%.2f", dt_duration_minutes( dt_store_get( $name_start ), dt_store_get( $name_end ) ) );
+}
+
+function backup_rsync_email_headers() {
+    global $backup_host;
+    global $backup_user;
+    global $backup_email_address;
+
+    $headers  = 
+        "From: backups $backup_host<$backup_user@$backup_host>\r\n"
+        . "Reply-To: $backup_email_address\r\n"
+        ;
+
+    return $headers;
+}
+
+function backup_rsync_failure( $msg ) {
+    global $backup_email_reports;
+    global $backup_email_address;
+    global $backup_host;
+    if ( !$backup_email_reports ) {
+        error_exit( $msg );
+    }
+    if ( !mail( 
+               $backup_email_address
+               ,"BACKUP ERRORS for $backup_host"
+               ,$msg
+               ,backup_rsync_email_headers()
+              )
+       ) {
+        error_exit( $msg . "\nemail notification also failed" );
+    }
+    error_exit( $msg );
+}
+    
+function backup_rsync_run_cmd( $cmd, $die_if_exit = true ) {
+    global $debug;
+    if ( isset( $debug ) && $debug ) {
+        echo "$cmd\n";
+    }
+    exec( "$cmd 2>&1", $res, $res_code );
+    if ( $die_if_exit && $res_code ) {
+        backup_rsync_failure( "shell command '$cmd' returned result:\n" . implode( "\n", $res ) . "\nand with exit status '$res_code'" );
+    }
+    return implode( "\n", $res ) . "\n";
+}
+
+    
