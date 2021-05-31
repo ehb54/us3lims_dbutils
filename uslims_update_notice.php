@@ -57,10 +57,10 @@ include "utility.php";
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
-$myconf = "my.cnf";
+$myconf = "$hdir/my.cnf";
 if ( !file_exists( $myconf ) ) {
    error_exit( 
-       "create a file '$myconf' in the current directory with the following contents:\n"
+       "create a file '$myconf' in the $hdir directory with the following contents:\n"
        . "[mysqldump]\n"
        . "password=YOUR_ROOT_DB_PASSWORD\n"
        . "max_allowed_packet=256M\n"
@@ -82,5 +82,5 @@ if ( strlen( $errors ) ) {
     error_exit( $errors );
 }
 
-$cmd = "mysqldump --defaults-file=$hdir/$myconf -u us3_notice us3_notice notice | ssh $notice_remote_user@$notice_remote_host mysql --defaults-file=$notice_remote_mycnf -u $notice_remote_db_user us3_notice";
+$cmd = "mysqldump --defaults-file=$myconf -u us3_notice us3_notice notice | ssh $notice_remote_user@$notice_remote_host mysql --defaults-file=$notice_remote_mycnf -u $notice_remote_db_user us3_notice";
 run_cmd( $cmd );
