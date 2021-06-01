@@ -115,7 +115,7 @@ if ( isset( $lock_dir ) ) {
 } 
 backup_rsync_run_cmd( "(echo -n 'rsync started: ' && date) > $logf", false );
 
-$cmd = "sudo -u $rsync_user rsync -av -e 'ssh -l usadmin' --rsync-path='sudo rsync' --delete $backup_dir $rsync_user@$rsync_host:$rsync_path/$backup_host 2>&1 >> $logf";
+$cmd = "sudo -u $rsync_user rsync -av -e 'ssh -l usadmin' --rsync-path='sudo rsync' --delete --update $backup_dir $rsync_user@$rsync_host:$rsync_path/$backup_host 2>&1 >> $logf";
 backup_rsync_run_cmd( $cmd );
 backup_rsync_run_cmd( "(echo -n 'rsync finished: ' && date) >> $logf", false );
 backup_rsync_run_cmd( "sudo chown $rsync_user:$rsync_user $logf" );

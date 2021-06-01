@@ -5,6 +5,7 @@ $hdir                 = __DIR__;
 
 $compresswith         = "gzip -f";
 $compressext          = "gz";
+$rdiff_bin            = "/bin/rdiff";
 
 $us3bin               = exec( "ls -d ~us3/lims/bin" );
 include_once          "$us3bin/listen-config.php";
@@ -77,16 +78,56 @@ if ( !isset( $backup_host ) ) {
 }
 if ( !isset( $backup_rsync ) ) {
     $errors .= "\$backup_rsync is not set in $use_config_file\n";
+} else {
+    if ( $backup_rsync ) {
+        if ( !isset( $rsync_user ) ) {
+            $errors .= "\$rsync_user is not set in $use_config_file\n";
+        }
+        if ( !isset( $rsync_host ) ) {
+            $errors .= "\$rsync_host is not set in $use_config_file\n";
+        }
+        if ( !isset( $rsync_path ) ) {
+            $errors .= "\$rsync_path is not set in $use_config_file\n";
+        }
+        if ( !isset( $rsync_logs ) ) {
+            $errors .= "\$rsync_logs is not set in $use_config_file\n";
+        }
+    }
 }
+    
 if ( !isset( $backup_user ) ) {
     $errors .= "\$backup_user is not set in $use_config_file\n";
 }
 if ( !isset( $backup_email_reports ) ) {
     $errors .= "\$backup_email_reports is not set in $use_config_file\n";
+} else {
+    if ( $backup_email_reports && !isset( $backup_email_address ) ) {
+        $errors .= "\$backup_email_address is not set in $use_config_file\n";
+    }
 }
-if ( $backup_email_reports && !isset( $backup_email_address ) ) {
-    $errors .= "\$backup_email_address is not set in $use_config_file\n";
+if ( !isset( $backup_rdiff ) ) {
+    $errors .= "\$backup_rdiff is not set in $use_config_file\n";
+} else {
+    if ( $backup_rdiff && !isset( $backup_rdiff_temp ) ) {
+        $errors .= "\$backup_rdiff_temp is not set in $use_config_file\n";
+    }
 }
+if ( $backup_rsync &&
+     $backup_rdiff ) {
+    if ( !file_exists( $rdiff_bin ) ) {
+        $errors .= "\$backup_rsync && \$backup_rdiff set but \$rdiff_bin ($rdiff_bin) does not exist\n";
+    }
+    if ( !is_dir( $backup_rdiff_temp ) ) {
+        if ( !mkdir( $backup_rdiff_temp ) ) {
+            $errors .= "could not make directory $backup_rdiff_temp\n";
+        } else {
+            if ( !is_dir( $backup_rdiff_temp ) ) {
+                $errors .= "$backup_rdiff_temp is not a directory\n";
+            }
+        }
+    }
+}
+
 if ( strlen( $errors ) ) {
     error_exit( $errors );
 }
@@ -190,7 +231,7 @@ foreach ( $dbnames_used as $db => $val ) {
     $db = "GRANTS";
     $dumpfile = "uslims3_$db-dump-$date.sql";
     echo "starting: exporting GRANTS to $dumpfile\n";
-$cmd = "(mysql --defaults-file=$myconf -B -N -u root -e \"SELECT DISTINCT CONCAT( 'SHOW GRANTS FOR ''', user, '''@''', host, ''';') AS query FROM mysql.user\" | mysql --defaults-file=$myconf -u root | sed 's/\(GRANT .*\)/\\1;/;s/^\(Grants for .*\)/## \\1 ##/;/##/{x;p;x;}' > $dumpfile) 2>> $logf";
+    $cmd = "(mysql --defaults-file=$myconf -B -N -u root -e \"SELECT DISTINCT CONCAT( 'SHOW GRANTS FOR ''', user, '''@''', host, ''';') AS query FROM mysql.user\" | mysql --defaults-file=$myconf -u root | sed 's/\(GRANT .*\)/\\1;/;s/^\(Grants for .*\)/## \\1 ##/;/##/{x;p;x;}' > $dumpfile) 2>> $logf";
     backup_rsync_run_cmd( $cmd );
     echo "complete: exporting $db to $dumpfile\n";
     $cdumpfile = "$dumpfile.$compressext";
@@ -226,30 +267,97 @@ backup files are in: $backup_dir
           log is in: $logf\n";
 echoline( '=' );
 dt_store_now( "backup end" );
+
+# get duration info 
+if ( file_exists( $duration_status_file ) ) {
+    $duration_info = json_decode( file_get_contents( $duration_status_file ), false );
+    if ( !isset( $duration_info->datestring ) ) {
+        $duration_info->datestring = [];
+    }
+} else {
+    $duration_info = (object)[];
+    $duration_info->backup      = [];
+    $duration_info->backup_dt   = [];
+    $duration_info->rsync       = [];
+    $duration_info->rsync_dt    = [];
+    $duration_info->datestring  = [];
+}
+
+$rdiff_restore_cmds = [];
+
 if ( $backup_rsync ) {
+    if ( $backup_rdiff && 
+         count( $duration_info->datestring ) ) {
+        $olddate = end( $duration_info->datestring );
+        echo "Creating deltas from prior date $olddate\n";
+        echoline();
+        $rsync_dest = "$rsync_path/$backup_host/sqldumps";
+
+        # compute rdiffs, mv files etc
+        # echo "rdiff active old date $olddate\n";
+
+        $remote_restore_cmds_file = "rdiffpatch-$date.sh";
+        $remote_restore_cmds      = "cd $rsync_dest\n";
+
+        foreach ( $dbnames_used as $db => $val ) {
+            $filebase   = "$db-dump";
+            $cdumpfile  = "$filebase-$date.sql.$compressext";
+            $pcdumpfile = "$filebase-$olddate.sql.$compressext";
+            $file_sig   = "$filebase-$date.sig";
+            $file_delta = "$filebase-$date.delta";
+            # does a prior backup exist?
+            if ( file_exists( $pcdumpfile ) ) {
+                echo "computing deltas: $db from $pcdumpfile\n";
+                # create signature file in $backup_rdiff_temp
+                backup_rsync_run_cmd( "$rdiff_bin signature $pcdumpfile $backup_rdiff_temp/$file_sig && sudo chown $backup_user:$backup_user $backup_rdiff_temp/$file_sig && sudo chmod 400 $backup_rdiff_temp/$file_sig" );
+                # create delta file in normal rsync directory
+                backup_rsync_run_cmd( "$rdiff_bin delta     $backup_rdiff_temp/$file_sig $cdumpfile $file_delta && sudo chown $backup_user:$backup_user $file_delta && sudo chmod 400 $file_delta" );
+                # move backup file to $backup_rdiff_temp
+                backup_rsync_run_cmd( "mv -f $cdumpfile $backup_rdiff_temp/" );
+                # setup restore commands to be run after rsync
+                $remote_restore_cmds .=
+                      "rdiff patch $rsync_dest/$pcdumpfile $rsync_dest/$file_delta $rsync_dest/$cdumpfile\n"
+                    . "chown $rsync_user:$rsync_user $rsync_dest/$cdumpfile\n"
+                    . "chmod 400 $rsync_dest/$cdumpfile\n"
+                    . "rm -f $rsync_dest/$file_delta\n"
+                    ;
+                $rdiff_restore_cmds[] = "mv -f $backup_rdiff_temp/$cdumpfile . && rm -f $file_delta $backup_rdiff_temp/$file_sig";
+            } else {
+                echo "skipping: $db : prior backup $pcdumpfile not found\n";
+            }
+        }
+        if ( count( $rdiff_restore_cmds ) ) {
+            $remote_restore_cmds .= "rm -f $remote_restore_cmds_file\n";
+            if ( !file_put_contents( $remote_restore_cmds_file, $remote_restore_cmds ) ) {
+                backup_rsync_failure( "could not create \$remote_restore_cmds_file $remote_restore_cmds_file" );
+            }
+            $rdiff_restore_cmds[] = "rm $remote_restore_cmds_file";
+            $rdiff_restore_cmds[] = "ssh $rsync_user@$rsync_host -o StrictHostKeyChecking=no -i ~$rsync_user/.ssh/id_rsa sudo bash $rsync_dest/$remote_restore_cmds_file";
+            
+        }
+    }
     dt_store_now( "rsync start" );
     echo "starting: run $rsync_php\n";
     backup_rsync_run_cmd( "cd $hdir && php $rsync_php" );
     echo "completed: run $rsync_php\n";
     echoline( '=' );
+    if ( count( $rdiff_restore_cmds ) ) {
+        echo "Applying deltas\n";
+        foreach ( $rdiff_restore_cmds as $cmd )  {
+            backup_rsync_run_cmd( $cmd );
+        }
+        echoline( '=' );
+    }
     dt_store_now( "rsync end" );
 }
 
 # duration status
 
 {
-    if ( file_exists( $duration_status_file ) ) {
-        $duration_info = json_decode( file_get_contents( $duration_status_file ), false );
-    } else {
-        $duration_info = (object)[];
-        $duration_info->backup    = [];
-        $duration_info->backup_dt = [];
-        $duration_info->rsync     = [];
-        $duration_info->rsync_dt  = [];
-    }
 
-    $duration_info->backup[]    = dt_store_duration( "backup start", "backup end" );
-    $duration_info->backup_dt[] = dt_store_get     ( "backup start" );
+    $duration_info->backup[]     = dt_store_duration( "backup start", "backup end" );
+    $duration_info->backup_dt[]  = dt_store_get     ( "backup start" );
+    $duration_info->datestring[] = $date;
     if ( $backup_rsync ) {
         $duration_info->rsync[]    = dt_store_duration( "rsync start", "rsync end" );
         $duration_info->rsync_dt[] = dt_store_get     ( "rsync start" );
