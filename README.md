@@ -44,7 +44,15 @@
    - contains demo1_veloc1 2.A.259 demo data which can be imported into a *fresh* dbinst
      - *fresh* since it may clobber existing data
    - unxz demo_data.sql.xz && mysql dbname < demo_data.sql
-
+ - uslims_update_notice.php
+   - syncs us3_notice.notice with a remote server
+### backups/rsync
+ - uslims_daily_backup.php
+   - creates sql.gz for all dbinsts
+   - optionally calls uslims_daily_rsync.php
+   - optionally sends email report with statistics
+ - uslims_daily_rsync.php
+   - runs rsync of daily backups   
 ### dbmigrate
  - use : move dbinstances from one server to another
  - on the server to export
