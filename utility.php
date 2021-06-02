@@ -406,9 +406,13 @@ function backup_rsync_failure( $msg ) {
     global $backup_email_reports;
     global $backup_email_address;
     global $backup_host;
+    global $backup_logs;
+    global $date;
     if ( !$backup_email_reports ) {
         error_exit( $msg );
     }
+    $emaillog = "$backup_logs/summary-ERRORS-$date.txt";
+    file_put_contents( $emaillog, $msg );
     if ( !mail( 
                $backup_email_address
                ,"BACKUP ERRORS for $backup_host"

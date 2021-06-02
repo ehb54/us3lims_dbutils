@@ -112,6 +112,15 @@ if ( !isset( $backup_rdiff ) ) {
         $errors .= "\$backup_rdiff_temp is not set in $use_config_file\n";
     }
 }
+if ( isset( $backup_df_check ) && count( $backup_df_check ) ) {
+    if ( !isset( $backup_df_pct_warn ) ) {
+        $errors .= "\$backup_df_check has contents and \$backup_df_pct_warn is not set in $use_config_file\n";
+    }
+    $backup_df_run = true;
+} else {
+    $backup_df_run = false;
+}
+
 if ( $backup_rsync &&
      $backup_rdiff ) {
     if ( !file_exists( $rdiff_bin ) ) {
@@ -160,6 +169,18 @@ if ( isset( $lock_dir ) ) {
    require "$us3bin/lock.php";
 } 
 
+# df check
+$df_report = "";
+if ( $backup_df_run ) {
+    foreach ( $backup_df_check as $mount ) {
+        $res = trim( run_cmd( "df --direct $mount | tail -1 | awk '{ print \$5 }'", false ) );
+        if ( $res > $backup_df_pct_warn ) {
+            $df_report .= "WARNING: mount $mount is at $res capacity\n";
+        }
+    }       
+}
+
+
 $dbnames_used = array_fill_keys( existing_dbs(), 1 );
 
 echoline( '=' );
@@ -178,7 +199,7 @@ if ( !is_dir( $backup_dir ) ) {
 echo "hdir is $hdir\n";
 
 if ( !chdir( $backup_dir ) ) {
-    backup_rsync_failure( "Could not change to directory $newfile_dir" );
+    backup_rsync_failure( "Could not change to directory $backup_dir" );
 }
 
 $logf = "$backup_logs/$backup_host-$date.log";
@@ -516,9 +537,22 @@ Rsync destination  %s:%s
         . echoline( '=', 80, false )
         ;
     
+    $subject = "backup summary for $backup_host";
+    if ( strlen( $df_report ) ) {
+       $summary_report = $df_report . echoline( "=", 80, false ) . $summary_report;
+       $subject = "backup summary DF WARNINGS for $backup_host";
+       $emaillog = "$backup_logs/summary-WARNINGS-email-$date.txt";
+    } else {
+       $emaillog = "$backup_logs/summary-email-$date.txt";
+    }
+
+    file_put_contents( $emaillog, echoline( "=", 80, false ) . $subject . "\n" . echoline( "=", 80, false ) . $summary_report );
+    run_cmd( "sudo chown $backup_user:$backup_user $emaillog", false );
+    run_cmd( "sudo chmod 400 $emaillog", false );
+    
     if ( !mail( 
                $backup_email_address
-               ,"backup summary for $backup_host"
+               ,$subject
                ,$summary_report
                ,backup_rsync_email_headers()
               )
@@ -527,6 +561,4 @@ Rsync destination  %s:%s
     } else {
         echo "reports emailed to $backup_email_address\n";
     }
-    $emaillog = "$backup_logs/summary-email-$date.txt";
-    file_put_contents( $emaillog, $summary_report );
 }
