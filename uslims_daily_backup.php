@@ -527,4 +527,6 @@ Rsync destination  %s:%s
     } else {
         echo "reports emailed to $backup_email_address\n";
     }
+    $emaillog = "$backup_logs/summary-email-$date.txt";
+    file_put_contents( $emaillog, $summary_report );
 }
