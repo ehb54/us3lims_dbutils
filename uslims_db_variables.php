@@ -112,3 +112,13 @@ foreach ( $show_status as $v ) {
 }
 
 echoline();
+
+# check php.ini
+
+$php_memory_limit_expect = "512M";
+$php_memory_limit        = ini_get( "memory_limit" );
+$php_ini_file            = php_ini_loaded_file();
+if ( $php_memory_limit != $php_memory_limit_expect ) {
+    echo "WARNING: php memory limit is set to $php_memory_limit (expect $php_memory_limit_expect). Edit $php_ini_file to fix\n";
+    echoline();
+}
