@@ -33,6 +33,7 @@
      - includes support for both certbot and self-signed certs.
      - ```php uslims_domain_info.php --change old_domain_name new_domain_name```
        - old_domain_name is required for metadata & httpd config changes.
+   - optionally sets up redirects
  - uslims_git_info.php
    - for all expected and discovered repos, reports path, url, branch, use, rev#, rev date, local changes, and deltas
    - also allows updating to expected branches, git pull, and build (for gui & mpi)
