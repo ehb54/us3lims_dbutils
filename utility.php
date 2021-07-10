@@ -83,9 +83,9 @@ function flush_warnings( $msg = NULL ) {
     global $warnings_count;
     if ( strlen( $warnings ) ) {
         echo $warnings;
+        $warnings_count += count( explode( "\n", trim( $warnings ) ) );
         echoline();
         $warnings = '';
-        $warnings_count += count( explode( "\n", $warnings ) );
         return true;
     } else {
         if ( $msg ) {
@@ -97,7 +97,7 @@ function flush_warnings( $msg = NULL ) {
 
 function warnings_summary( $msg = NULL ) {
     global $warnings_count;
-    return "Warnings generated\n"; # : $warnings_count\n";
+    return $warnings_count ? "Warnings generated $warnings_count\n" : "";
 }
 
 $errors = '';
@@ -120,27 +120,27 @@ function get_yn_answer( $question, $quit_if_no = false ) {
     return $answer == "y";
 }
 
-$backup_dir = "";
+$util_backup_dir = "";
 
 function backup_dir_init( $dir = "backup" ) {
-    global $backup_dir;
-    $backup_dir = "$dir-" . trim( run_cmd( 'date +"%Y%m%d%H%M%S"' ) );
-    mkdir( $backup_dir );
-    if ( !is_dir( $backup_dir ) ) {
-        error_exit( "Could not make backup directory $backupdir" );
+    global $util_backup_dir;
+    $util_backup_dir = "$dir-" . trim( run_cmd( 'date +"%Y%m%d%H%M%S"' ) );
+    mkdir( $util_backup_dir );
+    if ( !is_dir( $util_backup_dir ) ) {
+        error_exit( "Could not make backup directory $util_backupdir" );
     }
 }
 
 function backup_file( $filename ) {
-    global $backup_dir;
+    global $util_backup_dir;
     if ( !file_exists( $filename ) ) {
         error_exit( "backup_file : $filename does not exist!" );
     }
-    if ( !strlen( $backup_dir ) ) {
+    if ( !strlen( $util_backup_dir ) ) {
         backup_dir_init();
     }
-    run_cmd( "cp $filename $backup_dir" );
-    echo "Original $filename backed up in to $backup_dir\n";
+    run_cmd( "cp $filename $util_backup_dir" );
+    echo "Original $filename backed up in to $util_backup_dir\n";
 }
 
 $newfile_dir = "";
