@@ -117,6 +117,10 @@ if ( !isset( $server_admin ) ) {
 if ( !isset( $self_signed_certs ) ) {
     $errors .= "\$self_signed_certs must be set in $use_config_file\n";
 }
+if ( ( $new_domain_processing || count( $redirects ) ) && !is_admin( false, "us3" ) ) {
+    $errors .= "you must run this as user us3";
+}
+
 if ( strlen( $errors ) ) {
     error_exit( $errors );
 }
@@ -126,6 +130,7 @@ if ( !$db_handle ) {
     write_logl( "could not connect to mysql: $dbhost, $user exiting\n" );
     exit(-1);
 }
+
 
 # main
 
