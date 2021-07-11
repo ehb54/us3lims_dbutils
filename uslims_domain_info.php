@@ -265,8 +265,8 @@ flush_warnings( "OK: All config variables match our accepted host '$host_accepte
 
 # check httpd configs
 
-$http_configs  = explode( "\n", trim( run_cmd( "cd $httpdconfigdir && find * -name 'http-*conf'"  ) ) );
-$https_configs = explode( "\n", trim( run_cmd( "cd $httpdconfigdir && find * -name 'https-*conf'" ) ) );
+$http_configs  = explode( "\n", trim( run_cmd( "cd $httpdconfigdir && find * -maxdepth 0 -name 'http-*conf'"  ) ) );
+$https_configs = explode( "\n", trim( run_cmd( "cd $httpdconfigdir && find * -maxdepth 0 -name 'https-*conf'" ) ) );
 
 $httpd_http_names  = [];
 $httpd_https_names = [];
