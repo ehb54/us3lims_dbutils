@@ -451,7 +451,7 @@ __EOD;
 
 __EOD;
             if ( $self_signed_certs ) {
-                $contents = <<<__EOD
+                $contents .= <<<__EOD
 SSLCertificateFile $ssl_self_dir/$ssl_self_cert
 SSLCertificateKeyFile $ssl_self_dir/$ssl_self_key
 
