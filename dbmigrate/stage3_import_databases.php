@@ -6,10 +6,13 @@ $logging_level = 2;
 # end of developer defines
 
 # config
-$limsdbpath = "/home/us3/lims/database/sql";
-$htmlpath   = "/srv/www/htdocs/uslims3";
+$limsdbpath     = "/home/us3/lims/database/sql";
+$htmlpath       = "/srv/www/htdocs/uslims3";
 $uncompresswith = "xzcat";
-$compressext  = "xz";
+$compressext    = "xz";
+
+$us3home        = "/home/us3";
+$us3ini         = "$us3home/lims/.us3lims.ini";
 
 # $debug = 1;
 
@@ -89,6 +92,19 @@ if ( !$db_handle ) {
 
 if ( !ini_get("mysqli.allow_local_infile") ) {
     echo "WARNING: metadata will not be importable since you did not specify php -d mysqli.allow_local_infile=On on the command line\n";
+}
+
+# parse ini for us3php 
+if ( file_exists( $us3ini ) ) {
+    # assume lims
+    $us3php = "us3php";
+    $cfgs   = parse_ini_file( $us3ini, true );
+    if ( !isset( $cfgs[ $us3php ] ) ) {
+        error_exit( "user $us3php not found in $us3ini" );
+    }
+    $us3phppw = $cfgs[ $us3php ][ 'password' ];
+} else {
+    error_exit( "file $us3ini not found" );
 }
 
 if ( get_yn_answer( "extract tar?" ) ) {
@@ -246,12 +262,12 @@ if ( get_yn_answer( "create dbinstances" ) ) {
         $secure_user = $res->{ 'secure_user' };
         $secure_pw   = $res->{ 'secure_pw' };
         $querys = [
-    "CREATE database $db",
-    "GRANT ALL ON $db.* TO '$dbuser'@'localhost' IDENTIFIED BY '$dbpasswd'",
-    "GRANT ALL ON $db.* TO '$dbuser'@'%' IDENTIFIED BY '$dbpasswd'",
-    "GRANT EXECUTE ON $db.* TO '$secure_user'@'%' IDENTIFIED BY '$secure_pw' REQUIRE SSL",
-    "GRANT ALL ON $db.* TO 'us3php'@'localhost'",
-    "GRANT ALL ON $db.* TO 'us3php'@'$this_dbhost'"
+    "CREATE database $db"
+    ,"GRANT ALL ON $db.* TO '$dbuser'@'localhost' IDENTIFIED BY '$dbpasswd'"
+    ,"GRANT ALL ON $db.* TO '$dbuser'@'%' IDENTIFIED BY '$dbpasswd'"
+    ,"GRANT EXECUTE ON $db.* TO '$secure_user'@'%' IDENTIFIED BY '$secure_pw' REQUIRE SSL"
+    ,"GRANT ALL ON $db.* TO 'us3php'@'localhost' IDENTIFIED by '$us3phppw'"
+    ,"GRANT ALL ON $db.* TO 'us3php'@'$this_dbhost' IDENTIFIED by '$us3phppw'"
         ];
         foreach ( $querys as $q ) {
     # echo "query: $q\n";
