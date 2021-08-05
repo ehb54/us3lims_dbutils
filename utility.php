@@ -437,4 +437,11 @@ function backup_rsync_run_cmd( $cmd, $die_if_exit = true ) {
     return implode( "\n", $res ) . "\n";
 }
 
+function debug_echo ( $s ) {
+    global $debug;
+    if ( !$debug ) {
+        return;
+    }
+    echo "$s\n";
+}
     

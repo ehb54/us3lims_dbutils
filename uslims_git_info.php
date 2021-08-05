@@ -24,9 +24,10 @@ $reposearchpaths =
 $known_repos =
     [
      "$us3home/lims/database/sql" => [
-         "use" => "lims"
-         ,"own" => "us3:us3"
-         ,"git" => [
+         "use"      => "lims"
+         ,"summary" => true
+         ,"own"     => "us3:us3"
+         ,"git"     => [
              "url" => "https://github.com/ehb54/us3_sql.git"
              ,"branch" => "master"
          ]
@@ -48,8 +49,9 @@ $known_repos =
          ]
      ]
      ,"$us3home/us3-nodb" => [
-         "use" => "mpi"
-         ,"own" => "us3:us3"
+         "use"        => "mpi"
+         ,"summary"   => true
+         ,"own"       => "us3:us3"
          ,"buildable" => true
          ,"build_cmd" => "module swap ultrascan/mpi-build && ./make-uma build && ./make-uma install"
          ,"git" => [
@@ -90,8 +92,9 @@ $known_repos =
          ]
      ]
      ,"$usguipath" => [
-         "use" => "gui"
-         ,"own" => "usadmin:usadmin"
+         "use"        => "gui"
+         ,"summary"   => true
+         ,"own"       => "usadmin:usadmin"
          ,"buildable" => true
          ,"build_cmd" => "module swap ultrascan/gui-build && ./makeall.sh -j__coresparallel__ && ./makesomo.sh -j__coresparallel__"
          ,"git" => [
@@ -127,18 +130,21 @@ must be run with root privileges
 
 Options
 
---help               : print this information and exit
+--help                : print this information and exit
     
---clear-rev-cache    : clears the revision cache to get latest revisions
---diff-report        : shows git diff details for local changes
---quiet              : suppress some info messages
---skip-unknown       : suppress reporting of discovered Use:unknown repos
---update-branch      : update branch to default branch
---update-pull use    : update repos by use, currently $known_use_list or all
---update-pull-build  : recompile buildible repos. requires --update-pull also be specified
---cores #            : use core count instead of discoverd count for --update-pull-build if supported
+--clear-rev-cache     : clears the revision cache to get latest revisions
+--diff-report         : shows git diff details for local changes
+--quiet               : suppress some info messages
+--skip-unknown        : suppress reporting of discovered Use:unknown repos
+--update-branch       : update branch to default branch
+--update-pull use     : update repos by use, currently $known_use_list or all
+--update-pull-build   : recompile buildible repos. requires --update-pull also be specified
+--cores #             : use core count instead of discoverd count for --update-pull-build if supported
 
---no-db              : do not use database even if found. primarily for testing
+--summary             : summary report for spreadsheet inclusion
+--summary-keep-ref-db : keep scheam reference db when running summary report
+
+--no-db               : do not use database even if found. primarily for testing
 
 __EOD;
 
@@ -154,6 +160,8 @@ $update_branch     = false;
 $update_pull       = false;
 $update_pull_build = false;
 $ansible_run       = false;
+$summary           = false;
+$summary_keep_ref  = '';
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
@@ -219,6 +227,16 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--ansible": {
             array_shift( $u_argv );
             $ansible_run = true;
+            break;
+        }
+        case "--summary": {
+            array_shift( $u_argv );
+            $summary = true;
+            break;
+        }
+        case "--summary-keep-ref-db": {
+            array_shift( $u_argv );
+            $summary_keep_ref = "--compare-keep-ref-db";
             break;
         }
       default:
@@ -375,7 +393,51 @@ foreach ( $known_repos as $k => $v ) {
         $repos->{ $k }->{ 'revdiffers' }             = true;
     }
 }
+
+if ( $summary ) {
+    $order = [ "lims", "mpi", "gui" ];
+
+    $hdr = '"server","db instances","db instances with diffs","lims sql version","local changes","us mpi version","local changes","us gui_version","local changes"';
+    $out = '"' . trim( run_cmd( 'hostname' ) ) . '"';
+
+    $ver = (object)[];
+
+    $cmd = "php uslims_db_schemas.php --compare $summary_keep_ref";
+    $out .= ',' . trim( run_cmd( "php uslims_db_schemas.php --compare $summary_keep_ref" ) );
+
+    foreach ( $known_repos as $k => $v ) {
+        if ( !isset( $v[ 'summary' ] ) || !$v[ 'summary' ] ) {
+            continue;
+        }
+        # debug_json( "$k", $v );
+        $ver->{ $repos->{$k}->{"use"} } = (object)[];
+        if ( isset( $repos->{$k} ) ) {
+            # debug_json( "repos $k", $repos->{$k} );
+            $ver->{ $repos->{$k}->{"use"} }->{"version"}      = $repos->{$k}->{"revision"}->{"number"};
+            $ver->{ $repos->{$k}->{"use"} }->{"local_changes"} = $repos->{$k}->{"local_changes"} > 0 ? $repos->{$k}->{"local_changes"} : '';
+        } else {
+            $ver->{ $repos->{$k}->{"use"} }->{"version"}      = 'n/a';
+            $ver->{ $repos->{$k}->{"use"} }->{"local_changes"} = '"n/a"';
+        }            
+    }
+
+    # debug_json( "ver summary", $ver );
+
+    foreach ( $order as $v ) {
+        if ( isset( $ver->{$v} ) ) {
+            # debug_json( "ver $v", $ver->{$v});
+            $out .= ',' . $ver->{$v}->{"version"} . ',' . $ver->{$v}->{"local_changes"};
+        }
+    }
+
+    echo "$hdr\n";
+    echo "$out\n";
+    
+    exit(0);
+}
         
+## print std reports
+
 printf( "%-60s| %-60s %1s | %-8s %1s | %-13s | %-5s %1s | %-31s| %13s |\n", 
         "Path"
         ,"Git remote url"
