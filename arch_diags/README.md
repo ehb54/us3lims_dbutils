@@ -1,7 +1,6 @@
 ## architecture diagrams
 
  - these are preliminary
- -
 
 ## terse note about generating dox
  - you can generate doxygen output for non-marked-up code
