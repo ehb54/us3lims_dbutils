@@ -1,0 +1,189 @@
+digraph G {
+   label="grid control related processes 'as-is'";
+
+   subgraph cluster_starting {
+      label="";
+      running_job[label="running jobs"];
+
+      listen_config[label="listen-config.php"];
+
+      crontab[label="crontab"];
+   }
+
+   udp_socket[label="udp socket\nport 12233"];
+   us3_pipe[label="us3-pipe - FIFO"];
+            
+   gridctl_pro[label="gridctl_pro.php"];
+
+   subgraph cluster_gridctl {
+      label="gridctl.php";
+      subgraph cluster_gridctl_main_loop {
+         label="";
+         gridctl_main_read[label="1. read all analysis records"];
+         gridctl_main_call[label="2. for each analysis"];
+      }         
+      subgraph cluster_gridctl_process_analysis {
+         label="process analysis";
+         gridctl_process_get_status[label="1. get status"];
+         gridctl_process_status[label="2. switch on status"];
+      }         
+   }
+   subgraph cluster_cleanup {
+      label="cleanup.php";
+      
+   }
+   subgraph cluster_cleanup_aira {
+      label="cleanup_aira.php";
+   }
+   subgraph cluster_cleanup_gfac {
+      label="cleanup_gfac.php";
+   }
+   subgraph cluster_aira {
+      label="Airavata functions";
+      aira_exp_status[label="getExperimentStatus()"];
+   }
+   local_status[label="local status\nssh squeue or qstat"];
+
+   subgraph cluster_listen {
+      label="listen.php";
+      listen_main_loop[label="loop forever"];
+   }
+   subgraph cluster_manage_us3_pipe {
+      label="manage-us3-pipe.php";
+      subgraph cluster_manage_us3_pipe_main_loop {
+         label="main loop";
+         manage_us3_pipe_main_loop_read_pipe[label="1. read from pipe"];
+         manage_us3_pipe_main_loop_call_process_msg[label="2. for each message\ncall process(msg)"];
+      }         
+      subgraph cluster_manage_us3_pipe_process_msg {
+         label="process(msg)";
+         manage_us3_pipe_main_loop_process_msg_loop[label="process msg"];
+      }         
+         
+   }
+   subgraph cluster_mysql {
+      label="mysql tables";
+      mysql_open_db[label="open db connection"];
+      subgraph cluster_gfac {
+         label="gfac";
+         gfac_analysis               [label="analysis"];
+         gfac_queue_messages         [label="queue_messages"];
+      }
+      subgraph cluster_dbinst {
+         label="dbinst";
+         dbinst_HPCAnalysisRequest   [label="HPCAnalysisRequest" ];
+         dbinst_HPCAnalysisResult    [label="HPCAnalysisResult" ];
+         dbinst_HPCAnalysisResultData[label="HPCAnalysisResultData" ];
+         dbinst_autoflowAnalysis     [label="autoflowAnalysis" ];
+         dbinst_people               [label="people" ];
+         dbinst_noise                [label="noise" ];
+         dbinst_model                [label="model" ];
+         dbinst_pcsa_modelrecs       [label="pcsa_modelrecs" ];
+         dbinst_modelPerson          [label="modelPerson" ];
+      }        
+   }
+
+   edge [dir=forward];
+   # udp stream
+   edge [color=darkblue];
+
+   running_job->udp_socket[label=" progress\n updates"];
+   udp_socket->listen_main_loop;
+   listen_main_loop->us3_pipe;
+   us3_pipe->manage_us3_pipe_main_loop_read_pipe;
+   manage_us3_pipe_main_loop_call_process_msg->manage_us3_pipe_main_loop_process_msg_loop;
+   manage_us3_pipe_main_loop_process_msg_loop->mysql_open_db[label="multiple times\nper message" ];
+   dbinst_HPCAnalysisResult->manage_us3_pipe_main_loop_process_msg_loop[label="SELECT"];
+   dbinst_HPCAnalysisResult->manage_us3_pipe_main_loop_process_msg_loop[label="SELECT"];
+   manage_us3_pipe_main_loop_process_msg_loop->dbinst_HPCAnalysisResult[label="UPDATE:\nqueueStatus, start/endTime, lastMessage"];
+   manage_us3_pipe_main_loop_process_msg_loop->gfac_analysis[label="UPDATE:\nstatus, queue_msg"];
+   gfac_queue_messages->manage_us3_pipe_main_loop_process_msg_loop[label="SELECT"];
+   manage_us3_pipe_main_loop_process_msg_loop->gfac_queue_messages[label="INSERT:\nmessage"];
+
+
+   # gridctl stream
+   edge [color=darkgreen];
+
+   crontab->gridctl_pro[label=" every\n minute"];
+   gridctl_pro->gridctl_main_read;
+   gridctl_main_read->mysql_open_db[ ];
+   gfac_analysis->gridctl_main_read[label="SELECT"];
+   gridctl_main_call->gridctl_process_get_status[label="For each\nanalysis record"];
+   gridctl_process_get_status->aira_exp_status[dir="both",label="airavata"];
+   gridctl_process_get_status->local_status[dir="both",label="!airavata"];
+   gridctl_process_status->job_cleanup[label="status:\nERROR"];
+   gridctl_process_status->job_submitted[label="status:\nSUBMITTED"];
+   gridctl_process_status->job_submit_timeout[label="status:\nSUBMIT_TIMEOUT"];
+   gridctl_process_status->job_running[label="status:\nRUNNING\nSTARTED\nSTAGING\nACTIVE"];
+   gridctl_process_status->job_run_timeout[label="status:\nRUN_TIMEOUT"];
+   gridctl_process_status->job_data[label="status:\nDATA\nRESULTS_GEN"];
+   gridctl_process_status->job_complete[label="status:\nCOMPLETED\nCOMPLETE\nFINISHED\nDONE"];
+   gridctl_process_status->job_failed[label="status:\nCANCELED\nCANCELLED\nFAILED"];
+   job_failed->job_cleanup;
+   job_complete->job_cleanup;
+
+   update_autoflow_status->dbinst_autoflowAnalysis[label="UPDATE:\nstatus, statusMsg"];
+
+   # cleanup gfac
+
+   edge [color=darkred];
+
+   gfac_analysis->job_cleanup[label="SELECT"];
+   job_cleanup->gfac_cleanup[label="!airavata"];
+   job_cleanup->aira_cleanup[label="airavata"];
+
+   gfac_cleanup->mysql_open_db;
+   dbinst_HPCAnalysisRequest->gfac_cleanup[label="SELECT"];
+   dbinst_people->gfac_cleanup[label="SELECT"];
+   dbinst_HPCAnalysisResult->gfac_cleanup[label="SELECT"];
+   gfac_analysis->gfac_cleanup[label="SELECT"];
+   gfac_cleanup->get_local_files;
+   gfac_analysis->gfac_cleanup[label="SELECT"];
+   gfac_cleanup->gfac_queue_messages[label="DELETE"];
+   gfac_analysis->gfac_cleanup[label="SELECT"];
+   gfac_cleanup->gfac_analysis[label="DELETE"];
+   gfac_cleanup->update_autoflow_status;
+   gfac_cleanup->dbinst_HPCAnalysisResult[label="UPDATE:\nstderr,stdout"];
+   gfac_cleanup->write_analysis_results;
+   gfac_cleanup->extract_analysis_results;
+   gfac_cleanup->insert_model_noise;
+   gfac_cleanup->dbinst_HPCAnalysisResult[label="UPDATE:\ntimes,mem,etc"];
+   gfac_cleanup->dbinst_noise[label="INSERT"];
+   gfac_cleanup->dbinst_pcsa_modelrecs[label="INSERT"];
+   gfac_cleanup->dbinst_model[label="INSERT"];
+   gfac_cleanup->dbinst_modelPerson[label="INSERT"];
+   gfac_cleanup->dbinst_HPCAnalysisResultData[label="INSERT"];
+   gfac_cleanup->dbinst_noise[label="UPDATE:\n'fixup noise'"];
+   gfac_cleanup->dbinst_pcsa_modelrecs[label="UPDATE:\n'fixup mrecs'"];
+   gfac_cleanup->write_analysis_results;
+   gfac_cleanup->email_to_user;
+
+   /*
+   # cleanup aira
+   edge [color=darkcyan]
+   aira_cleanup->mysql_open_db;
+   dbinst_HPCAnalysisRequest->aira_cleanup[label="SELECT"];
+   dbinst_people->aira_cleanup[label="SELECT"];
+   dbinst_HPCAnalysisResult->aira_cleanup[label="SELECT"];
+   gfac_analysis->aira_cleanup[label="SELECT"];
+   gfac_analysis->aira_cleanup[label="SELECT"];
+   dbinst_HPCAnalysisRequest->aira_cleanup[label="SELECT"];
+   gfac_queue_messages->aira_cleanup[label="SELECT"];
+   aira_cleanup->gfac_queue_messages[label="DELETE"];
+   gfac_analysis->aira_cleanup[label="SELECT"];
+   aira_cleanup->gfac_analysis[label="DELETE"];
+   aira_cleanup->dbinst_HPCAnalysisResult[label="UPDATE:\nstderr,stdout,queueStatus"];
+   aira_cleanup->gfac_analysis[label="DELETE"];
+   aira_cleanup->dbinst_HPCAnalysisResult[label="UPDATE:\ntimes,mem,etc"];
+   aira_cleanup->dbinst_noise[label="INSERT"];
+   aira_cleanup->dbinst_pcsa_modelrecs[label="INSERT"];
+   aira_cleanup->dbinst_model[label="INSERT"];
+   aira_cleanup->dbinst_modelPerson[label="INSERT"];
+   aira_cleanup->dbinst_HPCAnalysisResultData[label="INSERT"];
+   aira_cleanup->dbinst_noise[label="UPDATE:\n'fixup noise'"];
+   aira_cleanup->dbinst_pcsa_modelrecs[label="UPDATE:\n'fixup mrecs'"];
+   dbinst_HPCAnalysisRequest->aira_cleanup[label="SELECT"];
+   aira_cleanup->sleep_wait_stderr;
+   aira_cleanup->gfac_analysis[label="UPDATE:\nstderr,stdout,tarfile"];
+*/
+}
