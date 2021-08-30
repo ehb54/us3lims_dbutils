@@ -281,6 +281,17 @@ foreach ( $dbnames_used as $db => $val ) {
     }
 }
 
+# also for grants
+{
+    $db = "uslims3_GRANTS";
+    $cmd = "ls -1t $db-dump*.sql.$compressext";
+    $result = array_slice( explode( "\n", trim( backup_rsync_run_cmd( $cmd ) ) ), $backup_count );
+
+    # debug_json( "result for $db:", $result );
+    foreach ( $result as $v ) {
+        unlink( $v );
+    }
+}
 
 echoline( '=' );
 echo "completed:
