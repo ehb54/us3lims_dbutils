@@ -2,6 +2,8 @@
 
 # utility
 
+$STDERR = STDERR;
+
 function write_logl( $msg, $this_level = 0 ) {
     global $logging_level;
     global $self;
@@ -43,9 +45,10 @@ function db_obj_result( $db_handle, $query, $expectedMultiResult = false, $empty
 }
 
 function debug_json( $msg, $json ) {
-    fwrite( STDERR,  "$msg\n" );
-    fwrite( STDERR, json_encode( $json, JSON_PRETTY_PRINT ) );
-    fwrite( STDERR, "\n" );
+    global $STDERR;
+    fwrite( $STDERR,  "$msg\n" );
+    fwrite( $STDERR, json_encode( $json, JSON_PRETTY_PRINT ) );
+    fwrite( $STDERR, "\n" );
 }
 
 function run_cmd( $cmd, $die_if_exit = true ) {
@@ -61,7 +64,8 @@ function run_cmd( $cmd, $die_if_exit = true ) {
 }
 
 function error_exit( $msg ) {
-    fwrite( STDERR, "$msg\nTerminating due to errors.\n" );
+    global $STDERR;
+    fwrite( $STDERR, "$msg\nTerminating due to errors.\n" );
     exit(-1);
 }
 
@@ -109,12 +113,13 @@ function flush_errors_exit() {
 }
 
 function get_yn_answer( $question, $quit_if_no = false ) {
+    global $STDERR;
     echoline( '=' );
     do {
         $answer = readline( "$question (y or n) : " );
     } while ( $answer != "y" && $answer != "n" );
     if ( $quit_if_no && $answer == "n" ) {
-        fwrite( STDERR, "Terminated by user response.\n" );
+        fwrite( $STDERR, "Terminated by user response.\n" );
         exit(-1);
     }
     return $answer == "y";
