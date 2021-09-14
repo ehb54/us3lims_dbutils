@@ -42,6 +42,7 @@
    - reports on jobs
      - summary report for db
      - detailed reports by gfacID or HPCAnalysisRequestID
+     - see --help for full command line options
  - uslims_people.php
    - lists and optionally updates dbinsts.people from newus3.people
    - optional administrator report (lists people with userlevel+advancelevel >= 3 )
