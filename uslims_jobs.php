@@ -1,5 +1,12 @@
 <?php
 
+# user defines
+
+$us3lims      = exec( "ls -d ~us3/lims" );
+$ll_base_dir  = "$us3lims/etc/joblog";
+
+# end user defines
+
 # developer defines
 $logging_level = 2;
 # end of developer defines
@@ -20,6 +27,7 @@ Options
 --gfacid         id   : provide information on the specific gfacID
 --full                : display all field data (normally truncates multiline outputs to last line)
 --queue-messages      : include queue message detail
+--monitor             : monitor the output (requires --gfacid)
 
 __EOD;
 
@@ -33,6 +41,7 @@ $gfacid  = false;
 $anyargs = false;
 $fullrpt = false;
 $qmesgs  = false;
+$monitor = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     $anyargs = true;
@@ -75,6 +84,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $qmesgs = true;
             break;
         }
+        case "--monitor": {
+            array_shift( $u_argv );
+            $monitor = true;
+            break;
+        }
       default:
         error_exit( "\nUnknown option '$u_argv[0]'\n\n$notes" );
     }        
@@ -114,6 +128,10 @@ if ( !$db ) {
 
 if ( $reqid && $gfacid ) {
     error_exit( "ERROR: only one id option can be specified" );
+}
+
+if ( $monitor && !$gfacid ) {
+    error_exit( "ERROR: --monitor required --gfacid" );
 }
 
 $existing_dbs = existing_dbs();
@@ -405,5 +423,31 @@ if ( $gfacid ) {
     $out .= hpcresbyreqout( $gfacid, true );
 
     echo $out;
+
+    $lock_dir = "$ll_base_dir/$db/$gfacid";
+    $logfile  = "$lock_dir/log.txt";
+    echoline();
+    echo "logfile                $logfile\n";
+    
+    if ( $monitor ) {
+        if ( !file_exists( $logfile ) ) {
+            error_exit( "can not monitor, $logfile does not exist\n" );
+        }
+
+        $lockfile = "$ll_base_dir/$db/$gfacid/jobmonitor.php.lock";
+        if ( !file_exists( $lockfile ) ) {
+            echoline();
+            echo "jobmonitor.php is not running for this job\n";
+            echo "logfile contents:\n";
+            echoline();
+            echo `cat $logfile`;
+            echoline();
+            exit(0);
+        }
+        echo "output of              tail -f $logfile\n";
+        echo "*** use control-C to quit ***\n";
+        echoline();
+        passthru( "tail -f $logfile" );
+    }            
     exit(0);
 }
