@@ -43,7 +43,7 @@
      - summary report for db
      - detailed reports by gfacID or HPCAnalysisRequestID
      - e.g. monitor a running job
-       - php uslims_jobs.php --db uslims3_DBINSTNAME --gfacid GFACID --monitor
+       - ```php uslims_jobs.php --db uslims3_DBINSTNAME --gfacid GFACID --monitor```
      - see --help for full command line options
  - uslims_people.php
    - lists and optionally updates dbinsts.people from newus3.people
