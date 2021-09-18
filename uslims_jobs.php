@@ -255,8 +255,9 @@ function gfacanalysisout( $gfacid ) {
     while( $row = mysqli_fetch_array($res) ) {
 
         if ( !$fullrpt ) {
-            $tmp = explode( "\n", trim( $row[ 'stdout' ] ) ); $row[ 'stdout' ] = end( $tmp );
-            $tmp = explode( "\n", trim( $row[ 'stderr' ] ) ); $row[ 'stderr' ] = end( $tmp );
+            $tmp = explode( "\n", trim( $row[ 'stdout'  ] ) ); $row[ 'stdout'  ] = end( $tmp );
+            $tmp = explode( "\n", trim( $row[ 'stderr'  ] ) ); $row[ 'stderr'  ] = end( $tmp );
+#            $tmp = explode( "\n", trim( $row[ 'tarfile' ] ) ); $row[ 'tarfile' ] = end( $tmp );
         }
 
         $out .=
@@ -269,7 +270,7 @@ function gfacanalysisout( $gfacid ) {
                 . "autoflowAnalysisID     %s\n"
                 . "stdout                 %s\n"
                 . "stderr                 %s\n"
-                . "tarfile                %s\n"
+#                . "tarfile                %s\n"
                 . "status                 %s\n"
                 . "queue_msg              %s\n"
                 . "time                   %s\n"
@@ -280,7 +281,7 @@ function gfacanalysisout( $gfacid ) {
                 , $row[ 'autoflowAnalysisID' ]
                 , $row[ 'stdout' ]
                 , $row[ 'stderr' ]
-                , $row[ 'tarfile' ]
+#                , $row[ 'tarfile' ]
                 , $row[ 'status' ]
                 , $row[ 'queue_msg' ]
                 , $row[ 'time' ]
