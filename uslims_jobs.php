@@ -4,6 +4,10 @@
 
 $us3lims      = exec( "ls -d ~us3/lims" );
 $ll_base_dir  = "$us3lims/etc/joblog";
+$us3bin       = "$us3lims/bin";
+
+include "$us3bin/listen-config.php";
+include $class_dir_p . "job_details.php";
 
 # end user defines
 
@@ -418,9 +422,35 @@ if ( $reqid ) {
     exit(0);
 }
 
+function is_aira_job( $gfacID ) {
+    return preg_match( "/US3-A/i", $gfacID ) ? true : false;
+}
+
 if ( $gfacid ) {
     $out = "";
     $out .= gfacanalysisout( $gfacid );
+    if ( is_aira_job( $gfacid ) ) {
+        $out .= echoline( '-', 80, false );
+        $jobDetails = getJobDetails( $gfacid );
+        if ( $jobDetails ) {
+            if ( $jobDetails === ' No Job Details ' ) {
+                $jdstdout = $jobDetails;
+                $jdstderr = $jobDetails;
+                
+            } else {
+                $jdstdout = isset( $jobDetails->stdOut ) ? trim( $jobDetails->stdOut ) : "n/a";
+                $jdstderr = isset( $jobDetails->stdErr ) ? trim( $jobDetails->stdErr ) : "n/a";
+            }
+        } else {
+            $jdstdout = "failed to get job details";
+            $jdstderr = "failed to get job details";
+        }
+        $out .=
+            sprintf( "Airavata job stdout    %s\n", $jdstdout )
+            . sprintf( "Airavata job stderr    %s\n", $jdstderr )
+            ;
+    }
+
     $out .= hpcresbyreqout( $gfacid, true );
 
     echo $out;
