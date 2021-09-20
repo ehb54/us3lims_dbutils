@@ -32,7 +32,10 @@ Options
 --full                : display all field data (normally truncates multiline outputs to last line)
 --queue-messages      : include queue message detail
 --monitor             : monitor the output (requires --gfacid)
+--running             : report on all running jobs (gfac.analysis & active jobmonitor.php)
+--restart             : restart jobmonitors if needed (e.g. after a system reboot)
 
+    
 __EOD;
 
 require "utility.php";
@@ -46,6 +49,8 @@ $anyargs = false;
 $fullrpt = false;
 $qmesgs  = false;
 $monitor = false;
+$running = false;
+$restart = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     $anyargs = true;
@@ -93,6 +98,16 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $monitor = true;
             break;
         }
+        case "--running": {
+            array_shift( $u_argv );
+            $running = true;
+            break;
+        }
+        case "--restart": {
+            array_shift( $u_argv );
+            $restart = true;
+            break;
+        }
       default:
         error_exit( "\nUnknown option '$u_argv[0]'\n\n$notes" );
     }        
@@ -126,7 +141,7 @@ and edit with appropriate values
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
-if ( !$db ) {
+if ( !$db && !$running && !$restart ) {
     error_exit( "ERROR: no database specified" );
 }
 
@@ -138,8 +153,137 @@ if ( $monitor && !$gfacid ) {
     error_exit( "ERROR: --monitor required --gfacid" );
 }
 
-$existing_dbs = existing_dbs();
+function jm_only_report( $jm_active ) {
+    $out = "";
+    if ( count( $jm_active ) ) {
+        foreach ( $jm_active as $k => $v ) {
+            $jm_key_parts = explode( ":", $k );
+            $us3_db = $jm_key_parts[0];
+            $gfacid = $jm_key_parts[1];
+            $out .=
+                sprintf(
+                    "%-20s | %-20s | %-45s | %-12s | %s\n"
+                    , "*no gfac.analysis*"
+                    , $us3_db
+                    , $gfacid
+                    , "*unknown*"
+                    , $v
+                )
+                ;
+        }
+    }
+    return $out;
+}
+    
+if ( $running || $restart ) {
+    $jms = explode( "\n", trim( run_cmd( 'ps -ef | grep jobmonitor.php | grep -v grep | awk \'{ print $2 " " $10 " " $11 }\'' ) ) );
+    $jm_active = [];
+    foreach ( $jms as $v ) {
+        $jm_row = explode( " ", $v );
+        if ( count( $jm_row ) == 3 ) {
+            $jm_active[ $jm_row[1] . ":" . $jm_row[2] ] = $jm_row[0];
+        }
+    }
 
+    open_db();
+    $res = db_obj_result( $db_handle, "select * from gfac.analysis order by cluster,us3_db,gfacid", true, true );
+
+    $breakline = echoline( '-', 20 + 3 + 45 + 3 + 20 + 3 + 12 + 3 + 20, false );
+    $out =
+        $breakline
+        . sprintf(
+            "%-20s | %-20s | %-45s | %-12s | %s\n"
+            , 'cluster'
+            , 'db'
+            , 'gfacid'
+            , 'status'
+            , 'job monitor pid'
+        )
+        . $breakline
+        ;
+
+    if ( !$res ) {
+        if ( count( $jm_active ) ) {
+            $out .=
+                $jm_only_report( $jm_active )
+                . $breakline
+                ;
+            echo $out;
+        } else {
+            echo "no currently active jobs\n";
+        }
+        exit;
+    }
+    
+    $jm_restart_db       = [];
+    $jm_restart_gfacid   = [];
+    $jm_restart_hpcreqid = [];
+    
+    while( $row = mysqli_fetch_array($res) ) {
+        $jm_key =  $row[ 'us3_db' ] . ":" . $row[ 'gfacID' ];
+        if ( array_key_exists( $jm_key, $jm_active ) ) {
+            $jm_pid = $jm_active[ $jm_key ];
+            unset( $jm_active[ $jm_key ] );
+        } else {
+            $jm_pid                = "not running";
+            $db                    = $row[ 'us3_db' ];
+            $gfacid                = $row[ 'gfacID' ];
+            $jm_restart_db      [] = $db;
+            $jm_restart_gfacid  [] = $gfacid;
+            $reshpc =
+                db_obj_result(
+                    $db_handle
+                    ,"select HPCAnalysisRequestID from $db.HPCAnalysisResult where gfacID=\"$gfacid\" limit 1"
+                    , false
+                    , false
+                );
+            if ( $reshpc ) {
+                $jm_restart_hpcreqid[] = $reshpc->{ "HPCAnalysisRequestID" };
+            } else {
+                $jm_restart_hpcreqid[] = "unknown";
+            }
+        }
+        $out .=
+            sprintf(
+                "%-20s | %-20s | %-45s | %-12s | %s\n"
+                , $row[ 'cluster' ]
+                , $row[ 'us3_db'  ]
+                , $row[ 'gfacID'  ]
+                , $row[ 'status'  ]
+                , $jm_pid
+            )
+            ;
+    }
+
+    $out .=
+        jm_only_report( $jm_active )
+        . $breakline
+        ;
+
+    if ( $running ) {
+        echo $out;
+    }
+
+    if ( !$restart ) {
+        exit;
+    }
+    
+    if ( !count( $jm_restart_db ) ) {
+        echo "no gfac.analysis found that need restarting\n";
+        exit;
+    }
+
+    foreach ( $jm_restart_db as $index => $db ) {
+        $gfacid   = $jm_restart_gfacid  [ $index ];
+        $hpcreqid = $jm_restart_hpcreqid[ $index ];
+        $cmd = "php $us3bin/jobmonitor/jobmonitor.php $db $gfacid $hpcreqid";
+        echo "restarting: $cmd\n";
+        run_cmd( $cmd );
+    }
+    exit;
+}
+
+$existing_dbs = existing_dbs();
 
 if ( !in_array( $db, $existing_dbs ) ) {
     error_exit( "ERROR: database '$db' does not exist" );
