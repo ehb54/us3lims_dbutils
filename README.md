@@ -12,6 +12,8 @@
 ## UltraScan LIMS specific
  - uslims_binary_db_backup.php
    - creates a binary backup of the mysql database in a unique directory
+ - uslims_certs.php
+   - reports on https cert and scigap expiration dates
  - uslims_db_schemas.php
    - creates diff-able schema dumps with stored procedures, events and triggers for each dbinstance found in the database
  - uslims_db_variables.php
