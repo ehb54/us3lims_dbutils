@@ -86,10 +86,34 @@ function extractdates( $str ) {
     return $dates;
 }
         
+function timetoexpiry( $date ) {
+    if ( $date == "not found" ) {
+        return "unknown";
+    }
+
+    $remainder  = dt_duration_minutes( dt_now(), new DateTime( $date ) );
+    $days       = floor( $remainder / (60 * 24) );
+    $remainder -= $days * 60 * 24;
+    $hours      = floor( $remainder / 60 );
+    $remainder -= $hours * 60;
+
+    return
+        sprintf(
+            "%4dd %2dh %2dm"
+            ,$days
+            ,$hours
+            ,$remainder
+            );
+}
+
 if ( $expiry ) {
+    if ( !is_admin( false ) ) {
+        error_exit( "This option must be run by root or a sudo enabled user" );
+    }
+
 ## header
-    $breakline = echoline( '-', 40 + 3 + 25 + 3 + 25 + 12, false );
-    $fmt = "%-40s | %-25s | %-25s | %-12s\n";
+    $breakline = echoline( '-', 40 + 3 + 25 + 3 + 25 + 3 + 15, false );
+    $fmt = "%-40s | %-25s | %-25s | %-15s\n";
     $out =
         $breakline
         . sprintf(
@@ -97,7 +121,7 @@ if ( $expiry ) {
             , 'certificate source'
             , 'valid not before'
             , 'valid not after'
-            , 'status'
+            , 'time to expiry'
         )
         . $breakline
         ;
@@ -106,13 +130,14 @@ if ( $expiry ) {
     $status = '';
 
     $dates = extractdates( trim( run_cmd( "echo | openssl s_client -connect $scigap_host 2>&1 | openssl x509 -noout -dates 2>&1 | grep -P '^not'" ) ) );
+
     $out .=
         sprintf(
             $fmt
             , $scigap_host
             , $dates[ "notbefore" ]
             , $dates[ "notafter" ]
-            , $status
+            , timetoexpiry( $dates[ "notafter" ] )
         );
     
 ## https
@@ -123,18 +148,16 @@ if ( $expiry ) {
     foreach ( $httpd_sslcerts as $v ) {
         if ( $cert = preg_split( "/(:|\s+)/", $v ) ) {
             if ( count( $cert ) > 2 ) {
-                debug_json( "certs", $cert );
                 $csource = $cert[ 0 ];
                 $cfile   = $cert[ 2 ];
-                $debug = true;
-                $dates = extractdates( trim( run_cmd( "openssl x509 --dates -noout -in $cfile" ) ) );
+                $dates = extractdates( trim( run_cmd( "sudo openssl x509 --dates -noout -in $cfile" ) ) );
                 $out .=
                     sprintf(
                         $fmt
                         , $csource
                         , $dates[ "notbefore" ]
                         , $dates[ "notafter" ]
-                        , $status
+                        , timetoexpiry( $dates[ "notafter" ] )
                     );
 
             }
