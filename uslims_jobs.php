@@ -20,7 +20,7 @@ $self = __FILE__;
 $notes = <<<__EOD
 usage: $self {options} {db_config_file}
 
-list all uslims3_ databases in db
+information about submitted jobs
 
 Options
 
