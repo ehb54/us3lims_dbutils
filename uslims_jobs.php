@@ -29,28 +29,30 @@ Options
 --db             name : select database to report (required for most options)
 --reqid          id   : provide information on the specific HPCAnalysisRequestID
 --gfacid         id   : provide information on the specific gfacID
+--onlygfac            : just return the gfacid for a request id
 --full                : display all field data (normally truncates multiline outputs to last line)
 --queue-messages      : include queue message detail
 --monitor             : monitor the output (requires --gfacid)
 --running             : report on all running jobs (gfac.analysis & active jobmonitor.php)
 --restart             : restart jobmonitors if needed (e.g. after a system reboot)
 
-    
+
 __EOD;
 
 require "utility.php";
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
-$db      = false;
-$reqid   = false;
-$gfacid  = false;
-$anyargs = false;
-$fullrpt = false;
-$qmesgs  = false;
-$monitor = false;
-$running = false;
-$restart = false;
+$db       = false;
+$reqid    = false;
+$gfacid   = false;
+$onlygfac = false;
+$anyargs  = false;
+$fullrpt  = false;
+$qmesgs   = false;
+$monitor  = false;
+$running  = false;
+$restart  = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     $anyargs = true;
@@ -81,6 +83,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                 error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
             }
             $gfacid = array_shift( $u_argv );
+            break;
+        }
+        case "--onlygfac": {
+            array_shift( $u_argv );
+            $onlygfac = true;
             break;
         }
         case "--full": {
@@ -554,6 +561,14 @@ function hpcresbyreqout( $reqid, $reqisgfac = false ) {
         }
     }
     return $out;
+}
+
+if ( $reqid && $onlygfac ) {
+    $res = db_obj_result( $db_handle, "select *  from $db.HPCAnalysisResult where HPCAnalysisRequestID=\"$reqid\"", True );
+    while( $row = mysqli_fetch_array($res) ) {
+        echo $row[ 'gfacID' ] . "\n";
+    }
+    exit;
 }
 
 if ( $reqid ) {
