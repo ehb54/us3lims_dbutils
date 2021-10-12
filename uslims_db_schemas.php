@@ -170,8 +170,8 @@ if ( !count( $compare_dbs ) ) {
     $compare_dbs = $existing_dbs;
 } else {
     $use_dbs = array_intersect( $existing_dbs, $compare_dbs );
-    if ( $use_dbs != $compare_dbs ) {
-        error_exit( "Specified db(s) are not found:\n" . implode( "\n", array_diff( $compare_dbs, $use_dbs ) ) );
+    if ( array_values( $use_dbs ) != $compare_dbs ) {
+        error_exit( "Specified db(s) are not found:\n" . implode( "\n", array_diff( $compare_dbs, array_values( $use_dbs ) ) ) );
     }
 }
 
