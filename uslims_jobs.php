@@ -35,6 +35,7 @@ Options
 --monitor             : monitor the output (requires --gfacid)
 --running             : report on all running jobs (gfac.analysis & active jobmonitor.php)
 --restart             : restart jobmonitors if needed (e.g. after a system reboot)
+--check-log           : checks the log (requires --gfacid & exclusive of --monitor)
 
 
 __EOD;
@@ -53,6 +54,7 @@ $qmesgs   = false;
 $monitor  = false;
 $running  = false;
 $restart  = false;
+$checklog = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     $anyargs = true;
@@ -115,6 +117,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $restart = true;
             break;
         }
+        case "--check-log": {
+            array_shift( $u_argv );
+            $checklog = true;
+            break;
+        }
       default:
         error_exit( "\nUnknown option '$u_argv[0]'\n\n$notes" );
     }        
@@ -157,7 +164,15 @@ if ( $reqid && $gfacid ) {
 }
 
 if ( $monitor && !$gfacid ) {
-    error_exit( "ERROR: --monitor required --gfacid" );
+    error_exit( "ERROR: --monitor requires --gfacid" );
+}
+
+if ( $checklog && !$gfacid ) {
+    error_exit( "ERROR: --checklog requires --gfacid" );
+}
+
+if ( $checklog && $monitor ) {
+    error_exit( "ERROR: --checklog and --monitor can not both be specified" );
 }
 
 function jm_only_report( $jm_active ) {
@@ -619,6 +634,11 @@ if ( $gfacid ) {
     echoline();
     echo "logfile                $logfile\n";
     
+    if ( $checklog ) {
+       check_log( $logfile );
+       exit(0);
+    }
+
     if ( $monitor ) {
         if ( !file_exists( $logfile ) ) {
             error_exit( "can not monitor, $logfile does not exist\n" );
@@ -640,4 +660,69 @@ if ( $gfacid ) {
         passthru( "tail -f $logfile" );
     }            
     exit(0);
+}
+
+## check log functions
+
+function log_str_date( $l ) {
+    $date = substr( $l, 0, 19 );
+    return $date;
+}
+
+function log_date( $l ) {
+    return date_create_from_format('Y-m-d H:i:s', log_str_date( $l ) );
+}
+
+function check_log( $fname ) {
+    $find = [ "terminated", "error", "exit" ];
+    $findmsg = "\t" . implode( "\n\t", $find ) . "\n";
+    $max_duration = 1;
+    $notes = "checks logs for lines matching:\n$findmsg\nand time gaps greater than $max_duration\n";
+    
+    if ( !file_exists( $fname ) ) {
+        error_exit( "file $fname does not exist" );
+    }
+    $ls = explode( "\n", file_get_contents( $fname ) );
+
+    $lc = count( $ls );
+    echo "log file opened with $lc lines\n";
+
+    $out = [];
+    
+    # check for keywords
+
+    foreach ( $find as $v ) {
+        $found = preg_grep( "/$v/i", $ls );
+        if ( count( $found ) ) {
+            foreach ( $found as $vf ) {
+                $out[] = $vf;
+            }
+        }
+    }
+
+    # check for time gaps
+
+    $start = true;
+
+    foreach ( $ls as $l ) {
+        if ( $start ) {
+            $start = false;
+            $sdate = log_date( $l );
+            $sline = $l;
+            continue;
+        }
+        if ( ! ( $edate = log_date( $l ) ) ) {
+            $edate = $sdate;
+        }
+        if ( dt_duration_minutes( $sdate, $edate ) > $max_duration ) {
+            $out[] = $sline;
+            $out[] = sprintf( "%s->%s : time gap of %d minutes", log_str_date( $sline), log_str_date( $l ), dt_duration_minutes( $sdate, $edate ) );
+            $out[] = $l;
+        }
+        $sdate = $edate;
+        $sline = $l;
+    }
+
+    sort( $out );
+    echo implode( "\n", $out ) . "\n";
 }
