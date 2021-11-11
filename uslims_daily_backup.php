@@ -182,6 +182,7 @@ if ( $backup_df_run ) {
 
 
 $dbnames_used = array_fill_keys( existing_dbs(), 1 );
+$dbnames_used[ "newus3" ] = 1;
 
 echoline( '=' );
 echo "found " . count( $dbnames_used ) . " unique dbname records as follows\n";
