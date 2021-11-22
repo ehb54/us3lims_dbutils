@@ -102,7 +102,11 @@ if ( file_exists( $us3ini ) ) {
     if ( !isset( $cfgs[ $us3php ] ) ) {
         error_exit( "user $us3php not found in $us3ini" );
     }
+    if ( !isset( $cfgs[ 'gfac' ] ) ) {
+        error_exit( "user gfac not found in $us3ini" );
+    }
     $us3phppw = $cfgs[ $us3php ][ 'password' ];
+    $gfacpw   = $cfgs[ 'gfac' ][ 'password' ];
 } else {
     error_exit( "file $us3ini not found" );
 }
@@ -268,6 +272,7 @@ if ( get_yn_answer( "create dbinstances" ) ) {
     ,"GRANT EXECUTE ON $db.* TO '$secure_user'@'%' IDENTIFIED BY '$secure_pw' REQUIRE SSL"
     ,"GRANT ALL ON $db.* TO 'us3php'@'localhost' IDENTIFIED by '$us3phppw'"
     ,"GRANT ALL ON $db.* TO 'us3php'@'$this_dbhost' IDENTIFIED by '$us3phppw'"
+    ,"GRANT SELECT,INSERT,UPDATE ON $db.* TO 'gfac'@'localhost' IDENTIFIED by '$gfacpw'"
         ];
         foreach ( $querys as $q ) {
     # echo "query: $q\n";
