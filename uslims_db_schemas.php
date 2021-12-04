@@ -32,8 +32,9 @@ Options
 --help                 : print this information and exit
     
 --compare              : compare with this system's version of lims sql ($limsdbpath)
---compare-db dbname    : only compare named db (can be specified multiple times, default is to comapre all)
+--compare-db dbname    : only compare named db (can be specified multiple times, default is to compare all)
 --compare-keep-ref-db  : do not recreate the reference db, assume it is correct from a previous run
+--show-diffs           : list the differences
 
 --debug                : turn on debugging
 
@@ -45,6 +46,7 @@ array_shift( $u_argv ); # first element is program name
 $compare             = false;
 $compare_dbs         = [];
 $compare_keep_ref_db = false;
+$show_diffs          = false;
 $debug               = 0;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
@@ -74,6 +76,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--debug": {
             array_shift( $u_argv );
             $debug++;
+            break;
+        }
+        case "--show-diffs": {
+            array_shift( $u_argv );
+            $show_diffs = true;
             break;
         }
       default:
@@ -170,8 +177,8 @@ if ( !count( $compare_dbs ) ) {
     $compare_dbs = $existing_dbs;
 } else {
     $use_dbs = array_intersect( $existing_dbs, $compare_dbs );
-    if ( $use_dbs != $compare_dbs ) {
-        error_exit( "Specified db(s) are not found:\n" . implode( "\n", array_diff( $compare_dbs, $use_dbs ) ) );
+    if ( array_values( $use_dbs ) != $compare_dbs ) {
+        error_exit( "Specified db(s) are not found:\n" . implode( "\n", array_diff( $compare_dbs, array_values( $use_dbs ) ) ) );
     }
 }
 
@@ -228,7 +235,8 @@ run_cmd( dump_cmd( $ref_db ) );
 
 
 # dump & compare each db, build report data
-$db_diffs = [];
+$db_diffs        = [];
+$db_diff_results = [];
 foreach ( $compare_dbs as $db ) {
     debug_echo( echoline( '-', 80, false ) );
 
@@ -238,7 +246,8 @@ foreach ( $compare_dbs as $db ) {
 
     debug_echo( "running diffs for $db\n" );
     $result = trim( run_cmd( "diff $ref_db $db", false ) );
-    $db_diffs[ $db ] = strlen( $result ) ? 1 : 0;
+    $db_diffs[ $db ]        = strlen( $result ) ? 1 : 0;
+    $db_diff_results[ $db ] = $result;
 }
 
 # cleanup
@@ -269,4 +278,17 @@ if ( $debug ) {
 $dbcount = count( $compare_dbs );
 $dbdiffs = array_sum( $db_diffs );
 
-echo "$dbcount,$dbdiffs\n";
+if ( $show_diffs ) {
+    foreach ( $db_diff_results as $k => $v ) {
+        if ( strlen( $v ) ) {
+            echoline( "=" );
+            echo "< reference database > $k\n";
+            echoline( "-" );
+            echo "$v\n";
+        }
+    }
+} else {
+    echo "$dbcount,$dbdiffs\n";
+}
+
+
