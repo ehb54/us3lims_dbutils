@@ -32,7 +32,7 @@ Options
 --help                 : print this information and exit
     
 --compare              : compare with this system's version of lims sql ($limsdbpath)
---compare-db dbname    : only compare named db (can be specified multiple times, default is to comapre all)
+--compare-db dbname    : only compare named db (can be specified multiple times, default is to compare all)
 --compare-keep-ref-db  : do not recreate the reference db, assume it is correct from a previous run
 --show-diffs           : list the differences
 
@@ -282,7 +282,7 @@ if ( $show_diffs ) {
     foreach ( $db_diff_results as $k => $v ) {
         if ( strlen( $v ) ) {
             echoline( "=" );
-            echo "$k\n";
+            echo "< $k > reference database\n";
             echoline( "-" );
             echo "$v\n";
         }
