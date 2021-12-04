@@ -279,7 +279,6 @@ $dbcount = count( $compare_dbs );
 $dbdiffs = array_sum( $db_diffs );
 
 if ( $show_diffs ) {
-    echo "show diffs set\n";
     foreach ( $db_diff_results as $k => $v ) {
         if ( strlen( $v ) ) {
             echoline( "=" );
