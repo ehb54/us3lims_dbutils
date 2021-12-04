@@ -282,7 +282,7 @@ if ( $show_diffs ) {
     foreach ( $db_diff_results as $k => $v ) {
         if ( strlen( $v ) ) {
             echoline( "=" );
-            echo "< $k > reference database\n";
+            echo "< reference database > $k\n";
             echoline( "-" );
             echo "$v\n";
         }
