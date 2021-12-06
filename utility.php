@@ -2,11 +2,25 @@
 
 # utility
 
+$STDERR = STDERR;
+
 function write_logl( $msg, $this_level = 0 ) {
     global $logging_level;
     global $self;
     if ( $logging_level >= $this_level ) {
-        echo "${self}: " . $msg . "\n";
+        echo "${self}: $msg\n";
+    }
+}
+
+function timestamp( $msg = "" ) {
+    return date( "Y-m-d H:i:s " ) . $msg;
+}
+
+function write_logld( $msg, $this_level = 0 ) {
+    global $logging_level;
+    global $self;
+    if ( $logging_level >= $this_level ) {
+        echo timestamp() . "${self}: $msg\n";
     }
 }
 
@@ -43,12 +57,13 @@ function db_obj_result( $db_handle, $query, $expectedMultiResult = false, $empty
 }
 
 function debug_json( $msg, $json ) {
-    fwrite( STDERR,  "$msg\n" );
-    fwrite( STDERR, json_encode( $json, JSON_PRETTY_PRINT ) );
-    fwrite( STDERR, "\n" );
+    global $STDERR;
+    fwrite( $STDERR,  "$msg\n" );
+    fwrite( $STDERR, json_encode( $json, JSON_PRETTY_PRINT ) );
+    fwrite( $STDERR, "\n" );
 }
 
-function run_cmd( $cmd, $die_if_exit = true ) {
+function run_cmd( $cmd, $die_if_exit = true, $array_result = false ) {
     global $debug;
     if ( isset( $debug ) && $debug ) {
         echo "$cmd\n";
@@ -57,11 +72,15 @@ function run_cmd( $cmd, $die_if_exit = true ) {
     if ( $die_if_exit && $res_code ) {
         error_exit( "shell command '$cmd' returned result:\n" . implode( "\n", $res ) . "\nand with exit status '$res_code'" );
     }
-    return implode( "\n", $res ) . "\n";
+    if ( !$array_result ) {
+        return implode( "\n", $res ) . "\n";
+    }
+    return $res;
 }
 
 function error_exit( $msg ) {
-    fwrite( STDERR, "$msg\nTerminating due to errors.\n" );
+    global $STDERR;
+    fwrite( $STDERR, "$msg\nTerminating due to errors.\n" );
     exit(-1);
 }
 
@@ -109,12 +128,13 @@ function flush_errors_exit() {
 }
 
 function get_yn_answer( $question, $quit_if_no = false ) {
+    global $STDERR;
     echoline( '=' );
     do {
         $answer = readline( "$question (y or n) : " );
     } while ( $answer != "y" && $answer != "n" );
     if ( $quit_if_no && $answer == "n" ) {
-        fwrite( STDERR, "Terminated by user response.\n" );
+        fwrite( $STDERR, "Terminated by user response.\n" );
         exit(-1);
     }
     return $answer == "y";
