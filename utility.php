@@ -63,7 +63,7 @@ function debug_json( $msg, $json ) {
     fwrite( $STDERR, "\n" );
 }
 
-function run_cmd( $cmd, $die_if_exit = true ) {
+function run_cmd( $cmd, $die_if_exit = true, $array_result = false ) {
     global $debug;
     if ( isset( $debug ) && $debug ) {
         echo "$cmd\n";
@@ -72,7 +72,10 @@ function run_cmd( $cmd, $die_if_exit = true ) {
     if ( $die_if_exit && $res_code ) {
         error_exit( "shell command '$cmd' returned result:\n" . implode( "\n", $res ) . "\nand with exit status '$res_code'" );
     }
-    return implode( "\n", $res ) . "\n";
+    if ( !$array_result ) {
+        return implode( "\n", $res ) . "\n";
+    }
+    return $res;
 }
 
 function error_exit( $msg ) {
