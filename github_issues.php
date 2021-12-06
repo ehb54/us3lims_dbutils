@@ -128,6 +128,12 @@ function get_data( $url ) {
             debug_json( "ERROR unexpected results:", $bres );
             exit(-1);
         }
+        if ( !isset( $v->rule )
+             || !isset( $v->rule->security_severity_level ) ) {
+            debug_json( "ERROR unexpected results:", $bres );
+            exit(-1);
+        }
+        $severity = $v->rule->security_severity_level;
         $state = $v->most_recent_instance->state;
         if ( $state == "open" ) {
             $msg   = $v->most_recent_instance->message->text;
@@ -137,7 +143,7 @@ function get_data( $url ) {
             $scol  = $v->most_recent_instance->location->start_column;
             $ecol  = $v->most_recent_instance->location->end_column;
 
-            $akey = sprintf( "$file %6d:$eline $scol:$ecol $msg\n", $sline );
+            $akey = sprintf( "$severity $file %6d:$eline $scol:$ecol $msg\n", $sline );
             $fres  [ $akey ] = 1;
             $fnames[ $file ] = 1;
         }
