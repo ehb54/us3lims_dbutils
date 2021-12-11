@@ -330,7 +330,11 @@ if ( $create ) {
             }
 
             $investigatorName = fix_single_quote( $investigatorName );
-            
+
+            if ( !strlen( $lastLogin ) ) {
+                $lastLogin = '0000-00-00 00:00:00';
+            }
+
             $query  =
                 "INSERT INTO $globaldb.investigators "
                 . "SET InvestigatorID = $personID, "
