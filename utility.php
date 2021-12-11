@@ -457,11 +457,14 @@ function backup_rsync_run_cmd( $cmd, $die_if_exit = true ) {
     return implode( "\n", $res ) . "\n";
 }
 
-function debug_echo ( $s ) {
+function debug_echo ( $s, $debuglevel = 1 ) {
     global $debug;
-    if ( !$debug ) {
+    if ( !$debug || $debug < $debuglevel ) {
         return;
     }
     echo "$s\n";
 }
     
+function fix_single_quote( $str, $rplc = "" ) {
+    return str_replace( "'", $rplc, $str );
+}
