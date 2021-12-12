@@ -63,7 +63,7 @@ store usage statistics for this database
     --create                 : create the global database
     --csv startyear endyear  : produce csv output
     --csv-all                : report on all clusters (ignores approved list)
-    --clusters-used          : list of the clusters used in the global database
+    --summary-info           : list of the clusters used and the date range in the global database
 
     --debug                  : turn on debugging
 
@@ -81,7 +81,7 @@ $csv                 = false;
 $startyear           = 0;
 $endyear             = 9999;
 $csvall              = false;
-$clustersused        = false;
+$summaryinfo         = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
@@ -109,9 +109,9 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $csvall = true;
             break;
         }
-        case "--clusters-used": {
+        case "--summary-info": {
             array_shift( $u_argv );
-            $clustersused = true;
+            $summaryinfo = true;
             break;
         }
         case "--debug": {
@@ -136,7 +136,7 @@ if ( count( $u_argv ) ) {
     exit;
 }
 
-if ( !$create && !$csv && !$clustersused ) {
+if ( !$create && !$csv && !$summaryinfo ) {
     echo $notes;
     exit;
 }
@@ -373,7 +373,29 @@ if ( $create ) {
     echo "\n";
 }
 
-if ( $clustersused ) {
+if ( $summaryinfo ) {
+
+    ## get min/max date info
+
+    $query  =
+        "SELECT MIN( DateTime ), MAX( EndDateTime ) "
+        . "FROM $globaldb.submissions "
+        . "WHERE Cluster_Name != '' "       ## These were canceled jobs
+        . "AND DateTime NOT LIKE '0000%' "
+        ;
+
+    echo "$query\n";
+    
+    $res = mysqli_query($db_handle, $query);
+    if ( !$res ) {
+        error_exit( "db query failed : $query\ndb query error: " . mysqli_error($db_handle) );
+    }
+
+    while ( list( $min, $max ) = mysqli_fetch_array( $res ) ) {
+        $dateinfo = "Earliest usage recorded : $min\nLatest usage recorded   : $max\n";
+    }
+
+
     ## list clusters used in the created db
     ## get the information about clusters
     $query  =
@@ -398,7 +420,11 @@ if ( $clustersused ) {
         }
     }
     echoline("=");
-    echo "Clusters used in current $globaldb\n";
+    echo "$globaldb summary information\n";
+    echoline();
+    echo $dateinfo;
+    echoline();
+    echo "Clusters used\n";
     echoline();
     sort( $usedlist );
     echo implode( "\n", $usedlist ) . "\n";
