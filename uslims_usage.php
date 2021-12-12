@@ -63,6 +63,7 @@ store usage statistics for this database
     --create                 : create the global database
     --csv startyear endyear  : produce csv output
     --csv-all                : report on all clusters (ignores approved list)
+    --clusters-used          : list of the clusters used in the global database
 
     --debug                  : turn on debugging
 
@@ -80,6 +81,7 @@ $csv                 = false;
 $startyear           = 0;
 $endyear             = 9999;
 $csvall              = false;
+$clustersused        = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
@@ -107,6 +109,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $csvall = true;
             break;
         }
+        case "--clusters-used": {
+            array_shift( $u_argv );
+            $clustersused = true;
+            break;
+        }
         case "--debug": {
             array_shift( $u_argv );
             $debug++;
@@ -129,7 +136,7 @@ if ( count( $u_argv ) ) {
     exit;
 }
 
-if ( !$create && !$csv ) {
+if ( !$create && !$csv && !$clustersused ) {
     echo $notes;
     exit;
 }
@@ -159,9 +166,6 @@ function array_flip_safe(array $array) : array {
         return $carry;
                         }, []);
 }
-
-$usage_consolidation_map = array_flip_safe( $usage_consolidation );
-
 
 $existing_dbs = existing_dbs();
 
@@ -369,11 +373,51 @@ if ( $create ) {
     echo "\n";
 }
 
+if ( $clustersused ) {
+    ## list clusters used in the created db
+    ## get the information about clusters
+    $query  =
+        "SELECT DISTINCT Cluster_Name "
+        . "FROM $globaldb.submissions "
+        . "WHERE Cluster_Name != '' "       ## These were canceled jobs
+        . "AND DateTime NOT LIKE '0000%' "
+        . "ORDER BY Cluster_Name "
+        ;
+    
+    $res = mysqli_query($db_handle, $query);
+    if ( !$res ) {
+        error_exit( "db query failed : $q\ndb query error: " . mysqli_error($db_handle) );
+    }
+
+    $usedlist = [];
+    $noconsol = [];
+    while ( list( $Cluster_Name ) = mysqli_fetch_array( $res ) ) {
+        $usedlist[] = $Cluster_Name;
+        if ( !array_key_exists( $Cluster_Name, $usage_consolidation ) ) {
+            $noconsol[] = $Cluster_Name;
+        }
+    }
+    echoline("=");
+    echo "Clusters used in current $globaldb\n";
+    echoline();
+    sort( $usedlist );
+    echo implode( "\n", $usedlist ) . "\n";
+    if ( count( $noconsol ) ) {
+        echoline();
+        echo "Clusters used but not consolidated in \$usage_consolidation\n";
+        echoline();
+        echo implode( "\n", $noconsol ) . "\n";
+    }
+    echoline("=");
+}
+
 if ( $csv ) {
     ## make csv
     $hostname  = gethostname();
     $tarray    = explode( ".", $hostname );
     $servname  = $tarray[ 1 ];
+
+    $usage_consolidation_map = array_flip_safe( $usage_consolidation );
 
     ## get the information about clusters
     $query  =
