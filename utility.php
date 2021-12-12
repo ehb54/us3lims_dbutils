@@ -56,8 +56,12 @@ function db_obj_result( $db_handle, $query, $expectedMultiResult = false, $empty
     }
 }
 
-function debug_json( $msg, $json ) {
+function debug_json( $msg, $json, $debuglevel = 0 ) {
+    global $debug;
     global $STDERR;
+    if ( $debuglevel > 0 && $debug < $debuglevel ) {
+        return;
+    }
     fwrite( $STDERR,  "$msg\n" );
     fwrite( $STDERR, json_encode( $json, JSON_PRETTY_PRINT ) );
     fwrite( $STDERR, "\n" );

@@ -3,29 +3,29 @@
 {};
 ## user defines
 
-$adjustClusterName =
+## better handled in $usage_consolidation
+### $adjustClusterName =
+###    [
+###     "alamo.bi"  => "alamo.uthscsa.edu"
+###     ,"ls5.tacc" => "lonestar5.tacc.teragrid.org"
+###    ];
+
+## N.B. usage values could (should?) be overridden in db_config.php
+
+$usage_approvedList =
     [
-     "alamo.bi"  => "alamo.uthscsa.edu"
-     ,"ls5.tacc" => "lonestar5.tacc.teragrid.org"
+     'bridges'
+     ,'comet'
+     ,'expanse'
+     ,'umontana'
+     ,'uleth'
+     ,'lonestar5'
+     ,'jetstream'
+     ,'stampede2'
+     ,'testing'
     ];
 
-$approvedList =
-    [
-     'comet'
-     , 'js-169-137'
-     , 'juwels'
-     , 'lonestar5'
-     , 'stampede2'
-     , 'expanse'
-     , 'demeler3'
-     , 'taito'
-     , 'puhti'
-     , 'umontana'
-     , 'chinook'
-     , 'us3iab-node0'
-    ];
-
-$consolidation =
+$usage_consolidation =
     [
      "bridges2.psc.edu" => "bridges"
      ,"comet.sdsc.xsede.org" => "comet"
@@ -39,6 +39,7 @@ $consolidation =
      ,"stampede2.tacc.xsede.org" => "stampede2"
      ,"uslimstest.genapp.rocks" => "testing"
     ];
+
 
 ## end user defines    
 
@@ -151,9 +152,20 @@ require $use_config_file;
 
 # main
 
+function array_flip_safe(array $array) : array {
+    return array_reduce(array_keys($array), function ($carry, $key) use (&$array) {
+        $carry[$array[$key]] = $carry[$array[$key]] ?? [];
+        $carry[$array[$key]][] = $key;
+        return $carry;
+                        }, []);
+}
+
+$usage_consolidation_map = array_flip_safe( $usage_consolidation );
+
+
 $existing_dbs = existing_dbs();
 
-debug_json( "existing_dbs", $existing_dbs );
+debug_json( "existing_dbs", $existing_dbs, 1 );
 
 if ( $create ) {
     ## clean up uslims3_global
@@ -222,12 +234,12 @@ if ( $create ) {
             debug_echo( "submitterName    : $submitterName" );
             debug_echo( "investigatorName : $investigatorName" );
 
-            ## possibly fixup clusterNames
-            
-            $clusterName8 = substr( $clusterName, 0, 8 );
-            if ( array_key_exists( $clusterName8, $adjustClusterName ) ) {
-                $clusterName = $adjustClusterName[ $clusterName8 ];
-            }
+            ## better handled in $usage_consolidation, just leave as is for now
+            ###  possibly fixup clusterNames
+            ###  $clusterName8 = substr( $clusterName, 0, 8 );
+            ###  if ( array_key_exists( $clusterName8, $adjustClusterName ) ) {
+            ###      $clusterName = $adjustClusterName[ $clusterName8 ];
+            ### }
 
             $dsetCount  = 1;
             $global_fit = 0;
@@ -377,28 +389,45 @@ if ( $csv ) {
     }
 
     $cluster_list   = [];
-    $shortname_list = [];
-
+    $cluster_where  = [];
+    
     while ( list( $Cluster_Name ) = mysqli_fetch_array( $res ) ) {
-        $shortname        = explode(".", $Cluster_Name);
-
-        if ( array_key_exists( $Cluster_Name, $consolidation ) ) {
-            $shortname[0] = $consolidation[ $Cluster_Name ];
+        if ( array_key_exists( $Cluster_Name, $usage_consolidation ) ) {
+            $usename = $usage_consolidation[ $Cluster_Name ];
+        } else {
+            $usename = $Cluster_Name;
         }
 
-        debug_echo( sprintf(
-                          "Cluster_Name : %s\n"
-                        . "shortname[0] : %s\n"
-                        , $Cluster_Name
-                        , $shortname[0]
-                    ) );
-
-        if ( $csvall || in_array($shortname[0], $approved_list) )
-        {
-            $cluster_list[]   = $Cluster_Name;
-            $shortname_list[] = $shortname[0];
+        if ( $csvall || in_array( $usename, $usage_approvedList ) ) {
+            if ( !in_array( $usename, $cluster_list ) ) {
+                $cluster_list[]   = $usename;
+            }
         }
     }
+
+    sort( $cluster_list );
+
+    ## build search keys
+    $cluster_all = [];
+
+    foreach ( $cluster_list as $cluster ) {
+
+        ## group all consolidated
+
+        if ( array_key_exists( $cluster, $usage_consolidation_map ) ) {
+            $cluster_where[ $cluster ] = "( Cluster_Name = '" . implode( "' OR Cluster_Name ='", $usage_consolidation_map[ $cluster ] ) . "') ";
+            $cluster_all = array_merge( $cluster_all, $usage_consolidation_map[ $cluster ] );
+        } else {
+            $cluster_where[ $cluster ] = "Cluster_Name = '$cluster' ";
+            $cluster_all[] = $cluster;
+        }
+    }
+    $cluster_all_where = "( Cluster_Name = '" . implode( "' OR Cluster_Name ='", $cluster_all ) . "') ";
+
+    debug_json( "cluster_list", $cluster_list, 1 );
+    debug_json( "cluster_all", $cluster_all, 1 );
+    debug_json( "cluster_where", $cluster_where, 1 );
+    debug_json( "cluster_all_where", $cluster_all_where, 1 );
 
     ## For figuring out the starting and ending dates
     $days   = array(0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31);
@@ -417,14 +446,7 @@ if ( $csv ) {
     ##     ",\"CPUHours\",\"#investigators\",\"#submitters\",\"#Analyses\"\n";
     echo "\"Server\",\"Year\",\"Month\",";
     foreach ( $cluster_list as $cluster ) {
-        ##  $shortname = explode( ".", $cluster );
-        $clusname  = $cluster;
-        ##  $cluslike  = "$cluster.%";
-        if ( array_key_exists( $cluster, $consolidation ) ) {
-            $clusname = $consolidation[ $cluster ];
-        }
-
-        echo "\"CpuHrs-" . $clusname . "\",";
+        echo "\"CpuHrs-" . $cluster . "\",";
     }
 
     echo "\"CpuHrs-TOTAL\",\"#investigators\",\"#submitters\",\"#Analyses\"\n";
@@ -446,16 +468,16 @@ if ( $csv ) {
 
             foreach ( $cluster_list as $cluster ) {
 
-                $cluslike  = "$cluster.%";
-
                 ## CPUTime is in seconds, so divide by 3600 so output will be in CPU Hours
                 $query  =
                     "SELECT SUM(CPUTime*CPU_Number)/3600.0 "
                     . "FROM $globaldb.submissions "
-                    . "WHERE Cluster_Name LIKE '$cluslike' "
+                    . "WHERE " . $cluster_where[ $cluster ]
                     . "AND DateTime >= '$start 00:00:00' "
                     . "AND DateTime <= '$end 23:59:59' "
                     ;
+
+                debug_echo( $query );
                 $res = mysqli_query( $db_handle, $query );
                 if ( !$res ) {
                     error_exit( "db query failed : $query\ndb query error: " . mysqli_error($db_handle) );
@@ -476,6 +498,7 @@ if ( $csv ) {
                 . "FROM $globaldb.submissions "
                 . "WHERE DateTime >= '$start 00:00:00' "
                 . "AND DateTime <= '$end 23:59:59' "
+                . "AND $cluster_all_where "
                 ;
             $res = mysqli_query($db_handle, $query);
             if ( !$res ) {
@@ -492,6 +515,7 @@ if ( $csv ) {
                 . "FROM $globaldb.submissions "
                 . "WHERE DateTime >= '$start 00:00:00' "
                 . "AND DateTime <= '$end 23:59:59' "
+                . "AND $cluster_all_where "
                 ;
             $res = mysqli_query($db_handle, $query);
             if ( !$res ) {
@@ -513,14 +537,13 @@ if ( $csv ) {
         ##  $end     = "$year-09-30";
         printf( "\"%s\",\"%s\",\"Total\",", $servname, $year );
 
-        foreach ( $cluster_list as $cluster )
-        {
+        foreach ( $cluster_list as $cluster ) {
             $cluslike  = "$cluster.%";
             ## CPUTime is in seconds, so divide by 3600 so output will be in CPU Hours
             $query  =
                 "SELECT SUM(CPUTime*CPU_Number)/3600.0 "
                 . "FROM $globaldb.submissions "
-                . "WHERE Cluster_Name LIKE '$cluslike' "
+                . "WHERE " . $cluster_where[ $cluster ]
                 . "AND DateTime >= '$start 00:00:00' "
                 . "AND DateTime <= '$end 23:59:59' "
                 ;
@@ -542,6 +565,7 @@ if ( $csv ) {
             . "FROM $globaldb.submissions "
             . "WHERE DateTime >= '$start 00:00:00' "
             . "AND DateTime <= '$end 23:59:59' "
+            . "AND $cluster_all_where "
             ;
 
         $res = mysqli_query($db_handle, $query);
@@ -565,14 +589,13 @@ if ( $csv ) {
 
     printf( "\"%s\",\"All\",\"Total\",", $servname );
 
-    foreach ( $cluster_list as $cluster )
-    {
+    foreach ( $cluster_list as $cluster ) {
         $cluslike  = "$cluster.%";
         ## CPUTime is in seconds, so divide by 3600 so output will be in CPU Hours
         $query  =
             "SELECT SUM(CPUTime*CPU_Number)/3600.0 "
             . "FROM $globaldb.submissions "
-            . "WHERE Cluster_Name LIKE '$cluslike' "
+            . "WHERE " . $cluster_where[ $cluster ]
             . "AND DateTime >= '$start 00:00:00' "
             . "AND DateTime <= '$end 23:59:59' "
             ;
@@ -595,6 +618,7 @@ if ( $csv ) {
         . "FROM $globaldb.submissions "
         . "WHERE DateTime >= '$start 00:00:00' "
         . "AND DateTime <= '$end 23:59:59' "
+        . "AND $cluster_all_where "
         ;
 
     $res = mysqli_query($db_handle, $query);
