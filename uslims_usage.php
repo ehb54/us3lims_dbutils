@@ -30,12 +30,16 @@ $usage_consolidation =
      "bridges2.psc.edu" => "bridges"
      ,"comet.sdsc.xsede.org" => "comet"
      ,"demeler9.uleth.ca" => "uleth"
+     ,"demeler1.uleth.ca" => "uleth"
+     ,"demeler3.uleth.ca" => "uleth"
+     ,"uslims.uleth.ca" => "uleth"
      ,"expanse.sdsc.edu" => "expanse"
      ,"js-169-137.jetstream-cloud.org" => "jetstream"
      ,"js237.genapp.rocks" => "testing"
      ,"js237a.genapp.rocks" => "testing"
      ,"login.gscc.umt.edu" => "umontana"
-     ,"lonestar5.tacc.teragrid.org" => "lonestar5"
+     ,"chinook.hs.umt.edu" => "umontana"
+     ,"ls5.tacc.utexas.edu" => "lonestar5"
      ,"stampede2.tacc.xsede.org" => "stampede2"
      ,"uslimstest.genapp.rocks" => "testing"
     ];
@@ -223,7 +227,7 @@ if ( $create ) {
         echo ".";
 
         while ( $row = mysqli_fetch_array( $res ) ) {
-            echoline();
+            debug_echo( echoline( '-', 80, false ) );
             debug_echo( "get row keys" );
             ## Make variables
             foreach ($row as $key => $value ) {
@@ -367,10 +371,8 @@ if ( $create ) {
                 error_exit( "db query failed : $query\ndb query error: " . mysqli_error($db_handle) );
             }
         }
-        echo ".";
+        echo ".\n";
     }
-
-    echo "\n";
 }
 
 if ( $summaryinfo ) {
