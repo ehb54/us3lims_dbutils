@@ -23,6 +23,7 @@ $usage_approvedList =
      ,"jetstream"
      ,"jureca"
      ,"juropa"
+     ,"juwels"
      ,"lonestar"
      ,"lonestar5"
      ,"ranger"
@@ -53,6 +54,7 @@ $usage_consolidation =
      ,"lonestar5.tacc.teragrid.org"          => "lonestar5"
      ,"jureca.fz-juelich.de"                 => "jureca"
      ,"juropa.fz-juelich.de"                 => "juropa"
+     ,"juwels.fz-juelich.de"                 => "juwels"
      ,"gatekeeper.ranger.tacc.teragrid.edu"  => "ranger"
      ,"stampede.tacc.xsede.org"              => "stampede"
      ,"stampede2.tacc.xsede.org"             => "stampede2"
@@ -411,7 +413,7 @@ if ( $summaryinfo ) {
         . "AND DateTime NOT LIKE '0000%' "
         ;
 
-    echo "$query\n";
+    debug_echo( $query );
     
     $res = mysqli_query($db_handle, $query);
     if ( !$res ) {
