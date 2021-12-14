@@ -14,34 +14,59 @@
 
 $usage_approvedList =
     [
-     'bridges'
-     ,'comet'
-     ,'expanse'
-     ,'umontana'
-     ,'uleth'
-     ,'lonestar5'
-     ,'jetstream'
-     ,'stampede2'
-     ,'testing'
+     "alamo"
+     ,"bcf"
+     ,"bridges"
+     ,"comet"
+     ,"expanse"
+     ,"gordon"
+     ,"jetstream"
+     ,"jureca"
+     ,"juropa"
+     ,"lonestar"
+     ,"lonestar5"
+     ,"ranger"
+     ,"stampede"
+     ,"stampede2"
+#     ,"testing"
+     ,"trestles"
+     ,"uleth"
+     ,"umontana"
     ];
 
 $usage_consolidation =
     [
-     "bridges2.psc.edu" => "bridges"
-     ,"comet.sdsc.xsede.org" => "comet"
-     ,"demeler9.uleth.ca" => "uleth"
-     ,"demeler1.uleth.ca" => "uleth"
-     ,"demeler3.uleth.ca" => "uleth"
-     ,"uslims.uleth.ca" => "uleth"
-     ,"expanse.sdsc.edu" => "expanse"
-     ,"js-169-137.jetstream-cloud.org" => "jetstream"
-     ,"js237.genapp.rocks" => "testing"
-     ,"js237a.genapp.rocks" => "testing"
-     ,"login.gscc.umt.edu" => "umontana"
-     ,"chinook.hs.umt.edu" => "umontana"
-     ,"ls5.tacc.utexas.edu" => "lonestar5"
-     ,"stampede2.tacc.xsede.org" => "stampede2"
-     ,"uslimstest.genapp.rocks" => "testing"
+     "alamo.biochemistry.uthscsa.edu"        => "alamo"
+     ,"alamo.uthscsa.edu"                    => "alamo"
+     ,"bcf.uthscsa.edu"                      => "bcf"
+     ,"bridges2.psc.edu"                     => "bridges"
+     ,"comet.sdsc.xsede.org"                 => "comet"
+     ,"comet.sdsc.edu"                       => "comet"
+     ,"expanse.sdsc.edu"                     => "expanse"
+     ,"gordon.sdsc.edu"                      => "gordon"
+     ,"gordon.sdsc.xsede.org"                => "gordon"
+     ,"jetstream.jetdomain"                  => "jetstream"
+     ,"js-169-137.jetstream-cloud.org"       => "jetstream"
+     ,"js-157-184.jetstream-cloud.org"       => "jetstream"
+     ,"lonestar.tacc.teragrid.org"           => "lonestar"
+     ,"ls5.tacc.utexas.edu"                  => "lonestar5"
+     ,"lonestar5.tacc.teragrid.org"          => "lonestar5"
+     ,"jureca.fz-juelich.de"                 => "jureca"
+     ,"juropa.fz-juelich.de"                 => "juropa"
+     ,"gatekeeper.ranger.tacc.teragrid.edu"  => "ranger"
+     ,"stampede.tacc.xsede.org"              => "stampede"
+     ,"stampede2.tacc.xsede.org"             => "stampede2"
+     ,"js237.genapp.rocks"                   => "testing"
+     ,"js237a.genapp.rocks"                  => "testing"
+     ,"uslimstest.genapp.rocks"              => "testing"
+     ,"trestles.sdsc.edu"                    => "trestles"
+     ,"demeler9.uleth.ca"                    => "uleth"
+     ,"demeler1.uleth.ca"                    => "uleth"
+     ,"demeler3.uleth.ca"                    => "uleth"
+     ,"uslims.uleth.ca"                      => "uleth"
+     ,"login.gscc.umt.edu"                   => "umontana"
+     ,"chinook.hs.umt.edu"                   => "umontana"
+
     ];
 
 
