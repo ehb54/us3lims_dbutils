@@ -66,6 +66,7 @@ $usage_consolidation =
      ,"trestles.sdsc.edu"                    => "trestles"
      ,"demeler9.uleth.ca"                    => "uleth"
      ,"demeler1.uleth.ca"                    => "uleth"
+     ,"demeler2.uleth.ca"                    => "uleth"
      ,"demeler3.uleth.ca"                    => "uleth"
      ,"uslims.uleth.ca"                      => "uleth"
      ,"login.gscc.umt.edu"                   => "umontana"
