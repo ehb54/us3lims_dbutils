@@ -37,3 +37,22 @@ $notice_remote_host    = "SET_REMOTE_HOST";
 $notice_remote_user    = "SET_REMOTE_USER";
 $notice_remote_db_user = "SET_REMOTE_DB_USER";
 $notice_remote_mycnf   = "SET_REMOTE_MYCNF";
+
+## this section is for usage summaries
+## usage is primarily defined in uslims_usage.php, but custom modificaitons can be placed here.
+## 1. if you define the arrays $usage_approvedList or $usage_consolidation here, they will replace the defaults in uslims_usage.php
+## 2. $usage_approvedList_merge and $usage_consolidation_merge, they will be merged with their respective arrays.
+
+## $usage_approvedList_add format list (comma separated) of "string"
+
+$usage_approvedList_add =
+    [
+    ];
+
+
+## $usage_consolidation_add format list (comma separated) of "string" => "string"
+
+$usage_consolidation_add =
+    [
+    ];
+

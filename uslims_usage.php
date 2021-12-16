@@ -404,6 +404,17 @@ if ( $create ) {
     }
 }
 
+## process usage add's
+
+if ( isset( $usage_approvedList_add ) && count( $usage_approvedList_add ) ) {
+    $usage_approvedList = array_merge( $usage_approvedList, $usage_approvedList_add );
+}
+
+if ( isset( $usage_consolidation_add ) && count( $usage_consolidation_add ) ) {
+    $usage_consolidation = array_merge( $usage_consolidation, $usage_consolidation_add );
+}
+
+
 if ( $summaryinfo ) {
 
     ## get min/max date info
