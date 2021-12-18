@@ -198,7 +198,7 @@ if ( array_key_exists( "link", $cres ) ) {
     $linkthis = substr( $linknext[0], 1, strlen( $linknext[0] ) - 2 );
     $firstpage = preg_replace( '/^.*page=/', '', $linkthis );
     $linkbase  = preg_replace( '/\d+$/', '', $linkthis );
-    $lastpage  = preg_replace( '/(^.*page=|>$)/', '', $linklast[0] );
+    $lastpage  = preg_replace( '/((?:^.*page=)|(?:>$))/', '', $linklast[0] );
     if ( $debug ) {
         echo "linkbase $linkbase\nfirstpage $firstpage\nlastpage $lastpage\n";
     }
