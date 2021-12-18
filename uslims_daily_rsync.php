@@ -18,7 +18,7 @@ __EOD;
 $u_argv = $argv;
 array_shift( $u_argv );
 
-if ( count( $u_argv ) < 0 || count( $u_argv ) > 1 ) {
+if ( count( $u_argv ) > 1 ) {
     echo $notes;
     exit;
 }
