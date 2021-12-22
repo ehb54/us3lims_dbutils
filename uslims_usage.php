@@ -14,7 +14,8 @@
 
 $usage_approvedList =
     [
-     "alamo"
+     "aalto"
+     ,"alamo"
      ,"bcf"
      ,"bridges"
      ,"comet"
@@ -27,9 +28,11 @@ $usage_approvedList =
      ,"konstanz"
      ,"lonestar"
      ,"lonestar5"
+     ,"puhti"
      ,"ranger"
      ,"stampede"
      ,"stampede2"
+     ,"taito"
 #     ,"testing"
      ,"trestles"
      ,"uleth"
@@ -38,7 +41,8 @@ $usage_approvedList =
 
 $usage_consolidation =
     [
-     "alamo.biochemistry.uthscsa.edu"        => "alamo"
+     "us-lims1.aalto.fi"                     => "aalto" 
+     ,"alamo.biochemistry.uthscsa.edu"       => "alamo"
      ,"alamo.uthscsa.edu"                    => "alamo"
      ,"bcf.uthscsa.edu"                      => "bcf"
      ,"bridges2.psc.edu"                     => "bridges"
@@ -57,9 +61,11 @@ $usage_consolidation =
      ,"juropa.fz-juelich.de"                 => "juropa"
      ,"juwels.fz-juelich.de"                 => "juwels"
      ,"ultrascan.chemie.uni-konstanz.de"     => "konstanz"
+     ,"puhti.csc.fi"                         => "puhti"
      ,"gatekeeper.ranger.tacc.teragrid.edu"  => "ranger"
      ,"stampede.tacc.xsede.org"              => "stampede"
      ,"stampede2.tacc.xsede.org"             => "stampede2"
+     ,"taito.csc.fi"                         => "taito"
      ,"js237.genapp.rocks"                   => "testing"
      ,"js237a.genapp.rocks"                  => "testing"
      ,"uslimstest.genapp.rocks"              => "testing"
