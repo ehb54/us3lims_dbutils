@@ -15,7 +15,9 @@ $coresparallel   = get_slurm_cores( 4, $slurmconf );
 
 $reposearchpaths =
     [
-     $us3home
+     "$us3home/lims/bin"
+     ,"$us3home/lims/database"
+     ,"$us3home/us3-nodb"
      ,$usguipath
      ,$wwwpath
     ];
