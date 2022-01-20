@@ -61,8 +61,8 @@ $usage_consolidation_add =
 
 $repo_branches =
     [
-     "https://github.com/ehb54/us3_sql.git"                      => "release-2022-Q1"
-     ,"https://github.com/ehb54/ultrascan3.git"                  => "release-2022-Q1"
+     "https://github.com/ehb54/us3_sql.git"                      => "SET_SQL_BRANCH"
+     ,"https://github.com/ehb54/ultrascan3.git"                  => "SET_US3_BRANCH"
      ,"https://github.com/ehb54/us3lims_dbutils.git"             => "main"
      ,"https://github.com/ehb54/us3lims_gridctl.git"             => "master"
      ,"https://github.com/ehb54/us3lims_common.git"              => "master"
