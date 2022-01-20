@@ -14,10 +14,11 @@ Options
 
 --help               : print this information and exit
 
---host  string       : set host (required)
---port  string       : set port (required)
---user  string       : set user (required)
---generic            : setup generic mapping
+--host  string       : set host (required unless --direct)
+--port  string       : set port (required unless --direct)
+--user  string       : set user (required unless --direct)
+--generic            : setup generic mapping (may be required for smtp.office365)
+--direct             : setup for direct mailing (no smtp)
 
 __EOD;
 
@@ -42,6 +43,7 @@ $smtp_host     = "";
 $smtp_user     = "";
 $smtp_pw       = "";
 $generic       = false;
+$direct        = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
@@ -78,6 +80,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $generic = true;
             break;
         }
+        case "--direct": {
+            array_shift( $u_argv );
+            $direct = true;
+            break;
+        }
       default:
         error_exit( "\nUnknown option '$u_argv[0]'\n\n$notes" );
     }        
@@ -88,12 +95,32 @@ if ( count( $u_argv ) ) {
     exit;
 }
 
-if ( empty($host) || $port == 0 || empty($user) ) {
+if ( !$direct && ( empty($host) || $port == 0 || empty($user) ) ) {
     error_exit( "--host, --port && --user must be defined and non-empty\n\n$notes" );
 }
 
 if ( !file_exists( $saslpw ) ) {
     error_exit( "file $saslpw does not exist, is postfix properly setup?" );
+}
+
+if ( $direct ) {
+    if ( !empty($host) || !empty($user) || $port > 0 || $generic ) {
+        error_exit( "options --host, --user, --port or --generic conflict with --direct\n" );
+    }
+        
+    $cmds = [
+        "service postfix stop"
+        ,"postconf -X relayhost"
+        ,"/usr/sbin/postfix set-permissions"
+        ,"postfix check"
+        ,"service postfix start"
+        ];
+   
+    foreach ( $cmds as $v ) {
+        echo "running $v\n";
+        echo run_cmd( $v );
+    }
+    exit();
 }
 
 # enter password

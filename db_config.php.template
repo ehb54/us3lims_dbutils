@@ -56,3 +56,19 @@ $usage_consolidation_add =
     [
     ];
 
+
+## git branches
+
+$repo_branches =
+    [
+     "https://github.com/ehb54/us3_sql.git"                      => "release-2022-Q1"
+     ,"https://github.com/ehb54/ultrascan3.git"                  => "release-2022-Q1"
+     ,"https://github.com/ehb54/us3lims_dbutils.git"             => "main"
+     ,"https://github.com/ehb54/us3lims_gridctl.git"             => "master"
+     ,"https://github.com/ehb54/us3lims_common.git"              => "master"
+     ,"https://github.com/ehb54/us3lims_webinfo.git"             => "master"
+     ,"https://github.com/ehb54/us3lims_newinst.git"             => "master"
+     ,"https://github.com/ehb54/us3lims_dbinst.git"              => "master"
+     ,"https://github.com/SciGaP/ultrascan-airavata-bridge.git"  => "master"
+    ];
+
