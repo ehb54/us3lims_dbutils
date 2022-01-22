@@ -26,6 +26,18 @@ $rsync_host           = "backup.aucsolutions.com";
 $rsync_user           = $backup_user;          # user for rsync ssh to $rsync_host
 $rsync_path           = "/backup";
 
+## this section is for configuring additional rsync directories
+
+$rsync_add            = false;                 # set to true to include additonal directories in the rsync
+$rsync_add_delete     = false;                 # set to true to remove files from previous rsyncs
+$rsync_add_path       = "/backup/sys";         # path for the rsync_add's - can not be the same as $rsync_path nor a path under $rsync_path
+
+## directories to include in the rsync "add"
+$rsync_add_includes   = [ '/etc', '/home' ];                         
+
+## directories to exclude from the rsync "add"
+$rsync_add_excludes   = [ '/home/us3/lims/database/utils', '/home/ehb' ];
+
 ## this section needed for httpd config domain updates
 
 $server_admin         = "SET_EMAIL";           # for domain name updates
