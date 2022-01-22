@@ -307,20 +307,6 @@ if ( !is_array( $repo_branches ) ) {
     error_exit( "\$repo_branches is improperly defined, check $use_config_file. Template is in db_config.php.template" );
 }
 
-## replace branches
-
-foreach ( $known_repos as $k => $v ) {
-    if ( !isset( $known_repos[$k]["git"] ) ||
-         !isset( $known_repos[$k]["git"]["url"] ) ) {
-        error_exit( "\$known_repos->$k\->git is missing or is missing ->url" );
-    }
-    $url =  $known_repos[$k]["git"]["url"];
-    if ( !isset( $repo_branches[$url] ) ) {
-        error_exit( "$url from \$known_repos[$k] is not present in \$repo_branches (defined in $use_config_file)" );
-    }
-    $known_repos[$k]["git"]["branch"] = $repo_branches[$url];
-}
-    
 # utility routines
 
 function svn_repo( $path ) {
@@ -403,6 +389,20 @@ if ( !$no_db ) {
     }
 }
 
+## replace branches
+
+foreach ( $known_repos as $k => $v ) {
+    if ( !isset( $known_repos[$k]["git"] ) ||
+         !isset( $known_repos[$k]["git"]["url"] ) ) {
+        error_exit( "\$known_repos->$k\->git is missing or is missing ->url" );
+    }
+    $url =  $known_repos[$k]["git"]["url"];
+    if ( !isset( $repo_branches[$url] ) ) {
+        error_exit( "$url from \$known_repos[$k] is not present in \$repo_branches (defined in $use_config_file)" );
+    }
+    $known_repos[$k]["git"]["branch"] = $repo_branches[$url];
+}
+    
 $repodirs = [];
 foreach ( $reposearchpaths as $v ) {
     $repodirs = array_merge( $repodirs, array_filter( explode( "\n", trim( run_cmd( "find $v -name '*.git' 2>/dev/null | sed 's/.git\$//' | sed 's/\/\$//'" ) ) ) ) );
@@ -418,6 +418,9 @@ foreach ( $repodirs as $v ) {
     $repos->{ $v }->{ 'revision' }->{ 'number' } = trim( run_cmd( "cd $v && git log --oneline | sed -n '/" . $repos->{ $v }->{ 'revision' }->{ 'hash' } . "/,99999p' | wc -l" ) );
     $repos->{ $v }->{ 'local_changes' }          = trim( run_cmd( "cd $v && git status -s | grep '^ M' | wc -l" ) );
     $repos->{ $v }->{ 'remote' }                 = trim( run_cmd( "cd $v && git remote -v | grep '\(fetch\)' | awk '{ print \$2 }'" ) );
+    if ( substr( $repos->{ $v }->{ 'remote' }, -4 ) != ".git" ) {
+       error_exit( "remote for repo in $v does not end in .git\nreset with:\ncd $v && git remote set-url origin " .  $repos->{ $v }->{ 'remote' } . ".git" );
+    }
     $repos->{ $v }->{ 'branch' }                 = trim( run_cmd( "cd $v && git branch --show-current" ) );
     $repos->{ $v }->{ 'branchdiffers' }          = false;
     $repos->{ $v }->{ 'urldiffers' }             = false;
