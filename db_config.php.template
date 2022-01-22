@@ -26,6 +26,18 @@ $rsync_host           = "backup.aucsolutions.com";
 $rsync_user           = $backup_user;          # user for rsync ssh to $rsync_host
 $rsync_path           = "/backup";
 
+## this section is for configuring additional rsync directories
+
+$rsync_add            = false;                 # set to true to include additonal directories in the rsync
+$rsync_add_delete     = false;                 # set to true to remove files from previous rsyncs
+$rsync_add_path       = "/backup/sys";         # path for the rsync_add's - can not be the same as $rsync_path nor a path under $rsync_path
+
+## directories to include in the rsync "add"
+$rsync_add_includes   = [ '/etc', '/home' ];                         
+
+## directories to exclude from the rsync "add"
+$rsync_add_excludes   = [ '/home/us3/lims/database/utils', '/home/ehb' ];
+
 ## this section needed for httpd config domain updates
 
 $server_admin         = "SET_EMAIL";           # for domain name updates
@@ -37,3 +49,38 @@ $notice_remote_host    = "SET_REMOTE_HOST";
 $notice_remote_user    = "SET_REMOTE_USER";
 $notice_remote_db_user = "SET_REMOTE_DB_USER";
 $notice_remote_mycnf   = "SET_REMOTE_MYCNF";
+
+## this section is for usage summaries
+## usage is primarily defined in uslims_usage.php, but custom modificaitons can be placed here.
+## 1. if you define the arrays $usage_approvedList or $usage_consolidation here, they will replace the defaults in uslims_usage.php
+## 2. $usage_approvedList_merge and $usage_consolidation_merge, they will be merged with their respective arrays.
+
+## $usage_approvedList_add format list (comma separated) of "string"
+
+$usage_approvedList_add =
+    [
+    ];
+
+
+## $usage_consolidation_add format list (comma separated) of "string" => "string"
+
+$usage_consolidation_add =
+    [
+    ];
+
+
+## git branches
+
+$repo_branches =
+    [
+     "https://github.com/ehb54/us3_sql.git"                      => "SET_SQL_BRANCH"
+     ,"https://github.com/ehb54/ultrascan3.git"                  => "SET_US3_BRANCH"
+     ,"https://github.com/ehb54/us3lims_dbutils.git"             => "main"
+     ,"https://github.com/ehb54/us3lims_gridctl.git"             => "master"
+     ,"https://github.com/ehb54/us3lims_common.git"              => "master"
+     ,"https://github.com/ehb54/us3lims_webinfo.git"             => "master"
+     ,"https://github.com/ehb54/us3lims_newinst.git"             => "master"
+     ,"https://github.com/ehb54/us3lims_dbinst.git"              => "master"
+     ,"https://github.com/SciGaP/ultrascan-airavata-bridge.git"  => "master"
+    ];
+

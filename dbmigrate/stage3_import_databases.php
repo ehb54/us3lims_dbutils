@@ -32,6 +32,8 @@ usage: $self export_dbhost this_dbhost ipaddr {config_file}
 if config_file specified, it will be used instead of ../db config
 writes to ...
 my.cnf must exist in the current directory
+when importing metadata, use php option -d mysqli.allow_local_infile=On 
+
 
 __EOD;
 
