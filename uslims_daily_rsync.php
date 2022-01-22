@@ -6,7 +6,7 @@ $hdir = __DIR__;
 $us3bin    = exec( "ls -d ~us3/lims/bin" );
 include_once "$us3bin/listen-config.php";
 
-$debug = 1;
+# $debug = 1;
 
 $notes = <<<__EOD
 usage: $self {config_file}
