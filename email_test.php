@@ -19,8 +19,6 @@ require "utility.php";
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
-$times               = false;
-
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
         case "--help": {

@@ -15,7 +15,9 @@ $coresparallel   = get_slurm_cores( 4, $slurmconf );
 
 $reposearchpaths =
     [
-     $us3home
+     "$us3home/lims/bin"
+     ,"$us3home/lims/database"
+     ,"$us3home/us3-nodb"
      ,$usguipath
      ,$wwwpath
     ];
@@ -123,7 +125,7 @@ foreach ( $known_repos as $v ) {
 $known_use_list = implode( ", ", array_keys( $known_uses ));
 
 $notes = <<<__EOD
-usage: $self {options}
+usage: $self {options} {db_config_file}
 
 list all git repo info
 must be run with root privileges
@@ -136,7 +138,7 @@ Options
 --diff-report         : shows git diff details for local changes
 --quiet               : suppress some info messages
 --skip-unknown        : suppress reporting of discovered Use:unknown repos
---update-branch       : update branch to default branch
+--update-branch       : update branch to default branch (when changing to a new branch might require --update-pull first)
 --update-pull use     : update repos by use, currently $known_use_list or all
 --update-pull-build   : recompile buildible repos. requires --update-pull also be specified
 --cores #             : use core count instead of discoverd count for --update-pull-build if supported
@@ -244,6 +246,34 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     }        
 }
 
+$config_file = "db_config.php";
+if ( count( $u_argv ) ) {
+    $use_config_file = array_shift( $u_argv );
+} else {
+    $use_config_file = $config_file;
+}
+
+if ( count( $u_argv ) ) {
+    echo $notes;
+    exit;
+}
+
+if ( !file_exists( $use_config_file ) ) {
+    fwrite( STDERR, "$self: 
+$use_config_file does not exist
+
+to fix:
+
+cp ${config_file}.template $use_config_file
+and edit with appropriate values
+")
+        ;
+    exit(-1);
+}
+
+file_perms_must_be( $use_config_file );
+require $use_config_file;
+
 if ( $update_pull_build && !$update_pull ) {
     error_exit( "\nOption --update_pull_build requires --update_pull to be specified.\n\n$notes" );
 }
@@ -267,6 +297,30 @@ if ( !is_admin() ) {
     error_exit( "you must have administrator privileges" );
 }
 
+# check for repo_branches
+
+if ( !isset( $repo_branches ) ) {
+    error_exit( "\$repo_branches must now be defined in $use_config_file. Template is in db_config.php.template" );
+}
+
+if ( !is_array( $repo_branches ) ) {
+    error_exit( "\$repo_branches is improperly defined, check $use_config_file. Template is in db_config.php.template" );
+}
+
+## replace branches
+
+foreach ( $known_repos as $k => $v ) {
+    if ( !isset( $known_repos[$k]["git"] ) ||
+         !isset( $known_repos[$k]["git"]["url"] ) ) {
+        error_exit( "\$known_repos->$k\->git is missing or is missing ->url" );
+    }
+    $url =  $known_repos[$k]["git"]["url"];
+    if ( !isset( $repo_branches[$url] ) ) {
+        error_exit( "$url from \$known_repos[$k] is not present in \$repo_branches (defined in $use_config_file)" );
+    }
+    $known_repos[$k]["git"]["branch"] = $repo_branches[$url];
+}
+    
 # utility routines
 
 function svn_repo( $path ) {
@@ -284,6 +338,8 @@ function get_rev( $url ) {
     global $rev_cache;
     global $rev_info;
     global $quiet;
+    global $repo_branches;
+
     if ( isset( $rev_info->{$url} ) ) {
         return $rev_info->{$url};
     }
@@ -299,7 +355,11 @@ function get_rev( $url ) {
     if ( !$quiet ) {
         echo "cloning repo $url into $tdir to get revision information\n";
     }
-    run_cmd( "cd $tdir && git clone $url repo" );
+    if ( !isset( $repo_branches[ $url ] ) ) {
+        error_exit( "$url not defined in \$repo_branches" );
+    }
+    $branch = $repo_branches[ $url ];
+    run_cmd( "cd $tdir && git clone -b $branch --single-branch $url repo" );
     $hash = trim( run_cmd( "cd $tdir/repo && git log -1 --oneline .| cut -d' ' -f1" ) );
     $rev  = trim( run_cmd( "cd $tdir/repo && git log --oneline | sed -n '/$hash/,99999p' | wc -l" ) );
     run_cmd( "rm -fr $tdir/repo" );
@@ -438,7 +498,7 @@ if ( $summary ) {
         
 ## print std reports
 
-printf( "%-60s| %-60s %1s | %-8s %1s | %-13s | %-5s %1s | %-31s| %13s |\n", 
+printf( "%-60s| %-60s %1s | %-15s %1s | %-13s | %-5s %1s | %-31s| %13s |\n", 
         "Path"
         ,"Git remote url"
         ,""
@@ -451,10 +511,10 @@ printf( "%-60s| %-60s %1s | %-8s %1s | %-13s | %-5s %1s | %-31s| %13s |\n",
         ,"Local changes"
         ,""
     );
-echoline( "-", 214 );
+echoline( "-", 221 );
 foreach ( $repos as $k => $v ) {
     if ( !$skip_unknown || $v->{'use'} != 'unknown' ) {
-        printf( "%-60s| %-60s %1s | %-8s %1s | %-13s | %5d %1s | %-31s| %11d %1s |\n", 
+        printf( "%-60s| %-60s %1s | %-15s %1s | %-13s | %5d %1s | %-31s| %11d %1s |\n", 
                 substr( $k, 0, 60 )
                 ,substr( $v->{'remote'}, 0, 60 )
                 ,boolstr( $v->{'urldiffers'}, "Δ" )
@@ -469,7 +529,7 @@ foreach ( $repos as $k => $v ) {
             );
     }
 }
-echoline( "-", 214 );
+echoline( "-", 221 );
 
 if ( $diff_report ) {
     $diff_run = false;

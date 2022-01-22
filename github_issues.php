@@ -33,6 +33,7 @@ Options
 --owner    string      : set owner      (default: $owner)
 --repo     string      : set repository (default: $repo)
 --summary  string      : add file summary list
+--all                  : get open and closed issues
 
 __EOD;
 
@@ -41,6 +42,7 @@ array_shift( $u_argv ); # first element is program name
 
 $debug               = 0;
 $summary             = false;
+$all                 = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
@@ -63,6 +65,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $summary = true;
             break;
         }
+        case "--all": {
+            array_shift( $u_argv );
+            $all = true;
+            break;
+        }
         case "--debug": {
             array_shift( $u_argv );
             $debug++;
@@ -78,12 +85,12 @@ if ( count( $u_argv ) ) {
 }
 
 # enter token
-echo "token: ";
+fwrite( STDERR, "token: " );
 system('stty -echo');
 $token = trim(fgets(STDIN));
 system('stty echo');
 # add a new line since the users CR didn't echo
-echo "\n";
+fwrite( STDERR, "\n" );
 
 function get_data( $url ) {
     global $headers;
@@ -91,6 +98,7 @@ function get_data( $url ) {
     global $fnames;
     global $token;
     global $debug;
+    global $all;
     $cmd = "curl -siH \"Authorization: token $token\" $url";
     if ( $debug ) {
         echo "$cmd\n";
@@ -135,7 +143,7 @@ function get_data( $url ) {
         }
         $severity = $v->rule->security_severity_level;
         $state = $v->most_recent_instance->state;
-        if ( $state == "open" ) {
+        if ( $state == "open" || $all ) {
             $msg   = $v->most_recent_instance->message->text;
             $file  = $v->most_recent_instance->location->path;
             $sline = $v->most_recent_instance->location->start_line;
@@ -190,7 +198,7 @@ if ( array_key_exists( "link", $cres ) ) {
     $linkthis = substr( $linknext[0], 1, strlen( $linknext[0] ) - 2 );
     $firstpage = preg_replace( '/^.*page=/', '', $linkthis );
     $linkbase  = preg_replace( '/\d+$/', '', $linkthis );
-    $lastpage  = preg_replace( '/(^.*page=|>$)/', '', $linklast[0] );
+    $lastpage  = preg_replace( '/((?:^.*page=)|(?:>$))/', '', $linklast[0] );
     if ( $debug ) {
         echo "linkbase $linkbase\nfirstpage $firstpage\nlastpage $lastpage\n";
     }

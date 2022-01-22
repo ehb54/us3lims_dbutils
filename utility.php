@@ -56,8 +56,12 @@ function db_obj_result( $db_handle, $query, $expectedMultiResult = false, $empty
     }
 }
 
-function debug_json( $msg, $json ) {
+function debug_json( $msg, $json, $debuglevel = 0 ) {
+    global $debug;
     global $STDERR;
+    if ( $debuglevel > 0 && $debug < $debuglevel ) {
+        return;
+    }
     fwrite( $STDERR,  "$msg\n" );
     fwrite( $STDERR, json_encode( $json, JSON_PRETTY_PRINT ) );
     fwrite( $STDERR, "\n" );
@@ -147,7 +151,7 @@ function backup_dir_init( $dir = "backup" ) {
     $util_backup_dir = "$dir-" . trim( run_cmd( 'date +"%Y%m%d%H%M%S"' ) );
     mkdir( $util_backup_dir );
     if ( !is_dir( $util_backup_dir ) ) {
-        error_exit( "Could not make backup directory $util_backupdir" );
+        error_exit( "Could not make backup directory $util_backup_dir" );
     }
 }
 
@@ -170,7 +174,7 @@ function newfile_dir_init( $dir = "newfile" ) {
     $newfile_dir = "$dir-" . trim( run_cmd( 'date +"%Y%m%d%H%M%S"' ) );
     mkdir( $newfile_dir );
     if ( !is_dir( $newfile_dir ) ) {
-        error_exit( "Could not make newfile directory $newfiledir" );
+        error_exit( "Could not make newfile directory $newfile_dir" );
     }
     return $newfile_dir;
 }
@@ -457,11 +461,14 @@ function backup_rsync_run_cmd( $cmd, $die_if_exit = true ) {
     return implode( "\n", $res ) . "\n";
 }
 
-function debug_echo ( $s ) {
+function debug_echo ( $s, $debuglevel = 1 ) {
     global $debug;
-    if ( !$debug ) {
+    if ( !$debug || $debug < $debuglevel ) {
         return;
     }
     echo "$s\n";
 }
     
+function fix_single_quote( $str, $rplc = "" ) {
+    return str_replace( "'", $rplc, $str );
+}
