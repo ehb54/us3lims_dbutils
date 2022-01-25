@@ -21,10 +21,13 @@ $backup_rdiff_temp    = "/srv/data/temp";      # path for temporary storage for 
 $backup_df_pct_warn   = 80;                    # the warning threshold
 $backup_df_check      = [];                    # array of mounts to check for free space, leave empty for no checks
 
+## rsync options
+
 $rsync_logs           = "/srv/data/log";
 $rsync_host           = "backup.aucsolutions.com";
 $rsync_user           = $backup_user;          # user for rsync ssh to $rsync_host
 $rsync_path           = "/backup";
+$rsync_no_hostname    = true;                  # set to true to exclude the hostname from the rsync target path
 
 ## this section is for configuring additional rsync directories
 
