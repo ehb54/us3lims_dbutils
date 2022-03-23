@@ -1,0 +1,89 @@
+<?php
+
+$dbhost               = "SET_HOST";
+$user                 = "SET_USER";
+$passwd               = "SET_PASSWORD";
+
+## this section is for backups & rsyncs
+
+$backup_logs          = "/srv/data/log";
+$backup_dir           = "/srv/data/sqldumps";  # directory for daily backups
+$backup_count         = 7;                     # number of backups to keep per uslims3_ database
+$backup_host          = "SET_HOSTNAME";
+$backup_rsync         = false;                 # force rsync after backup
+$backup_user          = "usadmin";             # owner of the backup files
+$backup_email_reports = false;
+$backup_email_address = "SET_EMAIL";           # email addresses for backups
+
+$backup_rdiff         = false;
+$backup_rdiff_temp    = "/srv/data/temp";      # path for temporary storage for rdiffs note : must be on the same partition as the $backups_dir 
+
+$backup_df_pct_warn   = 80;                    # the warning threshold
+$backup_df_check      = [];                    # array of mounts to check for free space, leave empty for no checks
+
+## rsync options
+
+$rsync_logs           = "/srv/data/log";
+$rsync_host           = "backup.aucsolutions.com";
+$rsync_user           = $backup_user;          # user for rsync ssh to $rsync_host
+$rsync_path           = "/backup";
+$rsync_no_hostname    = true;                  # set to true to exclude the hostname from the rsync target path
+
+## this section is for configuring additional rsync directories
+
+$rsync_add            = false;                 # set to true to include additonal directories in the rsync
+$rsync_add_delete     = false;                 # set to true to remove files from previous rsyncs
+$rsync_add_path       = "/backup/sys";         # path for the rsync_add's - can not be the same as $rsync_path nor a path under $rsync_path
+
+## directories to include in the rsync "add"
+$rsync_add_includes   = [ '/etc', '/home' ];                         
+
+## directories to exclude from the rsync "add"
+$rsync_add_excludes   = [ '/home/us3/lims/database/utils', '/home/ehb' ];
+
+## this section needed for httpd config domain updates
+
+$server_admin         = "SET_EMAIL";           # for domain name updates
+$self_signed_certs    = false;                 # set to true for self signed
+
+## this section only needed for needed for update notice
+
+$notice_remote_host    = "SET_REMOTE_HOST";
+$notice_remote_user    = "SET_REMOTE_USER";
+$notice_remote_db_user = "SET_REMOTE_DB_USER";
+$notice_remote_mycnf   = "SET_REMOTE_MYCNF";
+
+## this section is for usage summaries
+## usage is primarily defined in uslims_usage.php, but custom modificaitons can be placed here.
+## 1. if you define the arrays $usage_approvedList or $usage_consolidation here, they will replace the defaults in uslims_usage.php
+## 2. $usage_approvedList_merge and $usage_consolidation_merge, they will be merged with their respective arrays.
+
+## $usage_approvedList_add format list (comma separated) of "string"
+
+$usage_approvedList_add =
+    [
+    ];
+
+
+## $usage_consolidation_add format list (comma separated) of "string" => "string"
+
+$usage_consolidation_add =
+    [
+    ];
+
+
+## git branches
+
+$repo_branches =
+    [
+     "https://github.com/ehb54/us3_sql.git"                      => "release-2022-Q1"
+     ,"https://github.com/ehb54/ultrascan3.git"                  => "release-2022-Q1"
+     ,"https://github.com/ehb54/us3lims_dbutils.git"             => "main"
+     ,"https://github.com/ehb54/us3lims_gridctl.git"             => "release-2022-Q1"
+     ,"https://github.com/ehb54/us3lims_common.git"              => "release-2022-Q1"
+     ,"https://github.com/ehb54/us3lims_webinfo.git"             => "release-2022-Q1"
+     ,"https://github.com/ehb54/us3lims_newinst.git"             => "release-2022-Q1"
+     ,"https://github.com/ehb54/us3lims_dbinst.git"              => "release-2022-Q1"
+     ,"https://github.com/SciGaP/ultrascan-airavata-bridge.git"  => "master"
+    ];
+
