@@ -276,6 +276,6 @@ foreach ( $dbnames_used as $db => $val ) {
         echoline();
         $cmd = "diff $e_reccount $i_reccount";
         echo "$cmd :\n";
-        echo run_cmd( $cmd );
+        echo run_cmd( $cmd, false );
     }
 }
