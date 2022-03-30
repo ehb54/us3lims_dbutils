@@ -155,9 +155,9 @@ if ( isset( $lock_dir ) ) {
 backup_rsync_run_cmd( "(echo -n 'rsync started: ' && date) > $logf", false );
 
 if ( isset( $rsync_no_sudo ) && $rsync_no_sudo ) {
-    $sudo_rsync = "sudo rsync";
-} else {
     $sudo_rsync = "rsync";
+} else {
+    $sudo_rsync = "sudo rsync";
 }
 
 $cmd = "sudo -u $rsync_user rsync -av -e 'ssh -l usadmin' --rsync-path='$sudo_rsync' --delete --update $backup_dir $rsync_user@$rsync_host:$rsync_path/$use_backup_host 2>&1 >> $logf";
