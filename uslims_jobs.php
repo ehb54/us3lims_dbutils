@@ -198,7 +198,7 @@ function jm_only_report( $jm_active ) {
 }
     
 if ( $running || $restart ) {
-    $jms = explode( "\n", trim( run_cmd( 'ps -ef | grep jobmonitor.php | grep -v grep | awk \'{ print $2 " " $10 " " $11 }\'' ) ) );
+    $jms = explode( "\n", trim( run_cmd( 'ps -efww | grep jobmonitor.php | grep -v grep | awk \'{ print $2 " " $10 " " $11 }\'' ) ) );
     $jm_active = [];
     foreach ( $jms as $v ) {
         $jm_row = explode( " ", $v );

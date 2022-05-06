@@ -25,6 +25,7 @@ Options
 
 --list                : list clusters
 --only-active         : list only active entries
+--db dbname           : restrict results to dbname (can be specified multiple times)
 
 
 __EOD;
@@ -34,6 +35,7 @@ $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 $anyargs    = false;
 
+$use_dbs    = [];
 $list       = false;
 $onlyactive = false;
 
@@ -43,6 +45,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--help": {
             echo $notes;
             exit;
+        }
+        case "--db": {
+            array_shift( $u_argv );
+            $use_dbs[] = array_shift( $u_argv );
+            break;
         }
         case "--list": {
             array_shift( $u_argv );
@@ -239,6 +246,12 @@ function check_cluster_status() {
     
     ksort( $cluster_configuration );
 
+    if ( !isset( $global_cluster_details )
+         || !is_array( $global_cluster_details ) ) {
+        $error_msg( "missing \$global_config_file $global_config_file" );
+        return;
+    }
+    
     foreach ( $global_cluster_details as $k => $v ) {
         if ( array_key_exists( 'active', $v )
              && $v['active'] 
@@ -415,16 +428,17 @@ function check_db_config( $use_db ) {
         if ( !array_key_exists( $k, $cluster_configuration ) ) {
             $msg->active = "False";
             $msg->issues = "not in \$cluster_configuration. "; 
-        }
-        if ( !is_array( $cluster_configuration[$k] ) ) {
-            $msg->active = "False";
-            $msg->issues = "\$cluster_configuration for this entry is corrupt (not an array). "; 
-        }
-        
-        if ( !array_key_exists( 'active', $cluster_configuration[$k] ) ||
-             $cluster_configuration[$k]['active'] == false
-            ) {
-            $msg->active = "False";
+        } else {
+            if ( !is_array( $cluster_configuration[$k] ) ) {
+                $msg->active = "False";
+                $msg->issues = "\$cluster_configuration for this entry is corrupt (not an array). "; 
+            }
+            
+            if ( !array_key_exists( 'active', $cluster_configuration[$k] ) ||
+                 $cluster_configuration[$k]['active'] == false
+                ) {
+                $msg->active = "False";
+            }
         }
 
         ## do all required keys exist for this cluster?
@@ -498,7 +512,17 @@ echoline( '=', $flen );
 
 $existing_dbs = existing_dbs();
 
-foreach ( $existing_dbs as $use_db ) {
+if ( !count( $use_dbs ) ) {
+    $use_dbs = $existing_dbs;
+} else {
+    $db_diff = array_diff( $use_dbs, $existing_dbs );
+    if ( count( $db_diff ) ) {
+        error_exit( "specified --db not found in database : " . implode( ' ', $db_diff ) );
+    }
+}
+
+foreach ( $use_dbs as $use_db ) {
+    echoline( '-', $flen );
     echo "dbinst: $use_db\n";
     check_db_config( $use_db );
     if ( strlen( $errors ) ) {
