@@ -31,6 +31,8 @@ Options
 --list                 : list auto
 --sql                  : report in sql format
 --db dbname            : restrict results to dbname (can be specified multiple times)
+--sqlnodb              : sql statements will not specify the db, --db must be selected for exactly one db
+
 
 __EOD;
 
@@ -41,6 +43,7 @@ $anyargs             = false;
 
 $use_dbs             = [];
 $sql                 = false;
+$sqlnodb             = false;
 $list                = false;
 
 $debug               = 0;
@@ -60,6 +63,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--sql": {
             array_shift( $u_argv );
             $sql = true;
+            break;
+        }
+        case "--sqlnodb": {
+            array_shift( $u_argv );
+            $sqlnodb = true;
             break;
         }
         case "--db": {
@@ -127,6 +135,14 @@ if ( !count( $use_dbs ) ) {
     }
 }
 
+if ( $sqlnodb && count( $use_dbs ) != 1 ) {
+    error_exit( "--sqlnodb selected and not exactly one db selected" );
+}
+
+if ( $sqlnodb && !$sql ) {
+    error_exit( "--sqlnodb requires --sql" );
+}
+
 foreach ( $use_dbs as $db ) {
     $cmdres = run_cmd( "mysqldump --defaults-file=my.cnf -u root --no-data $db | grep -P '(CREATE TABLE|ENGINE=)'", true, true );
 
@@ -148,7 +164,11 @@ foreach ( $use_dbs as $db ) {
                                     , $cmdres[$i+1] )
                 );
             if ( $sql ) {
-                echo "alter table $db.$table set auto_increment=$autoinc;\n";
+                if ( $sqlnodb ) {
+                    echo "alter table $table auto_increment=$autoinc;\n";
+                } else {
+                    echo "alter table $db.$table auto_increment=$autoinc;\n";
+                }
             } else {
                 echo "$db.$table : $autoinc\n";
             }
