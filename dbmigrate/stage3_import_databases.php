@@ -313,6 +313,7 @@ if ( get_yn_answer( "create dbinstances" ) ) {
 
         $cmds = [
     "$uncompresswith $sqldata | mysql --defaults-file=$cwd/my.cnf -u root $db"
+    ,"mysql --defaults-file=$cwd/my.cnf -u root $db < export-$export_dbhost-$db-autoincrements.sql"
             ];
         foreach ( $cmds as $c ) {
             echo "running: $c\n";
