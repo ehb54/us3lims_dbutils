@@ -5,9 +5,16 @@
 $us3lims      = exec( "ls -d ~us3/lims" );
 $ll_base_dir  = "$us3lims/etc/joblog";
 $us3bin       = "$us3lims/bin";
+$cwd          = getcwd();
+$getrunbdir   = "$cwd/getrun";
 
 include "$us3bin/listen-config.php";
 include $class_dir_p . "job_details.php";
+
+$global_config_file = $class_dir_p . "../global_config.php";
+
+include $global_config_file;
+
 
 # end user defines
 
@@ -36,6 +43,9 @@ Options
 --running             : report on all running jobs (gfac.analysis & active jobmonitor.php)
 --restart             : restart jobmonitors if needed (e.g. after a system reboot)
 --check-log           : checks the log (requires --gfacid & exclusive of --monitor)
+--getrundir           : gets running directory for airavata jobs 
+--getrun              : collects running info from rundir into $getrunbdir/db/HPCAnalysisRequestID
+--copyrun       queue : gets running info and sends to remote cluster for testing
 
 
 __EOD;
@@ -44,17 +54,20 @@ require "utility.php";
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
-$db       = false;
-$reqid    = false;
-$gfacid   = false;
-$onlygfac = false;
-$anyargs  = false;
-$fullrpt  = false;
-$qmesgs   = false;
-$monitor  = false;
-$running  = false;
-$restart  = false;
-$checklog = false;
+$db        = false;
+$reqid     = false;
+$gfacid    = false;
+$onlygfac  = false;
+$anyargs   = false;
+$fullrpt   = false;
+$qmesgs    = false;
+$monitor   = false;
+$running   = false;
+$restart   = false;
+$checklog  = false;
+$getrundir = false;
+$getrun    = false;
+$copyrun   = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     $anyargs = true;
@@ -69,6 +82,24 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                 error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
             }
             $db = array_shift( $u_argv );
+            break;
+        }
+        case "--getrundir": {
+            array_shift( $u_argv );
+            $getrundir = true;
+            break;
+        }
+        case "--getrun": {
+            array_shift( $u_argv );
+            $getrun = true;
+            break;
+        }
+        case "--copyrun": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
+            }
+            $copyrun = array_shift( $u_argv );
             break;
         }
         case "--reqid": {
@@ -173,6 +204,26 @@ if ( $checklog && !$gfacid ) {
 
 if ( $checklog && $monitor ) {
     error_exit( "ERROR: --checklog and --monitor can not both be specified" );
+}
+
+if (
+    ( $getrundir && $getrun )
+    || ( $getrundir && $copyrun )
+    || ( $getrun && $copyrun )
+    ) {
+    error_exit( "ERROR: --getrundir --getrun --copyrun are mutually exclusive" );
+}
+
+if ( $getrundir && !$reqid ) {
+    error_exit( "ERROR: --getrundir requires --reqid" );
+}
+
+if ( $getrun && !$reqid ) {
+    error_exit( "ERROR: --getrun requires --reqid" );
+}
+
+if ( $copyrun && !$reqid ) {
+    error_exit( "ERROR: --copyrun requires --reqid" );
 }
 
 function jm_only_report( $jm_active ) {
@@ -586,7 +637,7 @@ if ( $reqid && $onlygfac ) {
     exit;
 }
 
-if ( $reqid ) {
+if ( $reqid && !$getrundir && !$getrun && !$copyrun) {
     $out = "";
     $out .= hpcreqout( $reqid );
     $out .= hpcresbyreqout( $reqid );
@@ -725,4 +776,137 @@ function check_log( $fname ) {
 
     sort( $out );
     echo implode( "\n", $out ) . "\n";
+}
+
+if ( $getrundir || $getrun || $copyrun ) {
+    ## get run dir
+    ## possibly a better way via airavata call
+
+    ## get full info
+    global $db;
+    global $db_handle;
+
+    $res = db_obj_result( $db_handle, "select *  from $db.HPCAnalysisRequest where HPCAnalysisRequestID=\"$reqid\"" );
+
+    $cluster = $res->{ 'clusterName' };
+
+    # echo "cluster $cluster\n";
+
+    ## we don't have the queue name :( look it up
+
+    $queue   = false;
+    $login   = false;
+    $workdir = false;
+
+    foreach ( $cluster_details as $k => $v ) {
+        if (
+            $v['name'] == $cluster &&
+            isset( $v['login'] ) &&
+            isset( $v['workdir'] )
+            ) {
+            $queue   = $k;
+            $login   = $v['login'];
+            $workdir = $v['workdir'];
+            break;
+        }
+    }
+    
+    if ( !$queue ) {
+        error_exit( "could not find any queue with login defined in $global_config_file for cluster $cluster" );
+    }
+    
+    # echo "queue   $queue\n";
+    # echo "login   $login\n";
+    # echo "workdir $workdir\n";
+
+    $inputfile = "hpcinput-localhost-$db-$reqid.tar";
+
+    $cmd = "runuser -l us3 -c \"ssh $login ls $workdir/PROCESS_*/$inputfile\"";
+    $res = run_cmd( $cmd, true, true );
+
+    # echo "cmd     $cmd\n";
+    if ( count( $res ) != 1 ) {
+        error_exit( "error attempting to retrieve rundir, multiple results:\n" . implode( "\n", $res ) );
+    }
+    $rundir = preg_replace( '/\/hpcinput.*tar/', '', $res[0] );
+    echoline();
+    echo "$login:$rundir\n";
+    if ( $getrundir ) {
+        exit(0);
+    }
+
+    ## mkdir
+
+    $tdir = "$getrunbdir/$db/$reqid";
+
+    if ( !is_dir( $tdir ) ) {
+        mkdir( $tdir, 0777, true );
+        if ( !is_dir( $tdir ) ) {
+            error_exit( "Could not make directory $tdir" );
+        }
+    }
+
+    ## make sure directory is owned by us3
+    $cmd = "chown -R us3:us3 $getrunbdir";
+    run_cmd( $cmd );
+
+    ## get info
+
+    $getfiles = [
+        "job_*.slurm"
+        ,$inputfile
+        ,"Ultrascan.stdout"
+        ,"Ultrascan.stderr"
+        ,"output/analysis-results.tar"
+        ];
+
+    $cmd = "runuser -l us3 -c \"rsync -avz $login:$rundir/{" . implode(",",$getfiles) . "} " . $tdir . "\"";
+
+    echoline();
+    echo "$cmd\n";
+    echoline();
+
+    echo run_cmd( $cmd, false );
+
+    echo "results in:\n$tdir\n";
+    echoline();
+    echo run_cmd( "cd $tdir && ls -ltr" );
+    echoline();
+    echo "results in:\n$tdir\n";
+
+    if ( !$copyrun ) {
+        exit(0);
+    }
+
+    ## get target info
+    
+    if ( !isset( $cluster_details[ $copyrun ] ) ) {
+        error_exit( "could not find queue $copyrun in $global_config_file" );
+    }
+
+    if ( !isset( $cluster_details[ $copyrun ]['login'] ) ) {
+        error_exit( "$global_config_file \$cluster_details['$copyrun'] does not have 'login' set" );
+    }
+    if ( !isset( $cluster_details[ $copyrun ]['workdir'] ) ) {
+        error_exit( "$global_config_file \$cluster_details['$copyrun'] does not have 'workdir' set" );
+    }
+
+    $dworkdir = $cluster_details[ $copyrun ]['workdir'] . "/test/$db/$reqid";
+    $dlogin   = $cluster_details[ $copyrun ]['login'];
+        
+    ## mkdir workdir/../test/db/reqid
+    $cmd = "runuser -l us3 -c \"ssh $dlogin mkdir -p $dworkdir\"";
+    echoline();
+    echo "$cmd\n";
+    echoline();
+    echo run_cmd( $cmd, false );
+
+    ## rsync to workdir/../test/db/reqid
+    $cmd = "runuser -l us3 -c \"rsync -avz $tdir/* $dlogin:$dworkdir\"";
+    echoline();
+    echo "$cmd\n";
+    echoline();
+    echo run_cmd( $cmd, false );
+    echoline();
+    echo "results now in:\n$dlogin:$dworkdir\n";
 }
