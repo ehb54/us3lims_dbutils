@@ -810,8 +810,6 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     # echo "cluster $cluster\n";
 
-
-
     ## we don't have the queue name :( look it up
 
     $queue   = false;
@@ -846,8 +844,8 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     $inputfile = "hpcinput-localhost-$db-$reqid.tar";
 
-    $cmd = "runuser -l us3 -c \"ssh $login ls $workdir/PROCESS_*/$inputfile\"";
-    $res = run_cmd( $cmd, true, true );
+    $cmd = "runuser -l us3 -c \"ssh $login ls $workdir/PROCESS_*/$inputfile\" | grep PROCESS";
+    $res = run_cmd( $cmd, false, true );
 
     # echo "cmd     $cmd\n";
     if ( count( $res ) != 1 ) {
