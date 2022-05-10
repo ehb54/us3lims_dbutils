@@ -45,6 +45,7 @@ Options
 --check-log           : checks the log (requires --gfacid & exclusive of --monitor)
 --getrundir           : gets running directory for airavata jobs 
 --getrun              : collects running info from rundir into $getrunbdir/db/HPCAnalysisRequestID
+--runinfo             : displays various debugging info for airavata jobs
 --copyrun       queue : gets running info and sends to remote cluster for testing
 
 
@@ -67,6 +68,7 @@ $restart   = false;
 $checklog  = false;
 $getrundir = false;
 $getrun    = false;
+$runinfo   = false;
 $copyrun   = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
@@ -92,6 +94,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--getrun": {
             array_shift( $u_argv );
             $getrun = true;
+            break;
+        }
+        case "--runinfo": {
+            array_shift( $u_argv );
+            $runinfo = true;
             break;
         }
         case "--copyrun": {
@@ -226,6 +233,10 @@ if ( $copyrun && !$reqid ) {
     error_exit( "ERROR: --copyrun requires --reqid" );
 }
 
+if ( $runinfo && !$getrun ) {
+    error_exit( "ERROR: --runinfo requires --getrun" );
+}
+
 function jm_only_report( $jm_active ) {
     $out = "";
     if ( count( $jm_active ) ) {
@@ -261,13 +272,14 @@ if ( $running || $restart ) {
     open_db();
     $res = db_obj_result( $db_handle, "select * from gfac.analysis order by cluster,us3_db,gfacid", true, true );
 
-    $breakline = echoline( '-', 20 + 3 + 45 + 3 + 20 + 3 + 12 + 3 + 20, false );
+    $breakline = echoline( '-', 20 + 3 + 45 + 3 + 20 + 3 + 12 + 3 + 6 + 3 + 20, false );
     $out =
         $breakline
         . sprintf(
-            "%-20s | %-20s | %-45s | %-12s | %s\n"
+            "%-20s | %-20s | %-6s | %-45s | %-12s | %s\n"
             , 'cluster'
             , 'db'
+            , 'reqid'
             , 'gfacid'
             , 'status'
             , 'job monitor pid'
@@ -293,35 +305,41 @@ if ( $running || $restart ) {
     $jm_restart_hpcreqid = [];
     
     while( $row = mysqli_fetch_array($res) ) {
-        $jm_key =  $row[ 'us3_db' ] . ":" . $row[ 'gfacID' ];
+        $db     = $row[ 'us3_db' ];
+        $gfacid = $row[ 'gfacID' ];
+        $jm_key = "$db:$gfacid";
+
+        $reshpc =
+            db_obj_result(
+                $db_handle
+                ,"select HPCAnalysisRequestID from $db.HPCAnalysisResult where gfacID=\"$gfacid\" limit 1"
+                , false
+                , false
+            );
+
+        if ( $reshpc ) {
+            $reqid = $reshpc->{ "HPCAnalysisRequestID" };
+        } else {
+            $reqid = "unknown";
+        }
+
         if ( array_key_exists( $jm_key, $jm_active ) ) {
             $jm_pid = $jm_active[ $jm_key ];
             unset( $jm_active[ $jm_key ] );
         } else {
             $jm_pid                = "not running";
-            $db                    = $row[ 'us3_db' ];
-            $gfacid                = $row[ 'gfacID' ];
             $jm_restart_db      [] = $db;
             $jm_restart_gfacid  [] = $gfacid;
-            $reshpc =
-                db_obj_result(
-                    $db_handle
-                    ,"select HPCAnalysisRequestID from $db.HPCAnalysisResult where gfacID=\"$gfacid\" limit 1"
-                    , false
-                    , false
-                );
-            if ( $reshpc ) {
-                $jm_restart_hpcreqid[] = $reshpc->{ "HPCAnalysisRequestID" };
-            } else {
-                $jm_restart_hpcreqid[] = "unknown";
-            }
+            $jm_restart_hpcreqid[] = $reqid;
         }
+
         $out .=
             sprintf(
-                "%-20s | %-20s | %-45s | %-12s | %s\n"
+                "%-20s | %-20s | %-6s | %-45s | %-12s | %s\n"
                 , $row[ 'cluster' ]
-                , $row[ 'us3_db'  ]
-                , $row[ 'gfacID'  ]
+                , $db
+                , $reqid
+                , $gfacid
                 , $row[ 'status'  ]
                 , $jm_pid
             )
@@ -792,6 +810,8 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     # echo "cluster $cluster\n";
 
+
+
     ## we don't have the queue name :( look it up
 
     $queue   = false;
@@ -815,6 +835,11 @@ if ( $getrundir || $getrun || $copyrun ) {
         error_exit( "could not find any queue with login defined in $global_config_file for cluster $cluster" );
     }
     
+    if ( !isset( $cluster_details[$queue]['airavata'] ) ||
+         !$cluster_details[$queue]['airavata'] ) {
+        error_exit( "cluster $queue not marked as airavata in $global_config_file" );
+    }        
+
     # echo "queue   $queue\n";
     # echo "login   $login\n";
     # echo "workdir $workdir\n";
@@ -852,11 +877,14 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     ## get info
 
+    $reqxmlf = "hpcrequest-localhost-$db-$reqid.xml";
+
     $getfiles = [
         "job_*.slurm"
         ,$inputfile
         ,"Ultrascan.stdout"
         ,"Ultrascan.stderr"
+        ,$reqxmlf
         ,"output/analysis-results.tar"
         ];
 
@@ -874,6 +902,20 @@ if ( $getrundir || $getrun || $copyrun ) {
     echoline();
     echo "results in:\n$tdir\n";
 
+    if ( $runinfo ) {
+        $slurms = glob( "$tdir/job*slurm" );
+        if ( count( $slurms ) ) {
+            echoline();
+            echo run_cmd( "grep 'SBATCH' $slurms[0]" );
+        }
+        if ( file_exists( "$tdir/$reqxmlf" ) ) {
+            echoline();
+            echo run_cmd( "grep -P '(datasetCount|iterations|groupcount|method)' $tdir/$reqxmlf | sed 's/^ *<//;s/> *$//;s/\/$//'" );
+        }
+        echoline();
+        echo run_cmd( "cd $tdir && tail -25 Ultrascan.stderr" );
+    }
+    
     if ( !$copyrun ) {
         exit(0);
     }
