@@ -452,19 +452,22 @@ function gfacqmout( $id ) {
         "gfac.queue_messages\n"
         ;
     
+    $out .= echoline( '-', 80, false );
+    $fmt   = "%-9s | %-19s | %s\n";
+
+    $out .= sprintf( $fmt
+                    ,"messageID"
+                    ,"time"
+                    ,"message" );
+
+    $out .= echoline( '-', 80, false );
     while( $row = mysqli_fetch_array($res) ) {
         $out .=
-            echoline( '-', 80, false )
-            . sprintf(
-                "messageID              %s\n"
-                . "analysisID             %s\n"
-                . "message                %s\n"
-                . "time                   %s\n"
-
+            sprintf(
+                $fmt
                 , $row[ 'messageID' ]
-                , $row[ 'analysisID' ]
-                , $row[ 'message' ]
                 , $row[ 'time' ]
+                , $row[ 'message' ]
             )
             ;
     }
