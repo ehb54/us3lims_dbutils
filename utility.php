@@ -413,6 +413,22 @@ function dt_store_duration( $name_start, $name_end ) {
     return sprintf( "%.2f", dt_duration_minutes( dt_store_get( $name_start ), dt_store_get( $name_end ) ) );
 }
 
+function dhms_from_minutes( $time ) {
+    $res = '';
+    $days  =  floor( $time / (24 * 60) );
+    $time  -= $days * 24 * 60;
+    $hours =  floor( $time / 60 );
+    $time  -= $hours * 60;
+
+    if ( $days ) {
+        return sprintf( "%sd %sh %.2fm", $days, $hours, $time );
+    }
+    if ( $hours ) {
+        return sprintf( "%sh %.2fm", $hours, $time );
+    }
+    return sprintf( "%.2fm", $time );
+}
+
 function backup_rsync_email_headers() {
     global $backup_host;
     global $backup_user;
