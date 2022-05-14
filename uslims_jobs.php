@@ -4,6 +4,7 @@
 
 $us3lims      = exec( "ls -d ~us3/lims" );
 $ll_base_dir  = "$us3lims/etc/joblog";
+$udplogf      = "$us3lims/etc/udp.log";
 $us3bin       = "$us3lims/bin";
 $cwd          = getcwd();
 $getrunbdir   = "$cwd/getrun";
@@ -47,6 +48,7 @@ Options
 --getrun              : collects running info from rundir into $getrunbdir/db/HPCAnalysisRequestID
 --runinfo             : displays various debugging info for airavata jobs
 --copyrun       queue : gets running info and sends to remote cluster for testing
+--ga-times            : reports timings for ga mc jobs (experimental)
 
 
 __EOD;
@@ -70,6 +72,7 @@ $getrundir = false;
 $getrun    = false;
 $runinfo   = false;
 $copyrun   = false;
+$gatimes   = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     $anyargs = true;
@@ -99,6 +102,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--runinfo": {
             array_shift( $u_argv );
             $runinfo = true;
+            break;
+        }
+        case "--ga-times": {
+            array_shift( $u_argv );
+            $gatimes = true;
             break;
         }
         case "--copyrun": {
@@ -235,6 +243,10 @@ if ( $copyrun && !$reqid ) {
 
 if ( $runinfo && !$getrun ) {
     error_exit( "ERROR: --runinfo requires --getrun" );
+}
+
+if ( $gatimes && !$getrun ) {
+    error_exit( "ERROR: --ga-times requires --getrun" );
 }
 
 function jm_only_report( $jm_active ) {
@@ -809,7 +821,9 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     $res = db_obj_result( $db_handle, "select *  from $db.HPCAnalysisRequest where HPCAnalysisRequestID=\"$reqid\"" );
 
-    $cluster = $res->{ 'clusterName' };
+    $cluster  = $res->{ 'clusterName' };
+    $method   = $res->{ 'method' };
+    $analType = $res->{ 'analType' };
 
     # echo "cluster $cluster\n";
 
@@ -915,6 +929,97 @@ if ( $getrundir || $getrun || $copyrun ) {
         }
         echoline();
         echo run_cmd( "cd $tdir && tail -25 Ultrascan.stderr" );
+    }
+
+    if ( $gatimes ) {
+        echoline();
+        echo "ga-times:\n";
+        echoline();
+        
+        if ( $method != "GA" ) {
+            error_exit( "--ga-times selected but HPCRequestMethod is not GA" );
+        }
+        if ( strpos( $analType, "-MC" ) === false ) {
+            error_exit( "--ga-times selected but HPCRequestMethod analysis type does not contain -MC" );
+        }
+        if ( !file_exists( "$tdir/Ultrascan.stderr" ) ) {
+            error_exit( "--ga-times : $tdir/Ultrascan.stderr does not exist" );
+        }
+        if ( !file_exists( $udplogf ) ) {
+            error_exit( "--ga-times : $udplogf does not exist" );
+        }
+
+        $udpstats = run_cmd( "grep manage-us3-pipe $udplogf | grep -P '$db-0*$reqid:'" , false, true );
+
+        if ( preg_grep( '/\(pmg \d+\)/', $udpstats ) ) {
+            $udpstats = preg_replace( '/\(pmg 0\) /', '', preg_grep( '/\(pmg 0\)/', $udpstats ) );
+        }
+        
+        ## echo implode( "\n", $udpstats ) . "\n";
+
+        $times       = [];
+        $generations = [];
+        $mc          = [];
+
+        foreach ( $udpstats as $v ) {
+            if ( strpos( $v, "Avg. Generation" ) === false ) {
+                continue;
+            }
+
+            $vf = explode( " ", $v );
+            $times[]       = new DateTime( "$vf[0] $vf[1]" );
+            $generations[] = rtrim( $vf[6], ';' );
+            $mc[]          = $vf[10];
+        }
+
+        $last_mci                 = 0;
+        $mc_iteration_start       = [];
+        $mc_iteration_end         = [];
+        $mc_iteration_generations = [];
+        $mc_pos                   = 0;
+
+        for ( $i = 0; $i < count($times); ++$i ) {
+            if ( $debug ) {
+                echo sprintf(
+                    "%s %s %s\n"
+                    ,$times[$i]->format( 'r' )
+                    ,$generations[$i]
+                    ,$mc[$i]
+                    );
+            }
+
+            if ( $last_mci != $mc[$i] ) {
+                ++$mc_pos;
+                $last_mci                    = $mc[$i];
+                $mc_iteration_start[$mc_pos] = $times[$i];
+            }
+
+            $mc_iteration_generations[$mc_pos] = $generations[$i];
+            $mc_iteration_end        [$mc_pos] = $times      [$i];
+        }
+
+
+        foreach ( $mc_iteration_start as $k => $v ) {
+            $iteration_duration = dt_duration_minutes( $mc_iteration_start[$k], $mc_iteration_end[$k] );
+            echo sprintf(
+                "mc iteration %s last generation %s duration %s avg duration per generation %s\n"
+                ,$k
+                ,$mc_iteration_generations[$k]
+                ,dhms_from_minutes( $iteration_duration )
+                ,dhms_from_minutes( $iteration_duration / $mc_iteration_generations[$k] )
+                )
+                ;
+        }
+                
+        ## total duration
+        $tot_dur_min = dt_duration_minutes( $times[0], end($times) );
+        echo sprintf( "total duration %s\n", dhms_from_minutes( $tot_dur_min ) );
+
+        $mc_count = count( $mc_iteration_start );
+        echo sprintf(
+            "average time per mc iteration %s\n"
+            ,dhms_from_minutes( $tot_dur_min / $mc_count )
+            );
     }
     
     if ( !$copyrun ) {
