@@ -49,6 +49,7 @@ Options
 --runinfo             : displays various debugging info for airavata jobs
 --copyrun       queue : gets running info and sends to remote cluster for testing
 --ga-times            : reports timings for ga mc jobs (experimental)
+--pmg           n     : report timings for specific pmg # (default 0), use 'all' do show all, 'most-recent' for just most recent
 
 
 __EOD;
@@ -73,6 +74,7 @@ $getrun    = false;
 $runinfo   = false;
 $copyrun   = false;
 $gatimes   = false;
+$pmg       = 0;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     $anyargs = true;
@@ -87,6 +89,14 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                 error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
             }
             $db = array_shift( $u_argv );
+            break;
+        }
+        case "--pmg": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
+            }
+            $pmg = array_shift( $u_argv );
             break;
         }
         case "--getrundir": {
@@ -932,6 +942,8 @@ if ( $getrundir || $getrun || $copyrun ) {
     }
 
     if ( $gatimes ) {
+        ## this should be rewritten in a cleaner way with objects
+
         echoline();
         echo "ga-times:\n";
         echoline();
@@ -951,75 +963,140 @@ if ( $getrundir || $getrun || $copyrun ) {
 
         $udpstats = run_cmd( "grep manage-us3-pipe $udplogf | grep -P '$db-0*$reqid:'" , false, true );
 
-        if ( preg_grep( '/\(pmg \d+\)/', $udpstats ) ) {
-            $udpstats = preg_replace( '/\(pmg 0\) /', '', preg_grep( '/\(pmg 0\)/', $udpstats ) );
-        }
+        if ( $pmg == 'all' || $pmg == 'most-recent' ) {
+            $mgcount = trim( run_cmd( "grep -P 'groupcount' $tdir/$reqxmlf | sed 's/^.*value=\"//;s/\".*$//'" ) );
+            echo "mgroupcount is '$mgcount'\n";
+            $pmg_start = 0;
+            $pmg_end   = $mgcount;
+        } else {
+            $pmg_start = $pmg;
+            $pmg_end   = $pmg + 1;
+        }            
         
-        ## echo implode( "\n", $udpstats ) . "\n";
+        $pmg_iterations       = [];
+        $pmg_iter_generations = [];
+        $pmg_iter_start       = [];
+        $pmg_iter_end         = [];
+        $last_update_time     = new DateTime('1970-01-01');
 
-        $times       = [];
-        $generations = [];
-        $mc          = [];
+        $pmg_msgs = [];
+        
+        for ( $this_pmg = $pmg_start; $this_pmg < $pmg_end; ++$this_pmg ) {
+            $this_udpstats = $udpstats;
 
-        foreach ( $udpstats as $v ) {
-            if ( strpos( $v, "Avg. Generation" ) === false ) {
-                continue;
+            $pmg_msgs[ $this_pmg ] = "";
+
+            if ( preg_grep( '/\(pmg \d+\)/', $this_udpstats ) ) {
+                $this_udpstats = preg_replace( "/\(pmg $this_pmg\) /", '', preg_grep( "/\(pmg $this_pmg\)/", $this_udpstats ) );
+            }
+            
+            if ( !count( $this_udpstats ) ) {
+                error_exit( "--ga-times : no status found for pmg $this_pmg" );
             }
 
-            $vf = explode( " ", $v );
-            $times[]       = new DateTime( "$vf[0] $vf[1]" );
-            $generations[] = rtrim( $vf[6], ';' );
-            $mc[]          = $vf[10];
-        }
+            ## echo implode( "\n", $this_udpstats ) . "\n";
 
-        $last_mci                 = 0;
-        $mc_iteration_start       = [];
-        $mc_iteration_end         = [];
-        $mc_iteration_generations = [];
-        $mc_pos                   = 0;
+            $times       = [];
+            $generations = [];
+            $mc          = [];
 
-        for ( $i = 0; $i < count($times); ++$i ) {
-            if ( $debug ) {
-                echo sprintf(
-                    "%s %s %s\n"
-                    ,$times[$i]->format( 'r' )
-                    ,$generations[$i]
-                    ,$mc[$i]
-                    );
+            foreach ( $this_udpstats as $v ) {
+                if ( strpos( $v, "Avg. Generation" ) === false ) {
+                    continue;
+                }
+
+                $vf = explode( " ", $v );
+                $times[]       = new DateTime( "$vf[0] $vf[1]" );
+                $generations[] = rtrim( $vf[6], ';' );
+                $mc[]          = $vf[10];
             }
 
-            if ( $last_mci != $mc[$i] ) {
-                ++$mc_pos;
-                $last_mci                    = $mc[$i];
-                $mc_iteration_start[$mc_pos] = $times[$i];
+            $last_mci                 = 0;
+            $mc_iteration_start       = [];
+            $mc_iteration_end         = [];
+            $mc_iteration_generations = [];
+            $mc_pos                   = 0;
+
+            for ( $i = 0; $i < count($times); ++$i ) {
+                if ( $debug ) {
+                    echo sprintf(
+                        "%s %s %s\n"
+                        ,$times[$i]->format( 'r' )
+                        ,$generations[$i]
+                        ,$mc[$i]
+                        );
+                }
+
+                if ( !isset( $pmg_iter_generations[$this_pmg] ) ) {
+                    $pmg_iter_generations[$this_pmg] = [];
+                    $pmg_iter_start      [$this_pmg] = [];
+                    $pmg_iter_end        [$this_pmg] = [];
+                }
+
+                if ( $last_mci != $mc[$i] ) {
+                    ++$mc_pos;
+                    $last_mci                                    = $mc[$i];
+                    $mc_iteration_start[$mc_pos]                 = $times[$i];
+                    $pmg_iter_start         [$this_pmg][$mc_pos] = $times[$i];
+                }
+
+                $mc_iteration_generations[$mc_pos]   = $generations[$i];
+                $mc_iteration_end        [$mc_pos]   = $times      [$i];
+
+                $pmg_iter_generations[$this_pmg][$mc_pos] = $generations[$i];
+                $pmg_iter_end        [$this_pmg][$mc_pos] = $times      [$i];
+
+                if ( $last_update_time->getTimestamp() < $times[$i]->getTimestamp() ) {
+                    $last_update_time = $times[$i];
+                    $last_update_pmg  = $this_pmg;
+                }
             }
 
-            $mc_iteration_generations[$mc_pos] = $generations[$i];
-            $mc_iteration_end        [$mc_pos] = $times      [$i];
+            $tot_generations = 0;
+
+            foreach ( $mc_iteration_start as $k => $v ) {
+                $iteration_duration = dt_duration_minutes( $mc_iteration_start[$k], $mc_iteration_end[$k] );
+                $tot_generations += $mc_iteration_generations[$k];
+                $pmg_msgs[ $this_pmg ] .= sprintf(
+                    "mc iteration %s last generation %s duration %s avg duration per generation %s\n"
+                    ,$k
+                    ,$mc_iteration_generations[$k]
+                    ,dhms_from_minutes( $iteration_duration )
+                    ,dhms_from_minutes( $iteration_duration / $mc_iteration_generations[$k] )
+                    )
+                    ;
+            }
+            
+            ## total duration
+            $tot_dur_min = dt_duration_minutes( $times[0], end($times) );
+            $pmg_msgs[ $this_pmg ] .= sprintf( "total duration %s\n", dhms_from_minutes( $tot_dur_min ) );
+
+            $mc_count = count( $mc_iteration_start );
+            $pmg_msgs[ $this_pmg ] .= sprintf(
+                "average time per mc iteration %s\n"
+                ,dhms_from_minutes( $tot_dur_min / $mc_count )
+                );
+            $pmg_msgs[ $this_pmg ] .= sprintf(
+                "average time per generation %s\n"
+                ,dhms_from_minutes( $tot_dur_min / $tot_generations )
+                );
+            if ( $pmg == "all" ) {
+                echoline();
+                echo "pmg $this_pmg\n";
+                echoline();
+                echo $pmg_msgs[ $this_pmg ];
+            }
         }
-
-
-        foreach ( $mc_iteration_start as $k => $v ) {
-            $iteration_duration = dt_duration_minutes( $mc_iteration_start[$k], $mc_iteration_end[$k] );
-            echo sprintf(
-                "mc iteration %s last generation %s duration %s avg duration per generation %s\n"
-                ,$k
-                ,$mc_iteration_generations[$k]
-                ,dhms_from_minutes( $iteration_duration )
-                ,dhms_from_minutes( $iteration_duration / $mc_iteration_generations[$k] )
-                )
-                ;
+        if ( $pmg_start != $pmg_end ) {
+            echoline();
+            echo "most recent pmg with update $last_update_pmg\n";
+            echoline();
+            if ( $pmg == "most-recent" ) {
+                echo $pmg_msgs[ $last_update_pmg ];
+            }
+        } else {
+            echo $pmg_msgs[ $this_pmg ];
         }
-                
-        ## total duration
-        $tot_dur_min = dt_duration_minutes( $times[0], end($times) );
-        echo sprintf( "total duration %s\n", dhms_from_minutes( $tot_dur_min ) );
-
-        $mc_count = count( $mc_iteration_start );
-        echo sprintf(
-            "average time per mc iteration %s\n"
-            ,dhms_from_minutes( $tot_dur_min / $mc_count )
-            );
     }
     
     if ( !$copyrun ) {
