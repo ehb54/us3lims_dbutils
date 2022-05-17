@@ -49,7 +49,7 @@ Options
 --runinfo             : displays various debugging info for airavata jobs
 --copyrun       queue : gets running info and sends to remote cluster for testing
 --ga-times            : reports timings for ga mc jobs (experimental)
---pmg           n     : report timings for specific pmg # (default 0), use 'all' do show all, 'most-recent' for just most recent
+--pmg           n     : report timings for specific pmg # (default 0), use 'all' do show all, 'most-recent' for just most recent, 'max-gen' for details about pmg with maximum generation
 
 
 __EOD;
@@ -963,7 +963,7 @@ if ( $getrundir || $getrun || $copyrun ) {
 
         $udpstats = run_cmd( "grep manage-us3-pipe $udplogf | grep -P '$db-0*$reqid:'" , false, true );
 
-        if ( $pmg == 'all' || $pmg == 'most-recent' ) {
+        if ( $pmg == 'all' || strpos( $pmg, 'most-recent' ) !== false || strpos( $pmg, 'max-gen' ) !== false  ) {
             $mgcount = trim( run_cmd( "grep -P 'groupcount' $tdir/$reqxmlf | sed 's/^.*value=\"//;s/\".*$//'" ) );
             echo "mgroupcount is '$mgcount'\n";
             $pmg_start = 0;
@@ -978,6 +978,8 @@ if ( $getrundir || $getrun || $copyrun ) {
         $pmg_iter_start       = [];
         $pmg_iter_end         = [];
         $last_update_time     = new DateTime('1970-01-01');
+        $max_gen              = 0;
+        $max_gen_pmg          = 0;
 
         $pmg_msgs = [];
         
@@ -1050,6 +1052,10 @@ if ( $getrundir || $getrun || $copyrun ) {
                     $last_update_time = $times[$i];
                     $last_update_pmg  = $this_pmg;
                 }
+                if ( $max_gen < $generations[$i] ) {
+                    $max_gen     = $generations[$i];
+                    $max_gen_pmg = $this_pmg;
+                }
             }
 
             $tot_generations = 0;
@@ -1091,9 +1097,15 @@ if ( $getrundir || $getrun || $copyrun ) {
             echoline();
             echo "most recent pmg with update $last_update_pmg\n";
             echoline();
-            if ( $pmg == "most-recent" ) {
+            if ( strpos( $pmg, "most-recent" ) !== false ) {
                 echo $pmg_msgs[ $last_update_pmg ];
             }
+            echoline();
+            echo "max generations pmg $max_gen_pmg\n";
+            echoline();
+            if ( strpos( $pmg, "max-gen" ) !== false ) {
+                echo $pmg_msgs[ $max_gen_pmg ];
+            }                
         } else {
             echo $pmg_msgs[ $this_pmg ];
         }
