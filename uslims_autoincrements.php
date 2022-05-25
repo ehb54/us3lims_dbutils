@@ -32,6 +32,8 @@ Options
 --sql                  : report in sql format
 --db dbname            : restrict results to dbname (can be specified multiple times)
 --sqlnodb              : sql statements will not specify the db, --db must be selected for exactly one db
+--autoflow             : special handling to check autoflow & autoflowHistory requestIDs
+--autoflow-repair      : special handling to repair autoflow autoincrement (requries --autoflow)
 
 
 __EOD;
@@ -45,6 +47,8 @@ $use_dbs             = [];
 $sql                 = false;
 $sqlnodb             = false;
 $list                = false;
+$autoflow            = false;
+$autoflowrepair      = false;
 
 $debug               = 0;
 
@@ -58,6 +62,16 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--list": {
             array_shift( $u_argv );
             $list    = true;
+            break;
+        }
+        case "--autoflow": {
+            array_shift( $u_argv );
+            $autoflow = true;
+            break;
+        }
+        case "--autoflow-repair": {
+            array_shift( $u_argv );
+            $autoflowrepair = true;
             break;
         }
         case "--sql": {
@@ -141,6 +155,55 @@ if ( $sqlnodb && count( $use_dbs ) != 1 ) {
 
 if ( $sqlnodb && !$sql ) {
     error_exit( "--sqlnodb requires --sql" );
+}
+
+if ( $autoflowrepair && !$autoflow ) {
+    error_exit( "--autoflow-repair requires --autoflow" );
+}    
+
+if ( $autoflow && $sql ) {
+    error_exit( "--autoflow and --sql are exclusive" );
+}    
+
+if ( $autoflow ) {
+    $fmtlen = 136;
+    echoline( '-', $fmtlen );
+    $fmt = "%-20s | %-31s | %-37s | %s\n";
+    echo sprintf( $fmt
+                  ,"db"
+                  ,"autoflowAnalysis auto_increment"
+                  ,"max autoflowAnalysisHistory.requestID"
+                  ,"notes"
+        );
+    echoline( '-', $fmtlen );
+
+    foreach ( $use_dbs as $db ) {
+        $res     = db_obj_result( $db_handle, "SELECT `AUTO_INCREMENT` FROM  INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '$db' AND TABLE_NAME = 'autoflowAnalysis'" );
+        $autoinc = $res->AUTO_INCREMENT;
+        $res     = db_obj_result( $db_handle, "SELECT MAX(requestID) FROM $db.autoflowAnalysisHistory" );
+        $maahrid = $res->{"MAX(requestID)"};
+
+        $notes   = 'ok';
+        if ( $autoinc < $maahrid - 1 ) {
+            $notes = 'ERROR : auto_increment needs repair';
+            if ( $autoflowrepair ) {
+                $newautoinc = $maahrid + 1;
+                $res        = db_obj_result( $db_handle, "ALTER TABLE $db.autoflowAnalysis AUTO_INCREMENT = $newautoinc" );
+                $res        = db_obj_result( $db_handle, "SELECT `AUTO_INCREMENT` FROM  INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '$db' AND TABLE_NAME = 'autoflowAnalysis'" );
+                $newautoinc = $res->AUTO_INCREMENT;
+                $notes      = "auto_increment repair, new value $newautoinc";
+            }
+        }
+            
+        echo sprintf( $fmt
+                      ,$db
+                      ,$autoinc
+                      ,$maahrid
+                      ,$notes
+            );
+    }
+    echoline( '-', $fmtlen );
+    exit;
 }
 
 foreach ( $use_dbs as $db ) {
