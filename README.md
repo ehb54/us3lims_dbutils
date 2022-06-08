@@ -12,6 +12,8 @@
 ## UltraScan LIMS specific
  - uslims_binary_db_backup.php
    - creates a binary backup of the mysql database in a unique directory
+ - uslims_certs.php
+   - reports on https cert and scigap expiration dates
  - uslims_db_schemas.php
    - creates diff-able schema dumps with stored procedures, events and triggers for each dbinstance found in the database
  - uslims_db_variables.php
@@ -38,6 +40,13 @@
    - for all expected and discovered repos, reports path, url, branch, use, rev#, rev date, local changes, and deltas
    - also allows updating to expected branches, git pull, and build (for gui & mpi)
    - optional "diff report" (see --help for details)
+ - uslims_jobs.php
+   - reports on jobs
+     - summary report for db
+     - detailed reports by gfacID or HPCAnalysisRequestID
+     - e.g. monitor a running job
+       - ```php uslims_jobs.php --db uslims3_DBINSTNAME --gfacid GFACID --monitor```
+     - see --help for full command line options
  - uslims_people.php
    - lists and optionally updates dbinsts.people from newus3.people
    - optional administrator report (lists people with userlevel+advancelevel >= 3 )

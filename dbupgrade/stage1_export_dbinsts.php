@@ -2,8 +2,8 @@
 
 $self = __FILE__;
 
-$compresswith = "xz -0";
-$compressext  = "xz";
+$compresswith = "pigz --fast";
+$compressext  = "gz";
 
 # $debug = 1;
 
@@ -179,6 +179,16 @@ foreach ( $dbnames_used as $db => $val ) {
     }
     echo "completed: compressing $dumpfile with $compresswith\n";
     $cdumped[] = $cdumpfile;
+
+    $autoincfile = "export-$use_dbhost-$db-autoincrements.sql";
+    $cmd = "cd .. && php ../uslims_autoincrements.php --list --db $db --sql --sqlnodb $config_file > $newfile_dir/$autoincfile";
+    echo "starting: exporting $db autoincrements to $autoincfile\n";
+    run_cmd( $cmd );
+    if ( !file_exists( $autoincfile ) ) {
+        error_exit( "Error creating '$autoincfile' terminating" );
+    }
+    echo "completed: exporting $db autoincrements to $autoincfile\n";
+    $extra_files[] = $autoincfile;
 }
 
 # package

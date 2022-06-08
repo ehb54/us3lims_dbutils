@@ -12,8 +12,8 @@ $logging_level = 2;
 # config
 $limsdbpath = "/home/us3/lims/database/sql";
 $htmlpath   = "/srv/www/htdocs/uslims3";
-$uncompresswith = "xzcat";
-$compressext  = "xz";
+$uncompresswith = "zcat";
+$compressext  = "gz";
 
 # $debug = 1;
 
@@ -136,6 +136,10 @@ foreach ( $dbnames_used as $db => $val ) {
     if ( !file_exists( $cdumpfile ) ) {
         $errors .= "Missing file in tar package '$cdumpfile'\n";
     }
+    $autoincfile = "export-$use_dbhost-$db-autoincrements.sql";
+    if ( !file_exists( $autoincfile ) ) {
+        $errors .= "Missing file in tar package '$autoincfile'\n";
+    }
 }
 
 echo "All expected files in $pkgname extracted\n";
@@ -248,6 +252,7 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
 
         $cmds = [
     "$uncompresswith $sqldata | mysql --defaults-file=$cwd/my.cnf -u root $db"
+    ,"mysql --defaults-file=$cwd/my.cnf -u root $db < export-$use_dbhost-$db-autoincrements.sql"
         ];
         foreach ( $cmds as $c ) {
             echo "running: $c\n";
