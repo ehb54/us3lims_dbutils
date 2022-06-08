@@ -97,7 +97,7 @@ if ( isset( $rsync_add ) && $rsync_add ) {
             $errors .= "\$rsync_add_path must be different than \$rsync_path in $use_config_file\n";
         }
         if ( strncmp( $rsync_path, $rsync_add_path, strlen( $rsync_path ) ) == 0 ) {
-            $errors .= "\$rsync_add_path must not contain \$backkup_path in $use_config_file\n";
+            $errors .= "\$rsync_add_path must not contain \$backup_path in $use_config_file\n";
         }
     }
     $rsync_add_details .= $rsync_add_delete ? "--delete " : "";
