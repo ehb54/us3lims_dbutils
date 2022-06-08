@@ -183,6 +183,16 @@ if ( $backup_df_run ) {
 
 $dbnames_used = array_fill_keys( existing_dbs(), 1 );
 $dbnames_used[ "newus3" ] = 1;
+if ( isset( $backup_extra_dbs ) ) {
+    if ( !is_array( $backup_extra_dbs ) ) {
+        error_exit( "\$backup_extra_dbs is set but is not an array" );
+    }
+    if ( isset( $backup_extra_dbs_only ) && $backup_extra_dbs_only ) {
+        $dbnames_used = $backup_extra_dbs;
+    } else {
+        $dbnames_used = array_merge( $dbnames_used, $backup_extra_dbs );
+    }        
+}
 
 echoline( '=' );
 echo "found " . count( $dbnames_used ) . " unique dbname records as follows\n";
@@ -371,7 +381,7 @@ if ( $backup_rsync ) {
     }
     dt_store_now( "rsync start" );
     echo "starting: run $rsync_php\n";
-    backup_rsync_run_cmd( "cd $hdir && php $rsync_php" );
+    backup_rsync_run_cmd( "cd $hdir && php $rsync_php $use_config_file" );
     echo "completed: run $rsync_php\n";
     echoline( '=' );
     if ( count( $rdiff_restore_cmds ) ) {

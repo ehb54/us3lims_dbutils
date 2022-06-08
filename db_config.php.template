@@ -88,3 +88,14 @@ $repo_branches =
      ,"https://github.com/SciGaP/ultrascan-airavata-bridge.git"  => "master"
     ];
 
+## extra databases to backup
+
+$backup_extra_dbs_only = false;  # set to true to make the backup_extra_dbs the *only* dbs backed up
+
+## array of db names
+
+$backup_extra_dbs =
+    [
+    ];
+
+
