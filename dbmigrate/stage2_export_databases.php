@@ -2,7 +2,7 @@
 
 $self = __FILE__;
 
-$compresswith = "xz";
+$compresswith = "xz -T0";
 $compressext  = "xz";
 
 # $debug = 1;
