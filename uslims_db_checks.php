@@ -132,20 +132,21 @@ if ( $check_data_owner && !count( $use_dbs ) ) {
 }
 
 if ( $check_data_owner ) {
-    $fmtlen = 136;
+    $name_trunc = 16;
+    $fmtlen = 124 + 2*$name_trunc;
+    $fmt = "%-60s | %-12s | %-13s | %-${name_trunc}s | %-7s | %-13s | %-${name_trunc}s\n";
 
     echoline( '-', $fmtlen );
     echo "check_data_owner\n";
     echoline( '-', $fmtlen );
-    $fmt = "%-20s | %-20s | %-12s | %-20s | %-12s | %-12s | %-12s\n";
     $header = sprintf( $fmt
                        ,"runID"
                        ,"experimentID"
-                       ,"exp personID"
-                       ,"lname"
-                       ,"fname"
+                       ,"exp. personID"
+                       ,"exp. person name"
                        ,"modelID"
-                       ,"model_person"
+                       ,"mod._personID"
+                       ,"mod. pers. name"
         );
     
     foreach ( $use_dbs as $db ) {
@@ -159,28 +160,24 @@ if ( $check_data_owner ) {
         $res     = db_obj_result( $db_handle, "select personID, fname, lname from $db.people", true );
         while( $row = mysqli_fetch_array($res) ) {
             $people->{$row["personID"]} = (object)[];
-            $people->{$row["personID"]}->name = $row["lname"] . ", " . $row["fname"];
+            $people->{$row["personID"]}->name = substr( $row["lname"] . ", " . $row["fname"], 0, $name_trunc );
         }
         ## debug_json( "people people", $people );
 
         ### check all models to find differences between modelPerson & experiment
 
-
-        
         $query = 
             "SELECT experiment.experimentID,\n"
             . "       experiment.runID,\n"
             . "       model.modelID,\n"
             . "       experimentPerson.personID AS experiment_personID,\n"
-            . "       people.lname,\n"
-            . "       people.fname,\n"
             . "       modelPerson.personID AS model_personID\n"
             . " FROM $db.model\n"
             . " JOIN $db.modelPerson ON model.modelID=modelPerson.modelID\n"
             . " JOIN $db.editedData ON model.editedDataID=editedData.editedDataID\n"
             . " JOIN $db.rawData ON rawData.rawDataID=editedData.rawDataID\n"
             . " JOIN $db.experimentPerson ON rawData.experimentID=experimentPerson.experimentID\n"
-            . " JOIN $db.people ON experimentPerson.personID=people.personID\n"
+            # . " JOIN $db.people ON experimentPerson.personID=people.personID\n" ## if we want people results selected
             . " JOIN $db.experiment ON experiment.experimentID=rawData.experimentID\n"
             . ( $list_all ? "" : " WHERE experimentPerson.personID != modelPerson.personID\n" )
             ;
@@ -200,10 +197,10 @@ if ( $check_data_owner ) {
                               ,$row['runID']
                               ,$row['experimentID']
                               ,$row['experiment_personID']
-                              ,$row['lname']
-                              ,$row['fname']
+                              ,$people->{$row['experiment_personID']}->name
                               ,$row['modelID']
                               ,$row['model_personID']
+                              ,$people->{$row['model_personID']}->name
                     );
             }
         } else {
