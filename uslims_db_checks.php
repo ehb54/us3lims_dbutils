@@ -30,7 +30,9 @@ Options
     
 --db                   : db to check, can be repeated
 --check-data-owner     : checks models for experiment person model person consistency
---list-all             : list all data even if it is ok
+--list-all             : list all data even if it is ok (exclusive of --fix)
+--fix                  : fix issues (exclusive of --list-all)
+
 
 __EOD;
 
@@ -42,6 +44,7 @@ $anyargs             = false;
 $use_dbs             = [];
 $check_data_owner    = 0;
 $list_all            = 0;
+$fix                 = 0;
 
 $debug               = 0;
 
@@ -68,6 +71,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--list-all": {
             array_shift( $u_argv );
             $list_all++;
+            break;
+        }
+        case "--fix": {
+            array_shift( $u_argv );
+            $fix++;
             break;
         }
         case "--debug": {
@@ -131,15 +139,19 @@ if ( $check_data_owner && !count( $use_dbs ) ) {
     error_exit( "--check_data_owner selected and no dbs selected" );
 }
 
+if ( $list_all && $fix ) {
+    error_exit( "--list_all and --fix are mutually exclusive" );
+}
+
 if ( $check_data_owner ) {
     $name_trunc = 16;
     $fmtlen = 124 + 2*$name_trunc;
-    $fmt = "%-60s | %-12s | %-13s | %-${name_trunc}s | %-7s | %-13s | %-${name_trunc}s\n";
+    $fmt = "%-60s | %-12s | %-13s | %-${name_trunc}s | %-7s | %-13s | %-${name_trunc}s";
 
     echoline( '-', $fmtlen );
     echo "check_data_owner\n";
     echoline( '-', $fmtlen );
-    $header = sprintf( $fmt
+    $header = sprintf( "$fmt\n"
                        ,"runID"
                        ,"experimentID"
                        ,"exp. personID"
@@ -202,6 +214,19 @@ if ( $check_data_owner ) {
                               ,$row['model_personID']
                               ,$people->{$row['model_personID']}->name
                     );
+                if ( $fix ) {
+                    $query =
+                        "UPDATE $db.modelPerson\n"
+                        . " SET personID=" . $row['experiment_personID'] . "\n"
+                        . " WHERE modelID=" . $row['modelID'] . "\n"
+                        ;
+                    db_obj_result( $db_handle, $query );
+                    echo " | fixed";
+                    if ( $debug ) {
+                        echo "\n$query ;\n";
+                    }
+                }
+                echo "\n";
             }
         } else {
             echo "nothing to report\n";
