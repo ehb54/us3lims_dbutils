@@ -29,8 +29,8 @@ Options
 --help                 : print this information and exit
     
 --db                   : db to check, can be repeated
---check-data-owner     : checks data, edits, models, noises, report
-
+--check-data-owner     : checks models for experiment person model person consistency
+--list-all             : list all data even if it is ok
 
 __EOD;
 
@@ -41,6 +41,7 @@ $anyargs             = false;
 
 $use_dbs             = [];
 $check_data_owner    = 0;
+$list_all            = 0;
 
 $debug               = 0;
 
@@ -62,6 +63,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--check-data-owner": {
             array_shift( $u_argv );
             $check_data_owner++;
+            break;
+        }
+        case "--list-all": {
+            array_shift( $u_argv );
+            $list_all++;
             break;
         }
         case "--debug": {
@@ -131,13 +137,15 @@ if ( $check_data_owner ) {
     echoline( '-', $fmtlen );
     echo "check_data_owner\n";
     echoline( '-', $fmtlen );
-    $fmt = "%-12s | %-20s | %-11s | %-20s | %s\n";
+    $fmt = "%-20s | %-20s | %-12s | %-20s | %-12s | %-12s | %-12s\n";
     $header = sprintf( $fmt
-                       ,"experimentID"
                        ,"runID"
-                       ,"personID"
-                       ,"name"
-                       ,"notes"
+                       ,"experimentID"
+                       ,"exp personID"
+                       ,"lname"
+                       ,"fname"
+                       ,"modelID"
+                       ,"model_person"
         );
     
     foreach ( $use_dbs as $db ) {
@@ -155,42 +163,51 @@ if ( $check_data_owner ) {
         }
         ## debug_json( "people people", $people );
 
-        ### check each experiment and their related tables
-        echo $header;
-        echoline( '-', $fmtlen );
+        ### check all models to find differences between modelPerson & experiment
+
+
         
-        $res     = db_obj_result( $db_handle, "select experimentID, runID from $db.experiment", true );
-        while( $row = mysqli_fetch_array($res) ) {
-            $expid = $row['experimentID'];
-            $runid = $row['runID'];
+        $query = 
+            "SELECT experiment.experimentID,\n"
+            . "       experiment.runID,\n"
+            . "       model.modelID,\n"
+            . "       experimentPerson.personID AS experiment_personID,\n"
+            . "       people.lname,\n"
+            . "       people.fname,\n"
+            . "       modelPerson.personID AS model_personID\n"
+            . " FROM $db.model\n"
+            . " JOIN $db.modelPerson ON model.modelID=modelPerson.modelID\n"
+            . " JOIN $db.editedData ON model.editedDataID=editedData.editedDataID\n"
+            . " JOIN $db.rawData ON rawData.rawDataID=editedData.rawDataID\n"
+            . " JOIN $db.experimentPerson ON rawData.experimentID=experimentPerson.experimentID\n"
+            . " JOIN $db.people ON experimentPerson.personID=people.personID\n"
+            . " JOIN $db.experiment ON experiment.experimentID=rawData.experimentID\n"
+            . ( $list_all ? "" : " WHERE experimentPerson.personID != modelPerson.personID\n" )
+            ;
 
-            $errors = '';
+        if ( $debug ) {
+            echo "$query ;\n";
+        }
 
-            ## get personID
-            $personres  = db_obj_result( $db_handle, "select personID from $db.experimentPerson where experimentID='$expid'" );
-            debug_json( "expid $expid -> personres", $personres, 1 );
-            $perid = $personres->{'personID'};
-            
-            ## if ( !array_key_exists( $perid, $people ) ) {
-            if ( !isset( $people->{$perid} ) ) {
-                $errors .= "Person missing\n";
-                $name    = "*person missing*";
-            } else {
-                $name    = $people->{$perid}->name;
+        $res = db_obj_result( $db_handle, $query, true, true );
+
+        if ( $res ) {
+            ### check each experiment and their related tables
+            echo $header;
+            echoline( '-', $fmtlen );
+            while( $row = mysqli_fetch_array($res) ) {
+                echo sprintf( $fmt
+                              ,$row['runID']
+                              ,$row['experimentID']
+                              ,$row['experiment_personID']
+                              ,$row['lname']
+                              ,$row['fname']
+                              ,$row['modelID']
+                              ,$row['model_personID']
+                    );
             }
-
-            
-            ### todo - work through editedData, model, modelPerson, noise, reports
-
-            ### todo - check consistent ownership - e.g. modelPerson agrees
-
-            echo sprintf( $fmt
-                          ,$expid
-                          ,$runid
-                          ,$perid
-                          ,$name
-                          ,$errors
-                );
+        } else {
+            echo "nothing to report\n";
         }
         echoline( '-', $fmtlen );
     }
