@@ -32,25 +32,25 @@ information about submitted jobs
 
 Options
 
---help                : print this information and exit
+--help                     : print this information and exit
 
---db             name : select database to report (required for most options)
---reqid          id   : provide information on the specific HPCAnalysisRequestID
---gfacid         id   : provide information on the specific gfacID
---onlygfac            : just return the gfacid for a request id
---full                : display all field data (normally truncates multiline outputs to last line)
---queue-messages      : include queue message detail
---monitor             : monitor the output (requires --gfacid)
---running             : report on all running jobs (gfac.analysis & active jobmonitor.php)
---restart             : restart jobmonitors if needed (e.g. after a system reboot)
---check-log           : checks the log (requires --gfacid & exclusive of --monitor)
---getrundir           : gets running directory for airavata jobs 
---getrun              : collects running info from rundir into $getrunbdir/db/HPCAnalysisRequestID
---runinfo             : displays various debugging info for airavata jobs
---copyrun       queue : gets running info and sends to remote cluster for testing
---ga-times            : reports timings for ga mc jobs (experimental)
---pmg           n     : report timings for specific pmg # (default 0), use 'all' do show all, 'most-recent' for just most recent, 'max-gen' for details about pmg with maximum generation
-
+--db                 name  : select database to report (required for most options)
+--reqid              id    : provide information on the specific HPCAnalysisRequestID
+--gfacid             id    : provide information on the specific gfacID
+--onlygfac                 : just return the gfacid for a request id
+--full                     : display all field data (normally truncates multiline outputs to last line)
+--queue-messages           : include queue message detail
+--monitor                  : monitor the output (requires --gfacid)
+--running                  : report on all running jobs (gfac.analysis & active jobmonitor.php)
+--restart                  : restart jobmonitors if needed (e.g. after a system reboot)
+--check-log                : checks the log (requires --gfacid & exclusive of --monitor)
+--getrundir                : gets running directory for airavata jobs 
+--getrun                   : collects running info from rundir into $getrunbdir/db/HPCAnalysisRequestID
+--runinfo                  : displays various debugging info for airavata jobs
+--copyrun            queue : gets running info and sends to remote cluster for testing
+--ga-times                 : reports timings for ga mc jobs (experimental)
+--pmg                n     : report timings for specific pmg # (default 0), use 'all' do show all, 'most-recent' for just most recent, 'max-gen' for details about pmg with maximum generation
+--airavata-details         : get current airavata job details (requires --gfacid)
 
 __EOD;
 
@@ -74,6 +74,7 @@ $getrun    = false;
 $runinfo   = false;
 $copyrun   = false;
 $gatimes   = false;
+$adetails  = false;
 $pmg       = 0;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
@@ -178,6 +179,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $checklog = true;
             break;
         }
+        case "--airavata-details": {
+            array_shift( $u_argv );
+            $adetails = true;
+            break;
+        }
       default:
         error_exit( "\nUnknown option '$u_argv[0]'\n\n$notes" );
     }        
@@ -259,6 +265,10 @@ if ( $gatimes && !$getrun ) {
     error_exit( "ERROR: --ga-times requires --getrun" );
 }
 
+if ( $adetails && ( !$gfacid | $db ) ) {
+    error_exit( "ERROR: --airavata-details requires --gfacid and --db" );
+}
+
 function jm_only_report( $jm_active ) {
     $out = "";
     if ( count( $jm_active ) ) {
@@ -280,7 +290,33 @@ function jm_only_report( $jm_active ) {
     }
     return $out;
 }
-    
+
+if ( $adetails ) {
+    if ( !is_aira_job( $gfacid ) ) {
+        error_exit( "$gfacid does not appear to be a valid id for an Airavata managed job" );
+    }
+    $jobDetails = getJobDetails( $gfacID );
+    if ( $jobDetails ) {
+        if ( $jobDetails === ' No Job Details ' ) {
+            $jdstdout = $jobDetails;
+            $jdstderr = $jobDetails;
+            
+        } else {
+            $jdstdout = isset( $jobDetails->stdOut ) ? trim( $jobDetails->stdOut ) : "n/a";
+            $jdstderr = isset( $jobDetails->stdErr ) ? trim( $jobDetails->stdErr ) : "n/a";
+        }
+    } else {
+        $jdstdout = "failed to get job details";
+        $jdstderr = "failed to get job details";
+    }
+    $aira_details =
+        sprintf(   "   Airavata stdout : %s\n", $jdstdout )
+        . sprintf( "   Airavata stderr : %s\n", $jdstderr )
+        ;
+    echo $aira_details;
+    exit;
+}
+
 if ( $running || $restart ) {
     $jms = explode( "\n", trim( run_cmd( 'ps -efww | grep jobmonitor.php | grep -v grep | awk \'{ print $2 " " $10 " " $11 }\'' ) ) );
     $jm_active = [];
@@ -951,9 +987,9 @@ if ( $getrundir || $getrun || $copyrun ) {
         if ( $method != "GA" ) {
             error_exit( "--ga-times selected but HPCRequestMethod is not GA" );
         }
-        if ( strpos( $analType, "-MC" ) === false ) {
-            error_exit( "--ga-times selected but HPCRequestMethod analysis type does not contain -MC" );
-        }
+        ## if ( strpos( $analType, "-MC" ) === false ) {
+        ## error_exit( "--ga-times selected but HPCRequestMethod analysis type does not contain -MC" );
+        ## }
         if ( !file_exists( "$tdir/Ultrascan.stderr" ) ) {
             error_exit( "--ga-times : $tdir/Ultrascan.stderr does not exist" );
         }
