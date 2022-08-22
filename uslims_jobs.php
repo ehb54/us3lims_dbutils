@@ -51,6 +51,7 @@ Options
 --ga-times                 : reports timings for ga mc jobs (experimental)
 --pmg                n     : report timings for specific pmg # (default 0), use 'all' do show all, 'most-recent' for just most recent, 'max-gen' for details about pmg with maximum generation
 --airavata-details         : get current airavata job details (requires --gfacid)
+--maxrss                   : maximum memory used report for selected database
 
 __EOD;
 
@@ -76,6 +77,7 @@ $copyrun   = false;
 $gatimes   = false;
 $adetails  = false;
 $pmg       = 0;
+$maxrss    = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     $anyargs = true;
@@ -182,6 +184,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--airavata-details": {
             array_shift( $u_argv );
             $adetails = true;
+            break;
+        }
+        case "--maxrss": {
+            array_shift( $u_argv );
+            $maxrss = true;
             break;
         }
       default:
@@ -436,6 +443,41 @@ $existing_dbs = existing_dbs();
 
 if ( !in_array( $db, $existing_dbs ) ) {
     error_exit( "ERROR: database '$db' does not exist" );
+}
+
+if ( $maxrss ) {
+    open_db();
+    
+    $query =
+"
+SELECT (HPCAnalysisResult.max_rss/1024) AS 'maxrss', HPCAnalysisRequest.analType
+FROM ${db}.HPCAnalysisResult
+JOIN ${db}.HPCAnalysisRequest ON HPCAnalysisResult.HPCAnalysisRequestID=HPCAnalysisRequest.HPCAnalysisRequestID
+WHERE HPCAnalysisResult.max_rss > 0
+ORDER BY HPCAnalysisRequest.analType, HPCAnalysisResult.max_rss
+";
+        
+    $fmt = "%12s | %s\n";
+    $fmtlen = 30;
+
+    echoline( "-", $fmtlen );
+    echo sprintf(
+        $fmt
+        ,"MaxRSS MB"
+        ,"Analysis Type"
+        );
+    echoline( "-", $fmtlen );
+
+    $res = db_obj_result( $db_handle, $query, true, true );
+    while( $row = mysqli_fetch_array($res) ) {
+        echo sprintf(
+            $fmt
+            ,sprintf( "%.2f", $row['maxrss'] )
+            ,$row['analType']
+            );
+    }
+    echoline( "-", $fmtlen );
+    exit;
 }
 
 if ( !$reqid && !$gfacid ) {
