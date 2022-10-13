@@ -274,7 +274,7 @@ function get_slurm_cores( $cores = 4, $slurmconf = "/etc/slurm/slurm.conf" ) {
     if ( !file_exists( $slurmconf ) ) {
         return $cores;
     }
-    $res = run_cmd( 'grep -e "^\s*NodeName\s*=\\s*localhost" ' . $slurmconf );
+    $res = run_cmd( 'grep -e "^\s*NodeName\s*=\\s*localhost" ' . $slurmconf, false );
     preg_match( '/Procs=(\d+)\s/', $res, $matches );
     if ( count( $matches ) != 2 ) {
         return $cores;
