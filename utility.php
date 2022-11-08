@@ -243,6 +243,22 @@ function existing_dbs() {
     return $existing_dbs;
 }
 
+function existing_stash_dbs() {
+    global $db_handle;
+    if ( $db_handle === NULL ) {
+        open_db();
+    }
+    $res = db_obj_result( $db_handle, "show databases like 'stash_%'", true, true );
+    $existing_dbs = [];
+    if ( $res ) {
+        while( $row = mysqli_fetch_array($res) ) {
+            $this_db = (string)$row[0];
+            $existing_dbs[] = $this_db;
+        }
+    }
+    return $existing_dbs;
+}
+
 function boolstr( $val, $truestr = "True", $falsestr = "" ) {
     return $val ? $truestr : $falsestr;
 }
