@@ -16,6 +16,7 @@ Options
 --help               : print this information and exit
 
 --times              : display last update time information
+--names              : display list names
 
 
 __EOD;
@@ -25,6 +26,7 @@ $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
 $times               = false;
+$names               = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
@@ -35,6 +37,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--times": {
             array_shift( $u_argv );
             $times = true;
+            break;
+        }
+        case "--names": {
+            array_shift( $u_argv );
+            $names = true;
             break;
         }
       default:
@@ -70,10 +77,16 @@ and edit with appropriate values
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
+# checks
+
+if ( $times && $names ) {
+    error_exit( "--times & --names are mutually exclusive" );
+}
+
 # main
 
 $existing_dbs = existing_dbs();
-if ( !$times ) {
+if ( !$times && !$names ) {
     echo implode( "\n", $existing_dbs ) . "\n";
     exit;
 }
@@ -126,4 +139,28 @@ if ( $times ) {
     ksort( $data );
     echo implode( "", $data );
     echoline( '-', $dashlen );
+    exit;
+}
+
+if ( $names ) {
+    $data = [];
+    foreach ( $existing_dbs as $db ) {
+        $query       = "select institution from newus3.metadata where dbname='$db'";
+        $res         = db_obj_result( $db_handle, $query );
+        $institution = $res->{'institution'};
+        $data[] = 
+            sprintf(
+                "%-60s | %s\n"
+                ,substr( $institution, 0, 60 )
+                ,$db
+            );
+    }
+
+    sort( $data, SORT_NATURAL );
+    $dashlen = 100;
+    echoline( '-', $dashlen );
+    echo implode( "", $data );
+    echoline( '-', $dashlen );
+
+    exit;
 }
