@@ -272,7 +272,7 @@ if ( $gatimes && !$getrun ) {
     error_exit( "ERROR: --ga-times requires --getrun" );
 }
 
-if ( $adetails && ( !$gfacid | $db ) ) {
+if ( $adetails && ( !$gfacid || !$db ) ) {
     error_exit( "ERROR: --airavata-details requires --gfacid and --db" );
 }
 
@@ -302,7 +302,7 @@ if ( $adetails ) {
     if ( !is_aira_job( $gfacid ) ) {
         error_exit( "$gfacid does not appear to be a valid id for an Airavata managed job" );
     }
-    $jobDetails = getJobDetails( $gfacID );
+    $jobDetails = getJobDetails( $gfacid );
     if ( $jobDetails ) {
         if ( $jobDetails === ' No Job Details ' ) {
             $jdstdout = $jobDetails;
