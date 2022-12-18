@@ -3,6 +3,8 @@
 {};
 ## user defines
 
+ini_set('memory_limit', '1G');
+
 ## better handled in $usage_consolidation
 ### $adjustClusterName =
 ###    [
@@ -42,6 +44,7 @@ $usage_approvedList =
 $usage_consolidation =
     [
      "us-lims1.aalto.fi"                     => "aalto" 
+     ,"anvil.rcac.purdue.edu"                => "anvil"
      ,"alamo.biochemistry.uthscsa.edu"       => "alamo"
      ,"alamo.uthscsa.edu"                    => "alamo"
      ,"bcf.uthscsa.edu"                      => "bcf"
@@ -56,6 +59,7 @@ $usage_consolidation =
      ,"js-157-184.jetstream-cloud.org"       => "jetstream"
      ,"lonestar.tacc.teragrid.org"           => "lonestar"
      ,"ls5.tacc.utexas.edu"                  => "lonestar5"
+     ,"ls6.tacc.utexas.edu"                  => "lonestar6"
      ,"lonestar5.tacc.teragrid.org"          => "lonestar5"
      ,"jureca.fz-juelich.de"                 => "jureca"
      ,"juropa.fz-juelich.de"                 => "juropa"
