@@ -494,7 +494,7 @@ if ( $csv ) {
     ## make csv
     $hostname  = gethostname();
     $tarray    = explode( ".", $hostname );
-    $servname  = $tarray[ 1 ];
+    $servname  = $tarray[ count( $tarray ) > 1 ? 1 : 0 ];
 
     $usage_consolidation_map = array_flip_safe( $usage_consolidation );
 
