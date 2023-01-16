@@ -42,13 +42,12 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--db": {
             array_shift( $u_argv );
             if ( !count( $u_argv ) ) {
-                error_exit( "\nOption --dbname requires an argument\n\n$notes" );
+                error_exit( "\nOption --db requires an argument\n\n$notes" );
             }
             $dbname = array_shift( $u_argv );
             if ( empty( $dbname ) ) {
                 error_exit( "--db requires a non-empty value\n\n$notes" );
             }
-            break;
             break;
         }
         case "--table": {
