@@ -164,7 +164,8 @@ if ( !file_exists( $metadata_format_file ) ) {
     error_exit( "$metadata_format_file does not exist" );
 }
 
-$metadata_format = json_decode( file_get_contents( $metadata_format_file ) );
+## remove comment lines
+$metadata_format = json_decode( implode( "\n",preg_grep( '/^\s*#/', explode( "\n", file_get_contents( $metadata_format_file ) ), PREG_GREP_INVERT ) ) );
 
 debug_json( "$metadata_format_file" , $metadata_format );
 
