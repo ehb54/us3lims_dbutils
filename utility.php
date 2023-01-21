@@ -99,6 +99,18 @@ function echoline( $str = "-", $count = 80, $print = true ) {
     return "$out\n";
 }
 
+function headerline( $msg, $str = "=", $count = 80, $print = true ) {
+    $out =
+        echoline( $str, $count, false )
+        . "$msg\n"
+        . echoline( $str, $count, false )
+        ;
+    if ( $print ) {
+        echo $out;
+    }
+    return $out;
+}
+
 $warnings       = '';
 $warnings_count = 0;
 function flush_warnings( $msg = NULL ) {
@@ -504,3 +516,31 @@ function debug_echo ( $s, $debuglevel = 1 ) {
 function fix_single_quote( $str, $rplc = "" ) {
     return str_replace( "'", $rplc, $str );
 }
+
+## squash an object
+## credit https://gist.github.com/woganmay/9a98dda059246bca664c
+
+function squash($array, $prefix = '') {
+    $flat = array();
+    $sep = ".";
+    
+    if (!is_array($array)) $array = (array)$array;
+    
+    foreach($array as $key => $value)
+    {
+        $_key = ltrim($prefix.$sep.$key, ".");
+        
+        if (is_array($value) || is_object($value))
+        {
+            // Iterate this one too
+            $flat = array_merge($flat, squash($value, $_key));
+        }
+        else
+        {
+            $flat[$_key] = $value;
+        }
+    }
+    
+    return $flat;
+}
+
