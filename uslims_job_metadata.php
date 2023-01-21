@@ -4,7 +4,8 @@
 
 $self = __FILE__;
 ini_set('memory_limit','2G');
-    
+$metadata_format_file = "uslims_metadata_format.json";
+
 $notes = <<<__EOD
 usage: $self {options} {db_config_file}
 
@@ -158,6 +159,14 @@ and edit with appropriate values
             
 file_perms_must_be( $use_config_file );
 require $use_config_file;
+
+if ( !file_exists( $metadata_format_file ) ) {
+    error_exit( "$metadata_format_file does not exist" );
+}
+
+$metadata_format = json_decode( file_get_contents( $metadata_format_file ) );
+
+debug_json( "$metadata_format_file" , $metadata_format );
 
 if (
     !$json
