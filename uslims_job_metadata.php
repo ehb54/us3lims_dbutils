@@ -13,18 +13,19 @@ exports job data metadata
 
 Options
 
---help                : print this information and exit
+--help                 : print this information and exit
 
---db dbname           : specify the database name, can be specified multiple times
---reqid id            : restrict results by HPCAnalysisRequest.HPCAnalysisRequestID
---analysis-type       : restrict results by HPCAnalysisRequest.analType
---analysis-type-rlike : restrict results by HPCAnalysisRequest.analType using mysql rlike syntax
---dataset-count       : restrict results by dataset count
---list-analysis-type  : list 
---list-dataset-count  : list HPCAnalysisRequest.xml dataset count
---json                : output full JSON
---squashed-json       : output squashed JSON    
-
+--db dbname            : specify the database name, can be specified multiple times
+--reqid id             : restrict results by HPCAnalysisRequest.HPCAnalysisRequestID
+--analysis-type        : restrict results by HPCAnalysisRequest.analType
+--analysis-type-rlike  : restrict results by HPCAnalysisRequest.analType using mysql rlike syntax
+--dataset-count        : restrict results by dataset count
+--list-analysis-type   : list 
+--list-dataset-count   : list HPCAnalysisRequest.xml dataset count
+--json                 : output full JSON
+--squashed-json        : output squashed JSON    
+--json-metadata        : output JSON metadata
+--metadata-format-file : specify metadata format file (default: $metadata_format_file)
 
 __EOD;
 
@@ -43,6 +44,7 @@ $listanalysistype    = false;
 $listdatasetcount    = false;
 $json                = false;
 $squashedjson        = false;
+$jsonmetadata        = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
@@ -81,6 +83,22 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--squashed-json": {
             array_shift( $u_argv );
             $squashedjson = true;
+            break;
+        }
+        case "--json-metadata": {
+            array_shift( $u_argv );
+            $jsonmetadata = true;
+            break;
+        }
+        case "--metadata-format-file": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "\nOption --metadata-format-file requires an argument\n\n$notes" );
+            }
+            $metadata_format_file = array_shift( $u_argv );
+            if ( empty( $metadata_format_file ) ) {
+                error_exit( "--metadata-format-file requires a non-empty value\n\n$notes" );
+            }
             break;
         }
         case "--reqid": {
@@ -161,19 +179,23 @@ file_perms_must_be( $use_config_file );
 require $use_config_file;
 
 if ( !file_exists( $metadata_format_file ) ) {
-    error_exit( "$metadata_format_file does not exist" );
+    error_exit( "metadata format file '$metadata_format_file' does not exist" );
 }
 
 ## remove comment lines
 $metadata_format = json_decode( implode( "\n",preg_grep( '/^\s*#/', explode( "\n", file_get_contents( $metadata_format_file ) ), PREG_GREP_INVERT ) ) );
 
-debug_json( "$metadata_format_file" , $metadata_format );
+## debug_json( "$metadata_format_file" , $metadata_format );
+if ( !isset( $metadata_format->fields ) ) {
+    error_exit( "$metadata_format_file missing 'fields' attribute" );
+}
 
 if (
     !$json
     && !$squashedjson
     && !$listanalysistype
     && !$listdatasetcount
+    && !$jsonmetadata
     ) {
     error_exit( "nothing to do" );
 }
@@ -216,7 +238,7 @@ foreach ( $use_dbs as $db ) {
             $meta->analType    = $hpcareq['analType'];
             $meta->xml         = explode( "\n", $hpcareq['requestXMLFile'] );
             $meta->xmlj        = json_decode( json_encode(simplexml_load_string( $hpcareq['requestXMLFile'] ) ) );
-            $meta->xmls        = squash( $meta->xmlj );
+            $meta->xmls        = (object)squash( $meta->xmlj );
             
             if ( !is_object( $meta->xmlj ) ) {
                 debug_json( "metadata non object", $meta );
@@ -225,8 +247,55 @@ foreach ( $use_dbs as $db ) {
             }
 
             if ( $datasetcount > 0
-                 && $meta->xmlj->job->datasetCount->{'@attributes'}->value != $datsetcount ) {
-                next;
+                 && $meta->xmlj->job->datasetCount->{'@attributes'}->value != $datasetcount ) {
+                continue;
+            }
+
+            ## do we have an analysis result?
+
+            $query = "select * from ${db}.HPCAnalysisResult where HPCAnalysisResult.HPCAnalysisRequestID=$thisreqid";
+            $hpcaress = db_obj_result( $db_handle, $query , true, true );
+
+            if ( !$hpcaress ) {
+                ## no analysis results, skipping
+                # echo "HPCAnalysisRequest $thisreqid has no HPCAnalysisResult\n";
+                continue;
+            }
+
+            $meta->jmd = (object)[];
+
+            $skip = false;
+            while( $hpcares = mysqli_fetch_array($hpcaress) ) {
+                $thisresid = $hpcares['HPCAnalysisResultID'];
+                if ( isset( $meta->jmd->CPUCount ) ) {
+                    echo "WARN: HPCAnalysisRequest $thisreqid has multiple HPCAnalysisResult records\n";
+                    $skip = true;
+                    break;
+                }
+
+                ## skip failed jobs
+                if (
+                    $hpcares['queueStatus'] != 'completed'
+                    || $hpcares['CPUCount'] == 0
+                    || $hpcares['wallTime'] == 0
+                    || $hpcares['CPUTime'] == 0
+                    || false !== strpos( $hpcares['lastMessage'], "FAILED" )
+                    ) {
+                    $skip = true;
+                    break;
+                }
+                # echo "HPCAnalysisRequest $thisreqid HPCAnalysisResult $thisresid queueStatus '" . $hpcares['queueStatus'] . "'\n";
+
+                $meta->jmd->CPUCount = $hpcares['CPUCount'];
+                $meta->jmd->wallTime = $hpcares['wallTime'];
+                $meta->jmd->CPUTime  = $hpcares['CPUTime'];
+                $meta->jmd->max_rss  = $hpcares['max_rss'];
+
+                # debug_json( "HPCAnalysisRequest $thisreqid HPCAnalysisResult $thisresid", $hpcares );
+            }
+
+            if ( $skip ) {
+                continue;
             }
 
             if ( $listdatasetcount || $listanalysistype ) {
@@ -250,6 +319,13 @@ foreach ( $use_dbs as $db ) {
             if ( $squashedjson ) {
                 debug_json( "HPCAnalysisRequestID $thisreqid squashedjson", $meta->xmls );
             }
+
+            if ( $jsonmetadata ) {
+                foreach ( $metadata_format->fields as $v ) {
+                    $meta->jmd->{$v} = isset( $meta->xmls->{$v} ) ? $meta->xmls->{$v} : "n/a";
+                }
+                debug_json( "HPCAnalysisRequestID $thisreqid json metadata", $meta->jmd );
+            }                
         }
     }
 }
