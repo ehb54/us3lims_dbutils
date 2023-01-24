@@ -543,4 +543,3 @@ function squash($array, $prefix = '') {
     
     return $flat;
 }
-

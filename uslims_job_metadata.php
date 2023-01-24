@@ -31,6 +31,7 @@ __EOD;
 
 
 require "utility.php";
+require "auc2obj.php";
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
@@ -296,6 +297,40 @@ foreach ( $use_dbs as $db ) {
 
             if ( $skip ) {
                 continue;
+            }
+
+            if ( 1 ) {
+                ## temp dump rawData blob
+                if ( $meta->xmlj->job->datasetCount->{'@attributes'}->value == 1 ) {
+                    $dskey = 'dataset.files.auc.@attributes.filename';
+                } else {
+                    $dskey = 'dataset.0.files.auc.@attributes.filename';
+                }                    
+                $query = "select rawDataID from ${db}.rawData where filename='" . $meta->xmls->{$dskey} . "'";
+                echo "running '$query'\n";
+                $rawdataid = db_obj_result( $db_handle, $query , false, true );
+                echo "end '$query'\n";
+
+                if ( !$rawdataid ) {
+                    ## no rawdata found, skipping
+                    echo "HPCAnalysisRequest $thisreqid has no related rawData for dataset 0\n";
+                    continue;
+                }
+                
+                debug_json( "rawdataid", $rawdataid );
+
+                $query = "select data from ${db}.rawData where rawdataID=$rawdataid->rawDataID";
+
+                echo "running '$query'\n";
+                $rawdata = db_obj_result( $db_handle, $query , false, true );
+                echo "end '$query'\n";
+
+                file_put_contents( "tempdata.what", $rawdata->data );
+
+                $auc = auc2obj( $rawdata->data );
+                error_exit( $query );
+
+                error_exit( "testing" );
             }
 
             if ( $listdatasetcount || $listanalysistype ) {
