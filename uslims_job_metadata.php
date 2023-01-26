@@ -17,6 +17,7 @@ Options
 
 --db dbname            : specify the database name, can be specified multiple times
 --reqid id             : restrict results by HPCAnalysisRequest.HPCAnalysisRequestID
+--reqid-range id id    : restrict to range of results by HPCAnalysisRequest.HPCAnalysisRequestID
 --analysis-type        : restrict results by HPCAnalysisRequest.analType
 --analysis-type-rlike  : restrict results by HPCAnalysisRequest.analType using mysql rlike syntax
 --dataset-count        : restrict results by dataset count
@@ -38,6 +39,9 @@ array_shift( $u_argv ); # first element is program name
 $use_dbs             = [];
 $reqid               = 0;
 $reqid_used          = false;
+$reqid_start         = 0;
+$reqid_end           = 0;
+$reqid_range_used    = 0;
 $analysistype        = "";
 $analysistyperlike   = "";
 $datasetcount        = 0;
@@ -112,6 +116,25 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                 error_exit( "--reqid requires a non-empty value\n\n$notes" );
             }
             $reqid_used = true;
+            break;
+        }
+        case "--reqid-range": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "\nOption --reqid-range requires two argument\n\n$notes" );
+            }
+            $reqid_start = array_shift( $u_argv );
+            if ( !$reqid_start ) {
+                error_exit( "--reqid-range requires non-zero values\n\n$notes" );
+            }
+            if ( !count( $u_argv ) ) {
+                error_exit( "\nOption --reqid-range requires two argument\n\n$notes" );
+            }
+            $reqid_end = array_shift( $u_argv );
+            if ( !$reqid_end ) {
+                error_exit( "--reqid-range requires non-zero values\n\n$notes" );
+            }
+            $reqid_range_used = true;
             break;
         }
         case "--analysis-type": {
@@ -220,6 +243,9 @@ foreach ( $use_dbs as $db ) {
     if ( $reqid_used ) {
         $query .= " and HPCAnalysisRequest.HPCAnalysisRequestID=$reqid";
     }
+    if ( $reqid_range_used ) {
+        $query .= " and HPCAnalysisRequest.HPCAnalysisRequestID>=$reqid_start and HPCAnalysisRequest.HPCAnalysisRequestID<=$reqid_end";
+    }
     if ( !empty($analysistype ) ) {
         $query .= " and HPCAnalysisRequest.analType='$analysistype'";
     }
@@ -227,6 +253,14 @@ foreach ( $use_dbs as $db ) {
         $query .= " and HPCAnalysisRequest.analType rlike '$analysistyperlike'";
     }
 
+    $counts = (object)[];
+
+    $counts->total              = 0;
+    $counts->ok                 = 0;
+    $counts->analysis_failed    = 0;
+    $counts->no_analysis_result = 0;
+    $counts->missing_raw_data   = 0;
+    
     $hpcareqs = db_obj_result( $db_handle, $query , true, true );
 
     if ( $hpcareqs ) {
@@ -234,12 +268,13 @@ foreach ( $use_dbs as $db ) {
             $thisreqid = $hpcareq['HPCAnalysisRequestID'];
 
             $meta = (object)[];
-            $meta->clusterName = $hpcareq['clusterName'];
-            $meta->method      = $hpcareq['method'];
-            $meta->analType    = $hpcareq['analType'];
-            $meta->xml         = explode( "\n", $hpcareq['requestXMLFile'] );
-            $meta->xmlj        = json_decode( json_encode(simplexml_load_string( $hpcareq['requestXMLFile'] ) ) );
-            $meta->xmls        = (object)squash( $meta->xmlj );
+            $meta->clusterName  = $hpcareq['clusterName'];
+            $meta->method       = $hpcareq['method'];
+            $meta->analType     = $hpcareq['analType'];
+            $meta->experimentID = $hpcareq['experimentID'];
+            $meta->xml          = explode( "\n", $hpcareq['requestXMLFile'] );
+            $meta->xmlj         = json_decode( json_encode(simplexml_load_string( $hpcareq['requestXMLFile'] ) ) );
+            $meta->xmls         = (object)squash( $meta->xmlj );
             
             if ( !is_object( $meta->xmlj ) ) {
                 debug_json( "metadata non object", $meta );
@@ -253,6 +288,7 @@ foreach ( $use_dbs as $db ) {
             }
 
             ## do we have an analysis result?
+            $counts->total++;
 
             $query = "select * from ${db}.HPCAnalysisResult where HPCAnalysisResult.HPCAnalysisRequestID=$thisreqid";
             $hpcaress = db_obj_result( $db_handle, $query , true, true );
@@ -260,6 +296,7 @@ foreach ( $use_dbs as $db ) {
             if ( !$hpcaress ) {
                 ## no analysis results, skipping
                 # echo "HPCAnalysisRequest $thisreqid has no HPCAnalysisResult\n";
+                $counts->no_analysis_result++;
                 continue;
             }
 
@@ -283,6 +320,7 @@ foreach ( $use_dbs as $db ) {
                     || false !== strpos( $hpcares['lastMessage'], "FAILED" )
                     ) {
                     $skip = true;
+                    $counts->analysis_failed++;
                     break;
                 }
                 # echo "HPCAnalysisRequest $thisreqid HPCAnalysisResult $thisresid queueStatus '" . $hpcares['queueStatus'] . "'\n";
@@ -299,40 +337,67 @@ foreach ( $use_dbs as $db ) {
                 continue;
             }
 
-            if ( 1 ) {
-                ## temp dump rawData blob
-                if ( $meta->xmlj->job->datasetCount->{'@attributes'}->value == 1 ) {
-                    $dskey = 'dataset.files.auc.@attributes.filename';
-                } else {
-                    $dskey = 'dataset.0.files.auc.@attributes.filename';
-                }                    
-                $query = "select rawDataID from ${db}.rawData where filename='" . $meta->xmls->{$dskey} . "'";
-                echo "running '$query'\n";
-                $rawdataid = db_obj_result( $db_handle, $query , false, true );
-                echo "end '$query'\n";
+            ## collect dataset parameters
 
-                if ( !$rawdataid ) {
-                    ## no rawdata found, skipping
-                    echo "HPCAnalysisRequest $thisreqid has no related rawData for dataset 0\n";
+            if ( 1 ) {
+                echo "HPCAnalysisRequestID $thisreqid checking dataset\n";
+                ## debug_json( "--> xmlj", $meta->xmlj );
+
+                foreach ( $meta->xmlj->dataset as $dataset ) {
+                    if ( $meta->xmlj->job->datasetCount->{'@attributes'}->value == 1 ) {
+                        $dataset = $meta->xmlj->dataset;
+                    }
+                    debug_json( "--> dataset", $dataset );
+                    @$file  = $dataset->files->auc->{'@attributes'}->filename;
+                    @$edit  = $dataset->files->edit->{'@attributes'}->filename;
+                    @$expID = $dataset->parameters->speedstep->{'@attributes'}->expID;
+                    echo "file $file expID $expID edit $edit (HPCAnalysisRequest experimentID $meta->experimentID)\n";
+                    if ( !isset( $file ) || !isset($expID) || !isset($edit) ) {
+                        ## error_exit( "HPCAnalysisRequestID $thisreqid missing expected dataset file & expID & edit" );
+                        $skip = true;
+                        break;
+                    }
+                    $query = "select rawDataID, data from ${db}.editedData where filename='$edit' order by lastUpdated desc limit 1";
+                    $editeddata = db_obj_result( $db_handle, $query, false, true );
+
+                    if ( !$editeddata ) {
+                        error_exit( "HPCAnalysisRequestID $thisreqid missing expected editedData for edit='$edit'" );
+                        $skip = true;
+                        break;
+                    }
+
+                    $editeddata->xmlj = json_decode( json_encode(simplexml_load_string( $editeddata->data ) ) );
+                    $editeddata->xmls = (object)squash( $editeddata->xmlj );
+
+                    debug_json( "edit xmlj", $editeddata->xmlj );
+                    debug_json( "edit xmls", $editeddata->xmls );
+
+                    $query = "select data from ${db}.rawData where rawDataID=$editeddata->rawDataID";
+                    # $query = "select data from ${db}.rawData where filename='$file' and experimentID=$expID";
+                    ## echo "$query\n";
+                    $rawdata = db_obj_result( $db_handle, $query, false, true );
+
+                    if ( !$rawdata ) {
+                        ## error_exit( "HPCAnalysisRequestID $thisreqid missing expected rawData for filename='$file' and experimentID=$expID" );
+                        ## error_exit( "HPCAnalysisRequestID $thisreqid missing expected rawData for rawDataID=$editeddata->rawDataID" );
+                        $skip = true;
+                        break;
+                    }
+
+                    ## debug_json( "auc2obj", auc2obj( $rawdata->data ) );
+                }
+
+                if ( $skip ) {
+                    echo "HPCAnalysisRequestID $thisreqid NOT ok\n";
+                    $counts->missing_raw_data++;
                     continue;
                 }
-                
-                debug_json( "rawdataid", $rawdataid );
 
-                $query = "select data from ${db}.rawData where rawdataID=$rawdataid->rawDataID";
+                $counts->ok++;
 
-                echo "running '$query'\n";
-                $rawdata = db_obj_result( $db_handle, $query , false, true );
-                echo "end '$query'\n";
-
-                file_put_contents( "tempdata.what", $rawdata->data );
-
-                $auc = auc2obj( $rawdata->data );
-                error_exit( $query );
-
-                error_exit( "testing" );
+                continue;
             }
-
+            
             if ( $listdatasetcount || $listanalysistype ) {
                 $out = "HPCAnalysisRequestID $thisreqid :";
                 if ( $listanalysistype ) {
@@ -363,4 +428,8 @@ foreach ( $use_dbs as $db ) {
             }                
         }
     }
+    if ( $counts->total ) {
+        $counts->percent_ok = floatval( sprintf( "%.2f", 100 * $counts->ok / $counts->total ) );
+    }
+    debug_json( "counts", $counts );
 }
