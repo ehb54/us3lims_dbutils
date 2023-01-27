@@ -373,18 +373,61 @@ foreach ( $use_dbs as $db ) {
                     debug_json( "edit xmls", $editeddata->xmls );
 
                     $query = "select data from ${db}.rawData where rawDataID=$editeddata->rawDataID";
-                    # $query = "select data from ${db}.rawData where filename='$file' and experimentID=$expID";
-                    ## echo "$query\n";
+                    # echo "$query\n";
                     $rawdata = db_obj_result( $db_handle, $query, false, true );
 
                     if ( !$rawdata ) {
-                        ## error_exit( "HPCAnalysisRequestID $thisreqid missing expected rawData for filename='$file' and experimentID=$expID" );
-                        ## error_exit( "HPCAnalysisRequestID $thisreqid missing expected rawData for rawDataID=$editeddata->rawDataID" );
+                        # error_exit( "HPCAnalysisRequestID $thisreqid missing expected rawData for rawDataID=$editeddata->rawDataID" );
                         $skip = true;
                         break;
                     }
 
-                    ## debug_json( "auc2obj", auc2obj( $rawdata->data ) );
+                    $datastats = auc2obj( $rawdata->data );
+
+                    if (
+                        !isset( $datastats->radius_delta )
+                        || $datastats->radius_delta <= 0
+                        || !isset( $datastats->scans )
+                        || $datastats->scans <= 0
+                        ) {
+                        # error_exit( "HPCAnalysisRequestID $thisreqid insufficient results decoding auc longblob" );
+                        $skip = true;
+                        break;
+                    }
+                    
+                    if (
+                        isset( $editeddata->xmlj->run )
+                        && isset( $editeddata->xmlj->run->excludes )
+                        && isset( $editeddata->xmlj->run->excludes->exclude )
+                        && is_array( $editeddata->xmlj->run->excludes->exclude )
+                        ) {
+                        $datastats->edited_scans         = $datastats->scans - count( $editeddata->xmlj->run->excludes->exclude );
+                    } else {
+                        $datastats->edited_scans         = $datastats->scans;
+                    }
+                        
+                    if (
+                        isset( $editeddata->xmlj->run )
+                        && isset( $editeddata->xmlj->run->parameters )
+                        && isset( $editeddata->xmlj->run->parameters->data_range )
+                        && isset( $editeddata->xmlj->run->parameters->data_range->{'@attributes'} )
+                        && isset( $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->right )
+                        && isset( $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->left )
+                        ) {
+                        $datastats->edited_radial_points =
+                            floor(
+                                ( $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->right
+                                  - $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->left )
+                                / $datastats->radius_delta
+                            )
+                            ;
+                    } else {
+                        $datastats->edited_radial_points = $dataset->radial_points;
+                    }
+                        
+                    $datastats->edited_data_points = $datastats->edited_scans * $datastats->edited_radial_points;
+
+                    debug_json( "auc2obj", $datastats );
                 }
 
                 if ( $skip ) {
