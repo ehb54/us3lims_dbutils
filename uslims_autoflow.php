@@ -11,11 +11,15 @@ analyze autoflow records
 
 Options
 
---help               : print this information and exit
+--help                        : print this information and exit
 
---db dbname          : (required) specify the database name 
---reqid id           : specifiy the autoflowAnalysisHistory.requestID
---trace-failed       : add report details for status FAILED
+--db dbname                   : (required) specify the database name 
+--reqid id                    : specifiy the autoflowAnalysisHistory.requestID or autoflowAnalysis.requestID
+--analysis-profile            : list analysis profile info for a specified --reqid
+--analysis-profile-minimal    : list analysis profile without reportMask & combinedPlots, 
+--analysis-profile-xml-json   : convert xml to json in analysis profile, implies --analysis-profile & --analysis-profile-minimal
+--trace-failed                : add report details for status FAILED for autoflowAnalysisHistory
+--running                     : list running autoflow jobs
 
 __EOD;
 
@@ -24,10 +28,14 @@ require "utility.php";
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
-$dbname              = "";
-$reqid               = "";
-$tracefailed         = false;
-
+$dbname                 = "";
+$reqid                  = "";
+$tracefailed            = false;
+$running                = false;
+$analysisprofile        = false;
+$analysisprofileminimal = false;
+$analysisprofilexmljson = false;
+    
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
         case "--help": {
@@ -37,6 +45,29 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--trace-failed": {
             array_shift( $u_argv );
             $tracefailed = true;
+            break;
+        }
+        case "--analysis-profile": {
+            array_shift( $u_argv );
+            $analysisprofile = true;
+            break;
+        }
+        case "--analysis-profile-minimal": {
+            array_shift( $u_argv );
+            $analysisprofileminimal = true;
+            $analysisprofile        = true;
+            break;
+        }
+        case "--analysis-profile-xml-json": {
+            array_shift( $u_argv );
+            $analysisprofilexmljson = true;
+            $analysisprofileminimal = true;
+            $analysisprofile        = true;
+            break;
+        }
+        case "--running": {
+            array_shift( $u_argv );
+            $running = true;
             break;
         }
         case "--db": {
@@ -93,26 +124,115 @@ and edit with appropriate values
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
-if ( empty( $dbname ) ||
-     empty( $reqid ) ) {
-    error_exit( "both --db and --reqid must be specified\n---\n$notes" );
+if ( empty( $dbname ) ) {
+    error_exit( "--db must be specified\n---\n$notes" );
+    exit;
+}
+
+if ( empty( $reqid ) && !$running ) {
+    error_exit( "--reqid or --running must be specified\n---\n$notes" );
+    exit;
+}
+
+if ( !empty( $reqid ) && $running ) {
+    error_exit( "--reqid and --running are mututally exclusive\n---\n$notes" );
+    exit;
+}
+
+if ( $analysisprofile && $running ) {
+    error_exit( "--analysisprofile and --running are mututally exclusive\n---\n$notes" );
     exit;
 }
 
 open_db();
 
-$query = "select * from ${dbname}.autoflowAnalysisHistory where requestID=$reqid";
-$aah   = db_obj_result( $db_handle, $query, false, true );
+if ( $running ) {
+    $query   = "select * from ${dbname}.autoflowAnalysis";
+    $running = db_obj_result( $db_handle, $query, true, true );
+    if ( !$running ) {
+        echo "No jobs currently running\n";
+        exit;
+    }
 
-if ( !$aah ) {
-    error_exit( "record not found : \"$query\"\n" . mysqli_error( $db_handle ) );
+    $fmt = "%-6d | %-6d | %-18s | %-19s | %-19s | %-19s | %-8s | %s\n";
+    $fmtlen = 166;
+    
+    echoline( '-', $fmtlen );
+    echo sprintf(
+        $fmt
+        ,'requestID'
+        ,'autoflowID'
+        ,'filename'
+        ,'createTime'
+        ,'updateTime'
+        ,'stageSubmitTime'
+        ,'status'
+        ,'statusMsg'
+
+        );
+    echoline( '-', $fmtlen );
+    
+    while( $aa = mysqli_fetch_array($running) ) {
+        echo sprintf(
+            $fmt
+            ,$aa['requestID']
+            ,$aa['autoflowID']
+            ,substr($aa['filename'], 0, 18 )
+            ,$aa['createTime']
+            ,$aa['updateTime']
+            ,$aa['stageSubmitTime']
+            ,$aa['status']
+            ,$aa['statusMsg']
+            );
+    }
+    echoline( '-', $fmtlen );
+
+    exit;
 }
 
-$aah->statusJson = json_decode( $aah->statusJson );
-debug_json( "autoflowAnalysHistory:", $aah );
 
-if ( $tracefailed ) {
-    foreach ( $aah->statusJson as $v ) {
+$history = true;
+$query   = "select * from ${dbname}.autoflowAnalysisHistory where requestID=$reqid";
+$aa      = db_obj_result( $db_handle, $query, false, true );
+
+if ( !$aa ) {
+    $query = "select * from ${dbname}.autoflowAnalysis where requestID=$reqid";
+    $aa    = db_obj_result( $db_handle, $query, false, true );
+    $history = false;
+    
+    if ( !$aa ) {
+        error_exit( "record not found : \"$query\"\n" . mysqli_error( $db_handle ) );
+    }
+}
+
+$aa->statusJson = json_decode( $aa->statusJson );
+debug_json( $history ? "autoflowAnalysHistory:" : "autoflowAnalysis:", $aa );
+if ( $analysisprofile ) {
+    $query   = "select * from ${dbname}.analysisprofile where aprofileGUID='$aa->aprofileGUID'";
+    $ap      = db_obj_result( $db_handle, $query, false, true );
+    if ( $ap ) {
+        if ( $analysisprofileminimal ) {
+            unset( $ap->reportMask );
+            unset( $ap->combinedPlots );
+        } else {
+            $ap->reportMask    = json_decode( $ap->reportMask );
+            $ap->combinedPlots = json_decode( $ap->combinedPlots );
+        }
+            
+        if ( $analysisprofilexmljson ) {
+            $ap->xml = json_decode( json_encode(simplexml_load_string( $ap->xml ) ) );
+        } else {
+            $ap->xml           = explode( "\n", $ap->xml );
+        }
+            
+        debug_json( "analysisProfile", $ap );
+    } else {
+        echo "analysisProfile with aprofileGUID $aa->aprofileGUID missing!\n";
+    }
+}
+
+if ( $history && $tracefailed ) {
+    foreach ( $aa->statusJson as $v ) {
         foreach ( $v as $v2 ) {
             foreach ( $v2 as $k3 => $v3 ) {
                 if ( $v3->status == "FAILED" ) {
