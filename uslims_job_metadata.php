@@ -27,7 +27,9 @@ Options
 --json                 : output full JSON
 --squashed-json        : output squashed JSON    
 --json-metadata        : output JSON metadata
+--metadata             : output training metadata
 --metadata-format-file : specify metadata format file (default: $metadata_format_file)
+--limit                : limit number of results per database
 
 
 __EOD;
@@ -55,6 +57,8 @@ $listdatasetcount    = false;
 $json                = false;
 $squashedjson        = false;
 $jsonmetadata        = false;
+$metadata            = false;
+$limit               = 0;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
@@ -68,6 +72,14 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                 error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
             }
             $use_dbs[] = array_shift( $u_argv );
+            break;
+        }
+        case "--limit": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
+            }
+            $limit = array_shift( $u_argv );
             break;
         }
         case "--debug": {
@@ -98,6 +110,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--json-metadata": {
             array_shift( $u_argv );
             $jsonmetadata = true;
+            break;
+        }
+        case "--metadata": {
+            array_shift( $u_argv );
+            $metadata = true;
             break;
         }
         case "--metadata-format-file": {
@@ -246,6 +263,7 @@ if (
     && !$listanalysistype
     && !$listdatasetcount
     && !$jsonmetadata
+    && !$metadata
     ) {
     error_exit( "nothing to do" );
 }
@@ -541,6 +559,14 @@ foreach ( $use_dbs as $db ) {
                 $meta->jmd = (object) array_merge( (array) $meta->jmd, (array) squash( $meta->datasets ) );
                 debug_json( "HPCAnalysisRequestID $thisreqid json metadata", $meta->jmd );
             }                
+
+            if ( $metadata ) {
+                error_exit( "--metadata : to do" );
+            }
+
+            if ( $limit && $counts->ok >= $limit ) {
+                break;
+            }
         }
     }
     if ( $counts->total ) {

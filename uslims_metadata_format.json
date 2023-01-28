@@ -1,7 +1,25 @@
 # comments supported
 {
+    "version"          : "1.0"
+
+    ,"output_dir"      : "training"
+
+# the __XX__'s will be replaced in uslims_job_metadata.php with appropriate values
+    ,"filename_format" : {
+## the base file will be created for each dataset
+        "base" : "__version__-__db__-__requestid__"
+## the description file will be created once, it hold information to code/decode the training data
+        ,"description" : "__version__-description"
+        ,"extension" : {
+            "input"   : "input"
+            ,"target" : "target"
+        }
+    }
+    
+# maximum number experiments (equivalently, datasets) in a global analysis
+    ,"maximum_datasets" : 32
 # list of fields to include in output
-    "fields" :
+    ,"fields" :
     [
         "job.cluster.@attributes.name"
         ,"@attributes.method"
@@ -60,8 +78,6 @@
         ,"job.jobParameters.tikreg_option.@attributes.value"
         ,"job.jobParameters.tikreg_alpha.@attributes.value"
     ]
-# maximum number experiments (equivalently, datasets) in a global analysis
-    ,"maximum_datasets" : 32
 }
     
     
