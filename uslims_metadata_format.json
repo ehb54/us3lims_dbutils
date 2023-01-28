@@ -60,6 +60,8 @@
         ,"job.jobParameters.tikreg_option.@attributes.value"
         ,"job.jobParameters.tikreg_alpha.@attributes.value"
     ]
+# maximum number experiments (equivalently, datasets) in a global analysis
+    ,"maximum_datasets" : 32
 }
     
     

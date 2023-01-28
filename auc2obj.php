@@ -2,7 +2,7 @@
 {};
 
 function auc2obj( $aucdata, $debug = 0 ) {
-    echo "auc2obj()\n";
+    # echo "auc2obj()\n";
     $pos = 0;
     $magic_number   = substr( $aucdata, $pos, 4 ); $pos += 4;
     $format_version = substr( $aucdata, $pos, 2 ); $pos += 2;

@@ -21,12 +21,14 @@ Options
 --analysis-type        : restrict results by HPCAnalysisRequest.analType
 --analysis-type-rlike  : restrict results by HPCAnalysisRequest.analType using mysql rlike syntax
 --dataset-count        : restrict results by dataset count
+--dataset-count-range  : restrict results by dataset count range
 --list-analysis-type   : list 
 --list-dataset-count   : list HPCAnalysisRequest.xml dataset count
 --json                 : output full JSON
 --squashed-json        : output squashed JSON    
 --json-metadata        : output JSON metadata
 --metadata-format-file : specify metadata format file (default: $metadata_format_file)
+
 
 __EOD;
 
@@ -45,6 +47,9 @@ $reqid_range_used    = 0;
 $analysistype        = "";
 $analysistyperlike   = "";
 $datasetcount        = 0;
+$datasetcount_start  = 0;
+$datasetcount_end    = 0;
+
 $listanalysistype    = false;
 $listdatasetcount    = false;
 $json                = false;
@@ -137,6 +142,24 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $reqid_range_used = true;
             break;
         }
+        case "--dataset-count-range": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "\nOption --dataset-count-range requires two argument\n\n$notes" );
+            }
+            $datasetcount_start = array_shift( $u_argv );
+            if ( !$datasetcount_start ) {
+                error_exit( "--dataset-count-range requires non-zero values\n\n$notes" );
+            }
+            if ( !count( $u_argv ) ) {
+                error_exit( "\nOption --dataset-count-range requires two argument\n\n$notes" );
+            }
+            $datasetcount_end = array_shift( $u_argv );
+            if ( !$datasetcount_end ) {
+                error_exit( "--dataset-count-range requires non-zero values\n\n$notes" );
+            }
+            break;
+        }
         case "--analysis-type": {
             array_shift( $u_argv );
             if ( !count( $u_argv ) ) {
@@ -213,6 +236,9 @@ $metadata_format = json_decode( implode( "\n",preg_grep( '/^\s*#/', explode( "\n
 if ( !isset( $metadata_format->fields ) ) {
     error_exit( "$metadata_format_file missing 'fields' attribute" );
 }
+if ( !isset( $metadata_format->maximum_datasets ) ) {
+    error_exit( "$metadata_format_file missing 'maximum_datasets' attribute" );
+}
 
 if (
     !$json
@@ -255,11 +281,14 @@ foreach ( $use_dbs as $db ) {
 
     $counts = (object)[];
 
-    $counts->total              = 0;
-    $counts->ok                 = 0;
-    $counts->analysis_failed    = 0;
-    $counts->no_analysis_result = 0;
-    $counts->missing_raw_data   = 0;
+    $counts->total                        = 0;
+    $counts->ok                           = 0;
+    $counts->analysis_failed              = 0;
+    $counts->no_analysis_result           = 0;
+    $counts->missing_raw_data             = 0;
+    $counts->auc_decoding_error           = 0;
+    $counts->missing_dataset_parameters   = 0;
+    $counts->missing_edited_data          = 0;
     
     $hpcareqs = db_obj_result( $db_handle, $query , true, true );
 
@@ -285,6 +314,25 @@ foreach ( $use_dbs as $db ) {
             if ( $datasetcount > 0
                  && $meta->xmlj->job->datasetCount->{'@attributes'}->value != $datasetcount ) {
                 continue;
+            }
+            if ( $datasetcount_start > 0
+                 && $datasetcount_end > 0
+                 && (
+                     $meta->xmlj->job->datasetCount->{'@attributes'}->value < $datasetcount_start                  
+                     || $meta->xmlj->job->datasetCount->{'@attributes'}->value > $datasetcount_end
+                 )
+                ) {
+                continue;
+            }
+
+            if ( $meta->xmlj->job->datasetCount->{'@attributes'}->value > $metadata_format->maximum_datasets ) {
+                error_exit(
+                    sprintf(
+                        "number of datasets (%d) exceeds $metadata_format_file's maximum_datasets attribute (%d)"
+                        ,$meta->xmlj->job->datasetCount->{'@attributes'}->value
+                        ,$metadata_format->maximum_datasets
+                    )
+                    );
             }
 
             ## do we have an analysis result?
@@ -339,107 +387,129 @@ foreach ( $use_dbs as $db ) {
 
             ## collect dataset parameters
 
-            if ( 1 ) {
-                echo "HPCAnalysisRequestID $thisreqid checking dataset\n";
-                ## debug_json( "--> xmlj", $meta->xmlj );
+            $meta->datasets = (object)[];
+            $meta->datasets->edited_radial_points = [];
+            $meta->datasets->edited_data_points   = [];
 
-                foreach ( $meta->xmlj->dataset as $dataset ) {
-                    if ( $meta->xmlj->job->datasetCount->{'@attributes'}->value == 1 ) {
-                        $dataset = $meta->xmlj->dataset;
-                    }
-                    debug_json( "--> dataset", $dataset );
-                    @$file  = $dataset->files->auc->{'@attributes'}->filename;
-                    @$edit  = $dataset->files->edit->{'@attributes'}->filename;
-                    @$expID = $dataset->parameters->speedstep->{'@attributes'}->expID;
-                    echo "file $file expID $expID edit $edit (HPCAnalysisRequest experimentID $meta->experimentID)\n";
-                    if ( !isset( $file ) || !isset($expID) || !isset($edit) ) {
-                        ## error_exit( "HPCAnalysisRequestID $thisreqid missing expected dataset file & expID & edit" );
-                        $skip = true;
-                        break;
-                    }
-                    $query = "select rawDataID, data from ${db}.editedData where filename='$edit' order by lastUpdated desc limit 1";
-                    $editeddata = db_obj_result( $db_handle, $query, false, true );
+            # echo "HPCAnalysisRequestID $thisreqid checking dataset\n";
+            # debug_json( "--> xmlj", $meta->xmlj );
+            # debug_json( "--> xmlj->dataset", $meta->xmlj->dataset );
+            # error_exit( "testing" );
 
-                    if ( !$editeddata ) {
-                        error_exit( "HPCAnalysisRequestID $thisreqid missing expected editedData for edit='$edit'" );
-                        $skip = true;
-                        break;
-                    }
+            foreach ( $meta->xmlj->dataset as $dataset ) {
+                if ( $meta->xmlj->job->datasetCount->{'@attributes'}->value == 1 ) {
+                    $dataset = $meta->xmlj->dataset;
+                }
+                @$file  = $dataset->files->auc->{'@attributes'}->filename;
+                @$edit  = $dataset->files->edit->{'@attributes'}->filename;
+                @$expID = $dataset->parameters->speedstep->{'@attributes'}->expID;
+                # echo "file $file expID $expID edit $edit (HPCAnalysisRequest experimentID $meta->experimentID)\n";
+                if ( !isset( $file ) || !isset($expID) || !isset($edit) ) {
+                    ## error_exit( "HPCAnalysisRequestID $thisreqid missing expected dataset file & expID & edit" );
+                    $counts->missing_dataset_parameters++;
+                    $skip = true;
+                    break;
+                }
+                $query = "select rawDataID, data from ${db}.editedData where filename='$edit' order by lastUpdated desc limit 1";
+                $editeddata = db_obj_result( $db_handle, $query, false, true );
 
-                    $editeddata->xmlj = json_decode( json_encode(simplexml_load_string( $editeddata->data ) ) );
-                    $editeddata->xmls = (object)squash( $editeddata->xmlj );
-
-                    debug_json( "edit xmlj", $editeddata->xmlj );
-                    debug_json( "edit xmls", $editeddata->xmls );
-
-                    $query = "select data from ${db}.rawData where rawDataID=$editeddata->rawDataID";
-                    # echo "$query\n";
-                    $rawdata = db_obj_result( $db_handle, $query, false, true );
-
-                    if ( !$rawdata ) {
-                        # error_exit( "HPCAnalysisRequestID $thisreqid missing expected rawData for rawDataID=$editeddata->rawDataID" );
-                        $skip = true;
-                        break;
-                    }
-
-                    $datastats = auc2obj( $rawdata->data );
-
-                    if (
-                        !isset( $datastats->radius_delta )
-                        || $datastats->radius_delta <= 0
-                        || !isset( $datastats->scans )
-                        || $datastats->scans <= 0
-                        ) {
-                        # error_exit( "HPCAnalysisRequestID $thisreqid insufficient results decoding auc longblob" );
-                        $skip = true;
-                        break;
-                    }
-                    
-                    if (
-                        isset( $editeddata->xmlj->run )
-                        && isset( $editeddata->xmlj->run->excludes )
-                        && isset( $editeddata->xmlj->run->excludes->exclude )
-                        && is_array( $editeddata->xmlj->run->excludes->exclude )
-                        ) {
-                        $datastats->edited_scans         = $datastats->scans - count( $editeddata->xmlj->run->excludes->exclude );
-                    } else {
-                        $datastats->edited_scans         = $datastats->scans;
-                    }
-                        
-                    if (
-                        isset( $editeddata->xmlj->run )
-                        && isset( $editeddata->xmlj->run->parameters )
-                        && isset( $editeddata->xmlj->run->parameters->data_range )
-                        && isset( $editeddata->xmlj->run->parameters->data_range->{'@attributes'} )
-                        && isset( $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->right )
-                        && isset( $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->left )
-                        ) {
-                        $datastats->edited_radial_points =
-                            floor(
-                                ( $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->right
-                                  - $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->left )
-                                / $datastats->radius_delta
-                            )
-                            ;
-                    } else {
-                        $datastats->edited_radial_points = $dataset->radial_points;
-                    }
-                        
-                    $datastats->edited_data_points = $datastats->edited_scans * $datastats->edited_radial_points;
-
-                    debug_json( "auc2obj", $datastats );
+                if ( !$editeddata ) {
+                    # error_exit( "HPCAnalysisRequestID $thisreqid missing expected editedData for edit='$edit'" );
+                    $counts->missing_edited_data++;
+                    $skip = true;
+                    break;
                 }
 
-                if ( $skip ) {
-                    echo "HPCAnalysisRequestID $thisreqid NOT ok\n";
-                    $counts->missing_raw_data++;
-                    continue;
+                $editeddata->xmlj = json_decode( json_encode(simplexml_load_string( $editeddata->data ) ) );
+                $editeddata->xmls = (object)squash( $editeddata->xmlj );
+
+                # debug_json( "edit xmlj", $editeddata->xmlj );
+                # debug_json( "edit xmls", $editeddata->xmls );
+
+                $query = "select data from ${db}.rawData where rawDataID=$editeddata->rawDataID";
+                # echo "$query\n";
+                $rawdata = db_obj_result( $db_handle, $query, false, true );
+
+                if ( !$rawdata ) {
+                    # error_exit( "HPCAnalysisRequestID $thisreqid missing expected rawData for rawDataID=$editeddata->rawDataID" );
+                    $skip = true;
+                    break;
                 }
 
-                $counts->ok++;
+                $datastats = auc2obj( $rawdata->data );
 
+                if (
+                    !isset( $datastats->radius_delta )
+                    || $datastats->radius_delta <= 0
+                    || !isset( $datastats->scans )
+                    || $datastats->scans <= 0
+                    ) {
+                    # error_exit( "HPCAnalysisRequestID $thisreqid insufficient results decoding auc longblob" );
+                    $counts->auc_decoding_error++;
+                    $skip = true;
+                    break;
+                }
+                
+                if (
+                    isset( $editeddata->xmlj->run )
+                    && isset( $editeddata->xmlj->run->excludes )
+                    && isset( $editeddata->xmlj->run->excludes->exclude )
+                    && is_array( $editeddata->xmlj->run->excludes->exclude )
+                    ) {
+                    $datastats->edited_scans         = $datastats->scans - count( $editeddata->xmlj->run->excludes->exclude );
+                } else {
+                    $datastats->edited_scans         = $datastats->scans;
+                }
+                
+                if (
+                    isset( $editeddata->xmlj->run )
+                    && isset( $editeddata->xmlj->run->parameters )
+                    && isset( $editeddata->xmlj->run->parameters->data_range )
+                    && isset( $editeddata->xmlj->run->parameters->data_range->{'@attributes'} )
+                    && isset( $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->right )
+                    && isset( $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->left )
+                    ) {
+                    $datastats->edited_radial_points =
+                        floor(
+                            ( $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->right
+                              - $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->left )
+                            / $datastats->radius_delta
+                        )
+                        ;
+                } else {
+                    $datastats->edited_radial_points = $dataset->radial_points;
+                }
+                
+                $datastats->edited_data_points = $datastats->edited_scans * $datastats->edited_radial_points;
+
+                $meta->datasets->edited_radial_points[] = $datastats->edited_radial_points;
+                $meta->datasets->edited_scans[]         = $datastats->edited_scans;
+
+                # debug_json( "auc2obj", $datastats );
+
+                if ( $meta->xmlj->job->datasetCount->{'@attributes'}->value == 1 ) {
+                    break;
+                }
+            }
+
+            if ( $skip ) {
                 continue;
             }
+
+            while( count( $meta->datasets->edited_scans ) < $metadata_format->maximum_datasets ) {
+                $meta->datasets->edited_radial_points[] = 0;
+                $meta->datasets->edited_scans[]         = 0;
+            }
+
+            if ( $skip ) {
+                echo "HPCAnalysisRequestID $thisreqid NOT ok\n";
+                $counts->missing_raw_data++;
+                continue;
+            }
+
+            $counts->ok++;
+
+            # debug_json( "meta datasets", $meta->datasets );
             
             if ( $listdatasetcount || $listanalysistype ) {
                 $out = "HPCAnalysisRequestID $thisreqid :";
@@ -467,6 +537,8 @@ foreach ( $use_dbs as $db ) {
                 foreach ( $metadata_format->fields as $v ) {
                     $meta->jmd->{$v} = isset( $meta->xmls->{$v} ) ? $meta->xmls->{$v} : "n/a";
                 }
+                ## merge scan data
+                $meta->jmd = (object) array_merge( (array) $meta->jmd, (array) squash( $meta->datasets ) );
                 debug_json( "HPCAnalysisRequestID $thisreqid json metadata", $meta->jmd );
             }                
         }
