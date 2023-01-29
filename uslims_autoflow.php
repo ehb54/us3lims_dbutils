@@ -20,6 +20,7 @@ Options
 --analysis-profile-xml-json   : convert xml to json in analysis profile, implies --analysis-profile & --analysis-profile-minimal
 --trace-failed                : add report details for status FAILED for autoflowAnalysisHistory
 --running                     : list running autoflow jobs
+--recent-history count        : list count most recent autoflowAnalysisHistory records
 
 __EOD;
 
@@ -35,6 +36,7 @@ $running                = false;
 $analysisprofile        = false;
 $analysisprofileminimal = false;
 $analysisprofilexmljson = false;
+$recenthistorycount     = 0;
     
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
@@ -68,6 +70,17 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--running": {
             array_shift( $u_argv );
             $running = true;
+            break;
+        }
+        case "--recent-history": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "\nOption --recent-history requires an argument\n\n$notes" );
+            }
+            $recenthistorycount = array_shift( $u_argv );
+            if ( empty( $dbname ) ) {
+                error_exit( "--recent-historys a non-zero value\n\n$notes" );
+            }
             break;
         }
         case "--db": {
@@ -129,8 +142,8 @@ if ( empty( $dbname ) ) {
     exit;
 }
 
-if ( empty( $reqid ) && !$running ) {
-    error_exit( "--reqid or --running must be specified\n---\n$notes" );
+if ( empty( $reqid ) && !$running && !$recenthistorycount) {
+    error_exit( "--reqid, --running or --recent-history must be specified\n---\n$notes" );
     exit;
 }
 
@@ -183,6 +196,50 @@ if ( $running ) {
             ,$aa['stageSubmitTime']
             ,$aa['status']
             ,$aa['statusMsg']
+            );
+    }
+    echoline( '-', $fmtlen );
+
+    exit;
+}
+
+if ( $recenthistorycount ) {
+    $query   = "select * from ${dbname}.autoflowAnalysisHistory order by createTime desc limit $recenthistorycount";
+    $running = db_obj_result( $db_handle, $query, true, true );
+    if ( !$running ) {
+        echo "No jobs currently running\n";
+        exit;
+    }
+
+    $fmt = "%-6d | %-6d | %-18s | %-19s | %-19s | %-19s | %-8s | %s\n";
+    $fmtlen = 166;
+    
+    echoline( '-', $fmtlen );
+    echo sprintf(
+        $fmt
+        ,'requestID'
+        ,'autoflowID'
+        ,'filename'
+        ,'createTime'
+        ,'updateTime'
+        ,'stageSubmitTime'
+        ,'status'
+        ,'statusMsg'
+
+        );
+    echoline( '-', $fmtlen );
+    
+    while( $aa = mysqli_fetch_array($running) ) {
+        echo sprintf(
+            $fmt
+            ,$aa['requestID']
+            ,$aa['autoflowID']
+            ,substr($aa['filename'], 0, 18 )
+            ,$aa['createTime']
+            ,$aa['updateTime']
+            ,$aa['stageSubmitTime']
+            ,$aa['status']
+            ,trim($aa['statusMsg'])
             );
     }
     echoline( '-', $fmtlen );
