@@ -257,6 +257,9 @@ if ( !file_exists( $metadata_format_file ) ) {
 $metadata_format = json_decode( implode( "\n",preg_grep( '/^\s*#/', explode( "\n", file_get_contents( $metadata_format_file ) ), PREG_GREP_INVERT ) ) );
 
 ## debug_json( "$metadata_format_file" , $metadata_format );
+if ( !isset( $metadata_format->version ) ) {
+    error_exit( "$metadata_format_file missing 'version' attribute" );
+}
 if ( !isset( $metadata_format->fields ) ) {
     error_exit( "$metadata_format_file missing 'fields' attribute" );
 }
@@ -269,9 +272,29 @@ if ( !isset( $metadata_format->fields->input ) ) {
 if ( !isset( $metadata_format->fields->target ) ) {
     error_exit( "$metadata_format_file missing 'fields->target' attribute" );
 }
-
 if ( !isset( $metadata_format->string_mapping ) ) {
     error_exit( "$metadata_format_file missing 'string_mapping' attribute" );
+}
+if ( !isset( $metadata_format->output_dir) ) {
+    error_exit( "$metadata_format_file missing 'output_dir' attribute" );
+}
+if ( !isset( $metadata_format->filename_format) ) {
+    error_exit( "$metadata_format_file missing 'filename_format' attribute" );
+}
+if ( !isset( $metadata_format->filename_format->base) ) {
+    error_exit( "$metadata_format_file missing 'filename_format->base' attribute" );
+}
+if ( !isset( $metadata_format->filename_format->extension) ) {
+    error_exit( "$metadata_format_file missing 'filename_format->extension' attribute" );
+}
+if ( !isset( $metadata_format->filename_format->extension->input) ) {
+    error_exit( "$metadata_format_file missing 'filename_format->extension->input' attribute" );
+}
+if ( !isset( $metadata_format->filename_format->extension->target) ) {
+    error_exit( "$metadata_format_file missing 'filename_format->extension->target' attribute" );
+}
+if ( !isset( $metadata_format->filename_format->description) ) {
+    error_exit( "$metadata_format_file missing 'filename_format->description' attribute" );
 }
 
 if (
@@ -297,6 +320,66 @@ if ( !count( $use_dbs ) ) {
         error_exit( "specified --db not found in database : " . implode( ' ', $db_diff ) );
     }
 }
+
+if ( $metadata ) {
+    if ( !is_dir( $metadata_format->output_dir ) ) {
+        error_exit( "metadata output dir $metadata_format->output_dir is not an existing directory\nPlease create this directory and rerun" );
+    }
+
+    ## create format templates
+
+    $template_base_description_filename =
+        $metadata_format->output_dir
+        . "/"
+        . str_replace( "__version__", $metadata_format->version, $metadata_format->filename_format->description )
+        ;
+
+    $input_format = $metadata_format->fields->input;
+    
+    for ( $i = 0; $i < $metadata_format->maximum_datasets; ++$i ) {
+        $input_format[] = "edited_scans.$i";
+        $input_format[] = "edited_radial_points.$i";
+    }
+
+    sort( $input_format, SORT_NATURAL );
+
+    # debug_json( "$template_base_description_filename", $input_format );
+
+    $import_format_filename = $template_base_description_filename . "." . $metadata_format->filename_format->extension->input;
+
+    if ( false ===
+         file_put_contents(
+             $import_format_filename
+             , json_encode( $input_format, JSON_PRETTY_PRINT ) . "\n" )
+        ) {
+        error_exit( "error creating file $import_format_filename" );
+    }
+
+    $target_format = $metadata_format->fields->target;
+    
+    sort( $target_format, SORT_NATURAL );
+
+    $target_format_filename = $template_base_description_filename . "." . $metadata_format->filename_format->extension->target;
+
+    if ( false ===
+         file_put_contents(
+             $target_format_filename
+             , json_encode( $target_format, JSON_PRETTY_PRINT ) . "\n" )
+        ) {
+        error_exit( "error creating file $target_format_filename" );
+    }
+
+    $metadata_format_copy_filename = $template_base_description_filename . "_metadata_format.json";
+
+    if ( false ===
+         file_put_contents(
+             $metadata_format_copy_filename
+             , json_encode( $metadata_format, JSON_PRETTY_PRINT ) . "\n" )
+        ) {
+        error_exit( "error creating file $metadata_format_copy_filename" );
+    }
+}
+    
 
 foreach ( $use_dbs as $db ) {
     headerline( "db $db" );
@@ -617,7 +700,30 @@ foreach ( $use_dbs as $db ) {
             }                
 
             if ( $metadata ) {
+                ## create files for input & target for this dataset
+                $dataset_base_filename =
+                    $metadata_format->output_dir
+                    . "/"
+                    . preg_replace(
+                        [
+                         "/__version__/"
+                         ,"/__db__/"
+                         ,"/__requestid__/"
+                        ]
+                        ,[
+                            $metadata_format->version
+                            ,$db
+                            ,$thisreqid
+                        ]
+                        , $metadata_format->filename_format->base )
+                    ;
+
+                echo "dataset_base_filename $dataset_base_filename\n";
                 error_exit( "--metadata : to do" );
+
+                ## natural sort $meta->jmd->input & ->training
+                ## build array of values
+                ## write to input & output
             }
 
             if ( $limit && $counts->ok >= $limit ) {
