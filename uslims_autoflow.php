@@ -167,7 +167,7 @@ if ( $running ) {
         exit;
     }
 
-    $fmt = "%-6d | %-6d | %-18s | %-19s | %-19s | %-19s | %-8s | %s\n";
+    $fmt = "%-9s | %-10s | %-18s | %-19s | %-19s | %-19s | %-8s | %s\n";
     $fmtlen = 166;
     
     echoline( '-', $fmtlen );
@@ -211,7 +211,7 @@ if ( $recenthistorycount ) {
         exit;
     }
 
-    $fmt = "%-6d | %-6d | %-18s | %-19s | %-19s | %-19s | %-8s | %s\n";
+    $fmt = "%-9s | %-10s | %-18s | %-19s | %-19s | %-19s | %-8s | %s\n";
     $fmtlen = 166;
     
     echoline( '-', $fmtlen );
