@@ -13,23 +13,24 @@ exports job data metadata
 
 Options
 
---help                 : print this information and exit
+--help                         : print this information and exit
 
---db dbname            : specify the database name, can be specified multiple times
---reqid id             : restrict results by HPCAnalysisRequest.HPCAnalysisRequestID
---reqid-range id id    : restrict to range of results by HPCAnalysisRequest.HPCAnalysisRequestID
---analysis-type        : restrict results by HPCAnalysisRequest.analType
---analysis-type-rlike  : restrict results by HPCAnalysisRequest.analType using mysql rlike syntax
---dataset-count        : restrict results by dataset count
---dataset-count-range  : restrict results by dataset count range
---list-analysis-type   : list 
---list-dataset-count   : list HPCAnalysisRequest.xml dataset count
---json                 : output full JSON
---squashed-json        : output squashed JSON    
---json-metadata        : output JSON metadata
---metadata             : output training metadata
---metadata-format-file : specify metadata format file (default: $metadata_format_file)
---limit                : limit number of results per database
+--db dbname                    : specify the database name, can be specified multiple times
+--reqid id                     : restrict results by HPCAnalysisRequest.HPCAnalysisRequestID
+--reqid-range id id            : restrict to range of results by HPCAnalysisRequest.HPCAnalysisRequestID
+--analysis-type                : restrict results by HPCAnalysisRequest.analType
+--analysis-type-rlike          : restrict results by HPCAnalysisRequest.analType using mysql rlike syntax
+--dataset-count                : restrict results by dataset count
+--dataset-count-range          : restrict results by dataset count range
+--list-analysis-type           : list 
+--list-dataset-count           : list HPCAnalysisRequest.xml dataset count
+--json                         : output full JSON
+--squashed-json                : output squashed JSON    
+--json-metadata                : output JSON metadata
+--metadata                     : output training metadata
+--metadata-format-file         : specify metadata format file (default: $metadata_format_file)
+--limit                        : limit number of results per database
+--list-string-variants         : list all found string metadata string_mapping variants
 
 
 __EOD;
@@ -59,6 +60,7 @@ $squashedjson        = false;
 $jsonmetadata        = false;
 $metadata            = false;
 $limit               = 0;
+$liststringvariants  = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
@@ -115,6 +117,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--metadata": {
             array_shift( $u_argv );
             $metadata = true;
+            break;
+        }
+        case "--list-string-variants": {
+            array_shift( $u_argv );
+            $liststringvariants = true;
             break;
         }
         case "--metadata-format-file": {
@@ -256,6 +263,16 @@ if ( !isset( $metadata_format->fields ) ) {
 if ( !isset( $metadata_format->maximum_datasets ) ) {
     error_exit( "$metadata_format_file missing 'maximum_datasets' attribute" );
 }
+if ( !isset( $metadata_format->fields->input ) ) {
+    error_exit( "$metadata_format_file missing 'fields->input' attribute" );
+}
+if ( !isset( $metadata_format->fields->target ) ) {
+    error_exit( "$metadata_format_file missing 'fields->target' attribute" );
+}
+
+if ( !isset( $metadata_format->string_mapping ) ) {
+    error_exit( "$metadata_format_file missing 'string_mapping' attribute" );
+}
 
 if (
     !$json
@@ -264,6 +281,7 @@ if (
     && !$listdatasetcount
     && !$jsonmetadata
     && !$metadata
+    && !$liststringvariants
     ) {
     error_exit( "nothing to do" );
 }
@@ -308,6 +326,11 @@ foreach ( $use_dbs as $db ) {
     $counts->missing_dataset_parameters   = 0;
     $counts->missing_edited_data          = 0;
     
+    $string_variants = (object)[];
+    foreach ( $metadata_format->string_mapping as $k => $v ) {
+        $string_variants->{$k} = (object)[];
+    }
+
     $hpcareqs = db_obj_result( $db_handle, $query , true, true );
 
     if ( $hpcareqs ) {
@@ -366,7 +389,9 @@ foreach ( $use_dbs as $db ) {
                 continue;
             }
 
-            $meta->jmd = (object)[];
+            $meta->jmd         = (object)[];
+            $meta->jmd->input  = (object)[];
+            $meta->jmd->target = (object)[];
 
             $skip = false;
             while( $hpcares = mysqli_fetch_array($hpcaress) ) {
@@ -391,10 +416,12 @@ foreach ( $use_dbs as $db ) {
                 }
                 # echo "HPCAnalysisRequest $thisreqid HPCAnalysisResult $thisresid queueStatus '" . $hpcares['queueStatus'] . "'\n";
 
-                $meta->jmd->CPUCount = $hpcares['CPUCount'];
-                $meta->jmd->wallTime = $hpcares['wallTime'];
-                $meta->jmd->CPUTime  = $hpcares['CPUTime'];
-                $meta->jmd->max_rss  = $hpcares['max_rss'];
+                ## additional inputs go to xmls
+                $meta->xmls->CPUCount = $hpcares['CPUCount'];
+
+                $meta->jmd->target->wallTime = $hpcares['wallTime'];
+                $meta->jmd->target->CPUTime  = $hpcares['CPUTime'];
+                $meta->jmd->target->max_rss  = $hpcares['max_rss'];
 
                 # debug_json( "HPCAnalysisRequest $thisreqid HPCAnalysisResult $thisresid", $hpcares );
             }
@@ -551,13 +578,42 @@ foreach ( $use_dbs as $db ) {
                 debug_json( "HPCAnalysisRequestID $thisreqid squashedjson", $meta->xmls );
             }
 
+            if ( $liststringvariants ) {
+                foreach ( $metadata_format->string_mapping as $k => $v ) {
+                    if ( isset( $meta->xmls->{$k} ) ) {
+                        $string_variants->{$k}->{$meta->xmls->{$k}} = true;
+                    }
+                }
+            }
+            
             if ( $jsonmetadata ) {
-                foreach ( $metadata_format->fields as $v ) {
-                    $meta->jmd->{$v} = isset( $meta->xmls->{$v} ) ? $meta->xmls->{$v} : "n/a";
+                foreach ( $metadata_format->fields->input as $v ) {
+                    $meta->jmd->input->{$v} =
+                        isset( $meta->xmls->{$v} )
+                        ? (
+                            is_numeric( $meta->xmls->{$v} )
+                            ? floatval( $meta->xmls->{$v} )
+                            : $meta->xmls->{$v}
+                        )
+                        : "n/a"
+                        ;
+                    
+                }
+                foreach ( $metadata_format->fields->target as $v ) {
+                    $meta->jmd->target->{$v} =
+                        isset( $meta->jmd->target->{$v} )
+                        ? (
+                            is_numeric( $meta->jmd->target->{$v} )
+                            ? floatval( $meta->jmd->target->{$v} )
+                            : $meta->jmd->target->{$v} 
+                        )
+                        : "n/a"
+                        ;
                 }
                 ## merge scan data
-                $meta->jmd = (object) array_merge( (array) $meta->jmd, (array) squash( $meta->datasets ) );
-                debug_json( "HPCAnalysisRequestID $thisreqid json metadata", $meta->jmd );
+                $meta->jmd->input = (object) array_merge( (array) $meta->jmd->input, (array) squash( $meta->datasets ) );
+                debug_json( "HPCAnalysisRequestID $thisreqid json metadata input", $meta->jmd->input );
+                debug_json( "HPCAnalysisRequestID $thisreqid json metadata target", $meta->jmd->target );
             }                
 
             if ( $metadata ) {
@@ -573,4 +629,7 @@ foreach ( $use_dbs as $db ) {
         $counts->percent_ok = floatval( sprintf( "%.2f", 100 * $counts->ok / $counts->total ) );
     }
     debug_json( "counts", $counts );
+    if ( $liststringvariants ) {
+        debug_json( "string variants", $string_variants );
+    }
 }
