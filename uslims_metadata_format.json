@@ -125,6 +125,7 @@
             ,"us-lims2.aalto.fi"                 : 31
             ,"uslims.uleth.ca"                   : 10
             ,"uslimstest.genapp.rocks"           : 32
+            ,"BIC-AUC-1"                         : 33
         }
 
 ## @attributes.method are grouped coarsely
