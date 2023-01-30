@@ -32,7 +32,7 @@ Options
 --metadata-format-file         : specify metadata format file (default: $metadata_format_file)
 --limit                        : limit number of results per database
 --list-string-variants         : list all found string metadata string_mapping variants
-
+--metadata-output-directory    : specify metadata output directory, default is defined in the metadata-format-file
 
 __EOD;
 
@@ -42,27 +42,28 @@ require "auc2obj.php";
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
-$use_dbs             = [];
-$exclude_dbs         = [];
-$reqid               = 0;
-$reqid_used          = false;
-$reqid_start         = 0;
-$reqid_end           = 0;
-$reqid_range_used    = 0;
-$analysistype        = "";
-$analysistyperlike   = "";
-$datasetcount        = 0;
-$datasetcount_start  = 0;
-$datasetcount_end    = 0;
+$use_dbs                  = [];
+$exclude_dbs              = [];
+$reqid                    = 0;
+$reqid_used               = false;
+$reqid_start              = 0;
+$reqid_end                = 0;
+$reqid_range_used         = 0;
+$analysistype             = "";
+$analysistyperlike        = "";
+$datasetcount             = 0;
+$datasetcount_start       = 0;
+$datasetcount_end         = 0;
 
-$listanalysistype    = false;
-$listdatasetcount    = false;
-$json                = false;
-$squashedjson        = false;
-$jsonmetadata        = false;
-$metadata            = false;
-$limit               = 0;
-$liststringvariants  = false;
+$listanalysistype         = false;
+$listdatasetcount         = false;
+$json                     = false;
+$squashedjson             = false;
+$jsonmetadata             = false;
+$metadata                 = false;
+$limit                    = 0;
+$liststringvariants       = false;
+$metadataoutputdirectory  = "";
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $arg = $u_argv[ 0 ] ) {
@@ -92,6 +93,14 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                 error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
             }
             $limit = array_shift( $u_argv );
+            break;
+        }
+        case "--metadata-output-directory": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
+            }
+            $metadataoutputdirectory = array_shift( $u_argv );
             break;
         }
         case "--debug": {
@@ -265,6 +274,10 @@ if ( !file_exists( $metadata_format_file ) ) {
 
 ## remove comment lines
 $metadata_format = json_decode( implode( "\n",preg_grep( '/^\s*#/', explode( "\n", file_get_contents( $metadata_format_file ) ), PREG_GREP_INVERT ) ) );
+
+if ( !empty( $metadataoutputdirectory ) ) {
+    $metadata_format->output_dir = $metadataoutputdirectory;
+}
 
 ## echo_json( "$metadata_format_file" , $metadata_format );
 if ( !isset( $metadata_format->version ) ) {
