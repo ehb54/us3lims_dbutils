@@ -381,6 +381,10 @@ if ( $metadata ) {
 
 }
     
+$string_variants = (object)[];
+foreach ( $metadata_format->string_mapping as $k => $v ) {
+    $string_variants->{$k} = (object)[];
+}
 
 foreach ( $use_dbs as $db ) {
     headerline( "db $db" );
@@ -410,10 +414,6 @@ foreach ( $use_dbs as $db ) {
     $counts->missing_dataset_parameters   = 0;
     $counts->missing_edited_data          = 0;
     
-    $string_variants = (object)[];
-    foreach ( $metadata_format->string_mapping as $k => $v ) {
-        $string_variants->{$k} = (object)[];
-    }
 
     $hpcareqs = db_obj_result( $db_handle, $query , true, true );
 
@@ -807,7 +807,10 @@ foreach ( $use_dbs as $db ) {
         $counts->percent_ok = floatval( sprintf( "%.2f", 100 * $counts->ok / $counts->total ) );
     }
     debug_json( "counts", $counts );
-    if ( $liststringvariants ) {
-        debug_json( "string variants", $string_variants );
-    }
+}
+
+echoline( "=" );
+
+if ( $liststringvariants ) {
+    debug_json( "string variants", $string_variants );
 }
