@@ -103,6 +103,7 @@
             ,"expanse.sdsc.edu"                   : 11
             ,"bridges2.psc.edu"                   : 12
             ,"ls6.tacc.utexas.edu"                : 13
+            ,"uslimstest.genapp.rocks"            : 14
         }
 
 ## @attributes.method are grouped coarsely

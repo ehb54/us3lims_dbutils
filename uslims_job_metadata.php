@@ -736,7 +736,7 @@ foreach ( $use_dbs as $db ) {
                     if ( isset( $metadata_format->string_mapping->{$input_format[$i]} ) ) {
                         ## check in $metadata_format->string_mapping
                         if ( !isset( $metadata_format->string_mapping->{$input_format[$i]}->{$meta->jmd->input->{$input_format[$i]}} ) ) {
-                            error_exit( "attribute '$input_format[$i]' found in \$metadata_format->string_mapping, but value '$meta->jmd->input->{$input_format[$i]}' missing" );
+                            error_exit( "attribute '$input_format[$i]' found in \$metadata_format->string_mapping, but value '" . $meta->jmd->input->{$input_format[$i]} . "' missing" );
                         }
                         $input_data[] = $metadata_format->string_mapping->{$input_format[$i]}->{$meta->jmd->input->{$input_format[$i]}};
                     } else {
@@ -771,7 +771,7 @@ foreach ( $use_dbs as $db ) {
                     if ( isset( $metadata_format->string_mapping->{$target_format[$i]} ) ) {
                         ## check in $metadata_format->string_mapping
                         if ( !isset( $metadata_format->string_mapping->{$target_format[$i]}->{$meta->jmd->target->{$target_format[$i]}} ) ) {
-                            error_exit( "attribute '$target_format[$i]' found in \$metadata_format->string_mapping, but value '$meta->jmd->target->{$target_format[$i]}' missing" );
+                            error_exit( "attribute '$target_format[$i]' found in \$metadata_format->string_mapping, but value '" . $meta->jmd->target->{$target_format[$i]} . "' missing" );
                         }
                         $target_data[] = $metadata_format->string_mapping->{$target_format[$i]}->{$meta->jmd->target->{$target_format[$i]}};
                     } else {
