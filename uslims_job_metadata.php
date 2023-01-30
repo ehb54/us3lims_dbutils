@@ -378,6 +378,7 @@ if ( $metadata ) {
         ) {
         error_exit( "error creating file $metadata_format_copy_filename" );
     }
+
 }
     
 
@@ -669,32 +670,33 @@ foreach ( $use_dbs as $db ) {
                 }
             }
             
+            foreach ( $metadata_format->fields->input as $v ) {
+                $meta->jmd->input->{$v} =
+                    isset( $meta->xmls->{$v} )
+                    ? (
+                        is_numeric( $meta->xmls->{$v} )
+                        ? floatval( $meta->xmls->{$v} )
+                        : $meta->xmls->{$v}
+                    )
+                    : "n/a"
+                    ;
+                
+            }
+            foreach ( $metadata_format->fields->target as $v ) {
+                $meta->jmd->target->{$v} =
+                    isset( $meta->jmd->target->{$v} )
+                    ? (
+                        is_numeric( $meta->jmd->target->{$v} )
+                        ? floatval( $meta->jmd->target->{$v} )
+                        : $meta->jmd->target->{$v} 
+                    )
+                    : "n/a"
+                    ;
+            }
+            ## merge scan data
+            $meta->jmd->input = (object) array_merge( (array) $meta->jmd->input, (array) squash( $meta->datasets ) );
+
             if ( $jsonmetadata ) {
-                foreach ( $metadata_format->fields->input as $v ) {
-                    $meta->jmd->input->{$v} =
-                        isset( $meta->xmls->{$v} )
-                        ? (
-                            is_numeric( $meta->xmls->{$v} )
-                            ? floatval( $meta->xmls->{$v} )
-                            : $meta->xmls->{$v}
-                        )
-                        : "n/a"
-                        ;
-                    
-                }
-                foreach ( $metadata_format->fields->target as $v ) {
-                    $meta->jmd->target->{$v} =
-                        isset( $meta->jmd->target->{$v} )
-                        ? (
-                            is_numeric( $meta->jmd->target->{$v} )
-                            ? floatval( $meta->jmd->target->{$v} )
-                            : $meta->jmd->target->{$v} 
-                        )
-                        : "n/a"
-                        ;
-                }
-                ## merge scan data
-                $meta->jmd->input = (object) array_merge( (array) $meta->jmd->input, (array) squash( $meta->datasets ) );
                 debug_json( "HPCAnalysisRequestID $thisreqid json metadata input", $meta->jmd->input );
                 debug_json( "HPCAnalysisRequestID $thisreqid json metadata target", $meta->jmd->target );
             }                
@@ -719,11 +721,81 @@ foreach ( $use_dbs as $db ) {
                     ;
 
                 echo "dataset_base_filename $dataset_base_filename\n";
-                error_exit( "--metadata : to do" );
 
-                ## natural sort $meta->jmd->input & ->training
-                ## build array of values
+                $dataset_filename_input  = "$dataset_base_filename" . "." . $metadata_format->filename_format->extension->input;
+                $dataset_filename_target = "$dataset_base_filename" . "." . $metadata_format->filename_format->extension->target;
+
                 ## write to input & output
+
+                $input_data = [];
+
+                for ( $i = 0; $i < count( $input_format ); ++$i ) {
+                    if ( !isset( $meta->jmd->input->{$input_format[$i]} ) ) {
+                        error_exit( "key $input_format[$i] missing from \$meta->jmd->input" );
+                    }
+                    if ( isset( $metadata_format->string_mapping->{$input_format[$i]} ) ) {
+                        ## check in $metadata_format->string_mapping
+                        if ( !isset( $metadata_format->string_mapping->{$input_format[$i]}->{$meta->jmd->input->{$input_format[$i]}} ) ) {
+                            error_exit( "attribute '$input_format[$i]' found in \$metadata_format->string_mapping, but value '$meta->jmd->input->{$input_format[$i]}' missing" );
+                        }
+                        $input_data[] = $metadata_format->string_mapping->{$input_format[$i]}->{$meta->jmd->input->{$input_format[$i]}};
+                    } else {
+                        $input_data[] =
+                            $meta->jmd->input->{$input_format[$i]} == "n/a"
+                            ? -1
+                            : $meta->jmd->input->{$input_format[$i]};
+                    }
+                }
+
+                for ( $i = 0; $i < count( $input_format ); ++$i ) {
+                    if ( $input_data[$i] != floatval( $input_data[$i] ) ) {
+                        error_exit( "non float data found in input data" );
+                    }
+                    # echo sprintf( "key %s : val %s\n", $input_format[$i], $input_data[$i] );
+                }
+
+                if ( false ===
+                     file_put_contents(
+                         $dataset_filename_input
+                         , implode( "\n", $input_data ) . "\n" )
+                    ) {
+                    error_exit( "error creating file $$dataset_filename_input" );
+                }
+
+                $target_data = [];
+
+                for ( $i = 0; $i < count( $target_format ); ++$i ) {
+                    if ( !isset( $meta->jmd->target->{$target_format[$i]} ) ) {
+                        error_exit( "key $target_format[$i] missing from \$meta->jmd->target" );
+                    }
+                    if ( isset( $metadata_format->string_mapping->{$target_format[$i]} ) ) {
+                        ## check in $metadata_format->string_mapping
+                        if ( !isset( $metadata_format->string_mapping->{$target_format[$i]}->{$meta->jmd->target->{$target_format[$i]}} ) ) {
+                            error_exit( "attribute '$target_format[$i]' found in \$metadata_format->string_mapping, but value '$meta->jmd->target->{$target_format[$i]}' missing" );
+                        }
+                        $target_data[] = $metadata_format->string_mapping->{$target_format[$i]}->{$meta->jmd->target->{$target_format[$i]}};
+                    } else {
+                        $target_data[] =
+                            $meta->jmd->target->{$target_format[$i]} == "n/a"
+                            ? -1
+                            : $meta->jmd->target->{$target_format[$i]};
+                    }
+                }
+
+                for ( $i = 0; $i < count( $target_format ); ++$i ) {
+                    if ( $target_data[$i] != floatval( $target_data[$i] ) ) {
+                        error_exit( "non float data found in input data" );
+                    }
+                    # echo sprintf( "key %s : val %s\n", $target_format[$i], $target_data[$i] );
+                }
+
+                if ( false ===
+                     file_put_contents(
+                         $dataset_filename_target
+                         , implode( "\n", $target_data ) . "\n" )
+                    ) {
+                    error_exit( "error creating file $$dataset_filename_target" );
+                }
             }
 
             if ( $limit && $counts->ok >= $limit ) {
