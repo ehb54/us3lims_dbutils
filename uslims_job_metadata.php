@@ -256,7 +256,7 @@ if ( !file_exists( $metadata_format_file ) ) {
 ## remove comment lines
 $metadata_format = json_decode( implode( "\n",preg_grep( '/^\s*#/', explode( "\n", file_get_contents( $metadata_format_file ) ), PREG_GREP_INVERT ) ) );
 
-## debug_json( "$metadata_format_file" , $metadata_format );
+## echo_json( "$metadata_format_file" , $metadata_format );
 if ( !isset( $metadata_format->version ) ) {
     error_exit( "$metadata_format_file missing 'version' attribute" );
 }
@@ -343,7 +343,7 @@ if ( $metadata ) {
 
     sort( $input_format, SORT_NATURAL );
 
-    # debug_json( "$template_base_description_filename", $input_format );
+    # echo_json( "$template_base_description_filename", $input_format );
 
     $import_format_filename = $template_base_description_filename . "." . $metadata_format->filename_format->extension->input;
 
@@ -449,8 +449,8 @@ foreach ( $use_dbs as $db ) {
             $meta->xmls         = (object)squash( $meta->xmlj );
             
             if ( !is_object( $meta->xmlj ) ) {
-                debug_json( "metadata non object", $meta );
-                debug_json( "HPCAnalysisRequest : $thisreqid", $hpcareq );
+                echo_json( "metadata non object", $meta );
+                echo_json( "HPCAnalysisRequest : $thisreqid", $hpcareq );
                 error_exit( "non-object xmlj");
             }
 
@@ -525,7 +525,7 @@ foreach ( $use_dbs as $db ) {
                 $meta->jmd->target->CPUTime  = $hpcares['CPUTime'];
                 $meta->jmd->target->max_rss  = $hpcares['max_rss'];
 
-                # debug_json( "HPCAnalysisRequest $thisreqid HPCAnalysisResult $thisresid", $hpcares );
+                # echo_json( "HPCAnalysisRequest $thisreqid HPCAnalysisResult $thisresid", $hpcares );
             }
 
             if ( $skip ) {
@@ -539,8 +539,8 @@ foreach ( $use_dbs as $db ) {
             $meta->datasets->edited_data_points   = [];
 
             # echo "HPCAnalysisRequestID $thisreqid checking dataset\n";
-            # debug_json( "--> xmlj", $meta->xmlj );
-            # debug_json( "--> xmlj->dataset", $meta->xmlj->dataset );
+            # echo_json( "--> xmlj", $meta->xmlj );
+            # echo_json( "--> xmlj->dataset", $meta->xmlj->dataset );
             # error_exit( "testing" );
 
             foreach ( $meta->xmlj->dataset as $dataset ) {
@@ -576,8 +576,8 @@ foreach ( $use_dbs as $db ) {
                 $editeddata->xmlj = json_decode( json_encode( $xml_decoded ) );
                 $editeddata->xmls = (object)squash( $editeddata->xmlj );
 
-                # debug_json( "edit xmlj", $editeddata->xmlj );
-                # debug_json( "edit xmls", $editeddata->xmls );
+                # echo_json( "edit xmlj", $editeddata->xmlj );
+                # echo_json( "edit xmls", $editeddata->xmls );
 
                 $query = "select data from ${db}.rawData where rawDataID=$editeddata->rawDataID";
                 # echo "$query\n";
@@ -638,7 +638,7 @@ foreach ( $use_dbs as $db ) {
                 $meta->datasets->edited_radial_points[] = $datastats->edited_radial_points;
                 $meta->datasets->edited_scans[]         = $datastats->edited_scans;
 
-                # debug_json( "auc2obj", $datastats );
+                # echo_json( "auc2obj", $datastats );
 
                 if ( $meta->xmlj->job->datasetCount->{'@attributes'}->value == 1 ) {
                     break;
@@ -662,7 +662,7 @@ foreach ( $use_dbs as $db ) {
 
             $counts->ok++;
 
-            # debug_json( "meta datasets", $meta->datasets );
+            # echo_json( "meta datasets", $meta->datasets );
             
             if ( $listdatasetcount || $listanalysistype ) {
                 $out = "HPCAnalysisRequestID $thisreqid :";
@@ -679,11 +679,11 @@ foreach ( $use_dbs as $db ) {
                 ## no squashed
                 $tmpmeta = json_decode( json_encode( $meta ) );
                 unset( $tmpmeta->xmls );
-                debug_json( "HPCAnalysisRequestID $thisreqid json", $tmpmeta );
+                echo_json( "HPCAnalysisRequestID $thisreqid json", $tmpmeta );
             }
 
             if ( $squashedjson ) {
-                debug_json( "HPCAnalysisRequestID $thisreqid squashedjson", $meta->xmls );
+                echo_json( "HPCAnalysisRequestID $thisreqid squashedjson", $meta->xmls );
             }
 
             if ( $liststringvariants ) {
@@ -721,8 +721,8 @@ foreach ( $use_dbs as $db ) {
             $meta->jmd->input = (object) array_merge( (array) $meta->jmd->input, (array) squash( $meta->datasets ) );
 
             if ( $jsonmetadata ) {
-                debug_json( "HPCAnalysisRequestID $thisreqid json metadata input", $meta->jmd->input );
-                debug_json( "HPCAnalysisRequestID $thisreqid json metadata target", $meta->jmd->target );
+                echo_json( "HPCAnalysisRequestID $thisreqid json metadata input", $meta->jmd->input );
+                echo_json( "HPCAnalysisRequestID $thisreqid json metadata target", $meta->jmd->target );
             }                
 
             if ( $metadata ) {
@@ -832,7 +832,7 @@ foreach ( $use_dbs as $db ) {
     if ( $counts->total ) {
         $counts->percent_ok = floatval( sprintf( "%.2f", 100 * $counts->ok / $counts->total ) );
     }
-    debug_json( "counts", $counts );
+    echo_json( "counts", $counts );
 }
 
 if ( count( $use_dbs ) > 1 ) {
@@ -842,9 +842,9 @@ if ( count( $use_dbs ) > 1 ) {
         $global_counts->percent_ok = floatval( sprintf( "%.2f", 100 * $global_counts->ok / $global_counts->total ) );
     }
     
-    debug_json( "counts", $global_counts );
+    echo_json( "counts", $global_counts );
 }
 
 if ( $liststringvariants ) {
-    debug_json( "string variants", $string_variants );
+    echo_json( "string variants", $string_variants );
 }
