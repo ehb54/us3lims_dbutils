@@ -16,6 +16,7 @@ Options
 --help                         : print this information and exit
 
 --db dbname                    : specify the database name, can be specified multiple times
+--db-exclude dbname            : exclude a db, can be specified multiple times
 --reqid id                     : restrict results by HPCAnalysisRequest.HPCAnalysisRequestID
 --reqid-range id id            : restrict to range of results by HPCAnalysisRequest.HPCAnalysisRequestID
 --analysis-type                : restrict results by HPCAnalysisRequest.analType
@@ -42,6 +43,7 @@ $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
 $use_dbs             = [];
+$exclude_dbs         = [];
 $reqid               = 0;
 $reqid_used          = false;
 $reqid_start         = 0;
@@ -63,7 +65,7 @@ $limit               = 0;
 $liststringvariants  = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
-    switch( $u_argv[ 0 ] ) {
+    switch( $arg = $u_argv[ 0 ] ) {
         case "--help": {
             echo $notes;
             exit;
@@ -74,6 +76,14 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                 error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
             }
             $use_dbs[] = array_shift( $u_argv );
+            break;
+        }
+        case "--db-exclude": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
+            }
+            $exclude_dbs[] = array_shift( $u_argv );
             break;
         }
         case "--limit": {
@@ -410,6 +420,10 @@ function accum_global_counts() {
 }
 
 foreach ( $use_dbs as $db ) {
+    if ( in_array( $db, $exclude_dbs ) ) {
+        continue;
+    }
+
     headerline( "db $db" );
 
     $query   = "select * from ${db}.HPCAnalysisRequest where requestXMLFile is not null";
