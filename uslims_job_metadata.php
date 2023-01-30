@@ -792,7 +792,7 @@ foreach ( $use_dbs as $db ) {
                         $input_data[] = $metadata_format->string_mapping->{$input_format[$i]}->{$meta->jmd->input->{$input_format[$i]}};
                     } else {
                         $input_data[] =
-                            $meta->jmd->input->{$input_format[$i]} == "n/a"
+                            $meta->jmd->input->{$input_format[$i]} === "n/a"
                             ? -1
                             : $meta->jmd->input->{$input_format[$i]};
                     }
@@ -827,7 +827,7 @@ foreach ( $use_dbs as $db ) {
                         $target_data[] = $metadata_format->string_mapping->{$target_format[$i]}->{$meta->jmd->target->{$target_format[$i]}};
                     } else {
                         $target_data[] =
-                            $meta->jmd->target->{$target_format[$i]} == "n/a"
+                            $meta->jmd->target->{$target_format[$i]} === "n/a"
                             ? -1
                             : $meta->jmd->target->{$target_format[$i]};
                     }
