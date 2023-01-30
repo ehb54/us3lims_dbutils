@@ -17,7 +17,7 @@
     }
     
 # maximum number experiments (equivalently, datasets) in a global analysis
-    ,"maximum_datasets" : 88
+    ,"maximum_datasets" : 250
 
 # list of fields to include in output
     ,"fields" : {
