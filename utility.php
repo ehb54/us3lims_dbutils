@@ -67,6 +67,12 @@ function debug_json( $msg, $json, $debuglevel = 0 ) {
     fwrite( $STDERR, "\n" );
 }
 
+function echo_json( $msg, $json, $debuglevel = 0 ) {
+    echo  "$msg\n";
+    echo json_encode( $json, JSON_PRETTY_PRINT );
+    echo "\n";
+}
+
 function run_cmd( $cmd, $die_if_exit = true, $array_result = false ) {
     global $debug;
     if ( isset( $debug ) && $debug ) {
