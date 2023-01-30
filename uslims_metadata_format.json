@@ -2,7 +2,7 @@
 {
     "version"          : "1.0"
 
-    ,"output_dir"      : "training"
+    ,"output_dir"      : "/tmp/training"
 
 # the __XX__'s will be replaced in uslims_job_metadata.php with appropriate values
     ,"filename_format" : {
