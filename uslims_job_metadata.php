@@ -569,6 +569,7 @@ foreach ( $use_dbs as $db ) {
 
                 if ( false === ( $xml_decoded = @simplexml_load_string( $editeddata->data ) ) ) {
                     $counts->error_decoding_xml++;
+                    $skip = true;
                     continue;
                 }
 
