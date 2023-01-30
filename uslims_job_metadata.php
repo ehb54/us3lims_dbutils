@@ -386,6 +386,29 @@ foreach ( $metadata_format->string_mapping as $k => $v ) {
     $string_variants->{$k} = (object)[];
 }
 
+$counts_template = (object)[];
+
+$counts_template->total                        = 0;
+$counts_template->ok                           = 0;
+$counts_template->analysis_failed              = 0;
+$counts_template->no_analysis_result           = 0;
+$counts_template->missing_raw_data             = 0;
+$counts_template->auc_decoding_error           = 0;
+$counts_template->missing_dataset_parameters   = 0;
+$counts_template->missing_edited_data          = 0;
+$counts_template->error_decoding_xml           = 0;
+
+$global_counts = json_decode( json_encode( $counts_template ) );
+
+function accum_global_counts() {
+    global $counts;
+    global $global_counts;
+
+    foreach ( $counts as $k => $v ) {
+        $global_counts->{$k} += $v;
+    }
+}
+
 foreach ( $use_dbs as $db ) {
     headerline( "db $db" );
 
@@ -403,17 +426,7 @@ foreach ( $use_dbs as $db ) {
         $query .= " and HPCAnalysisRequest.analType rlike '$analysistyperlike'";
     }
 
-    $counts = (object)[];
-
-    $counts->total                        = 0;
-    $counts->ok                           = 0;
-    $counts->analysis_failed              = 0;
-    $counts->no_analysis_result           = 0;
-    $counts->missing_raw_data             = 0;
-    $counts->auc_decoding_error           = 0;
-    $counts->missing_dataset_parameters   = 0;
-    $counts->missing_edited_data          = 0;
-    
+    $counts = json_decode( json_encode( $counts_template ) );
 
     $hpcareqs = db_obj_result( $db_handle, $query , true, true );
 
@@ -427,7 +440,12 @@ foreach ( $use_dbs as $db ) {
             $meta->analType     = $hpcareq['analType'];
             $meta->experimentID = $hpcareq['experimentID'];
             $meta->xml          = explode( "\n", $hpcareq['requestXMLFile'] );
-            $meta->xmlj         = json_decode( json_encode(simplexml_load_string( $hpcareq['requestXMLFile'] ) ) );
+            if ( false === ( $xml_decoded = @simplexml_load_string( $hpcareq['requestXMLFile'] ) ) ) {
+                $counts->error_decoding_xml++;
+                continue;
+            }
+            
+            $meta->xmlj         = json_decode( json_encode( $xml_decoded ) );
             $meta->xmls         = (object)squash( $meta->xmlj );
             
             if ( !is_object( $meta->xmlj ) ) {
@@ -549,7 +567,12 @@ foreach ( $use_dbs as $db ) {
                     break;
                 }
 
-                $editeddata->xmlj = json_decode( json_encode(simplexml_load_string( $editeddata->data ) ) );
+                if ( false === ( $xml_decoded = @simplexml_load_string( $editeddata->data ) ) ) {
+                    $counts->error_decoding_xml++;
+                    continue;
+                }
+
+                $editeddata->xmlj = json_decode( json_encode( $xml_decoded ) );
                 $editeddata->xmls = (object)squash( $editeddata->xmlj );
 
                 # debug_json( "edit xmlj", $editeddata->xmlj );
@@ -803,13 +826,23 @@ foreach ( $use_dbs as $db ) {
             }
         }
     }
+
+    accum_global_counts();
     if ( $counts->total ) {
         $counts->percent_ok = floatval( sprintf( "%.2f", 100 * $counts->ok / $counts->total ) );
     }
     debug_json( "counts", $counts );
 }
 
-echoline( "=" );
+if ( count( $use_dbs ) > 1 ) {
+    headerline( "summary" );
+
+    if ( $global_counts->total ) {
+        $global_counts->percent_ok = floatval( sprintf( "%.2f", 100 * $global_counts->ok / $global_counts->total ) );
+    }
+    
+    debug_json( "counts", $global_counts );
+}
 
 if ( $liststringvariants ) {
     debug_json( "string variants", $string_variants );
