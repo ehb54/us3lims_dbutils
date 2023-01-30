@@ -89,21 +89,42 @@
 
     ,"string_mapping" : {
         "job.cluster.@attributes.name" : {
-            "anvil.rcac.purdue.edu"              : 1
-            ,"comet.sdsc.xsede.org"               : 2
-            ,"demeler1.uleth.ca"                  : 3
-            ,"demeler3.uleth.ca"                  : 4
-            ,"demeler9.uleth.ca"                  : 5
-            ,"uslims.uleth.ca"                    : 5
-            ,"ls5.tacc.utexas.edu"                : 6
-            ,"js-169-137.jetstream-cloud.org"     : 7
-            ,"stampede2.tacc.xsede.org"           : 8
-            ,"chinook.hs.umt.edu"                 : 9
-            ,"login.gscc.umt.edu"                 : 10
-            ,"expanse.sdsc.edu"                   : 11
-            ,"bridges2.psc.edu"                   : 12
-            ,"ls6.tacc.utexas.edu"                : 13
-            ,"uslimstest.genapp.rocks"            : 14
+            "alamo.uthscsa.edu"                 : 1
+            ,"anvil.rcac.purdue.edu"             : 2
+            ,"aucserver.plantbio.lu.se"          : 3
+            ,"bcf.uthscsa.edu"                   : 4
+            ,"bridges2.psc.edu"                  : 5
+            ,"chinook.hs.umt.edu"                : 6
+            ,"comet.sdsc.edu"                    : 7
+            ,"comet.sdsc.xsede.org"              : 7
+            ,"demeler1.uleth.ca"                 : 8
+            ,"demeler3.uleth.ca"                 : 9
+            ,"demeler9.uleth.ca"                 : 10
+            ,"expanse.sdsc.edu"                  : 11
+            ,"gordon.sdsc.edu"                   : 12
+            ,"gordon.sdsc.xsede.org"             : 13
+            ,"H7-380489.ad.PSU.edu"              : 14
+            ,"jetstream.jetdomain"               : 15
+            ,"js-157-184.jetstream-cloud.org"    : 16
+            ,"js-169-137.jetstream-cloud.org"    : 16
+            ,"jureca.fz-juelich.de"              : 17
+            ,"juropa.fz-juelich.de"              : 18
+            ,"juwels.fz-juelich.de"              : 19
+            ,"login.gscc.umt.edu"                : 20
+            ,"lonestar5.tacc.teragrid.org"       : 21
+            ,"lonestar.tacc.teragrid.org"        : 22
+            ,"ls5.tacc.utexas.edu"               : 21
+            ,"ls6.tacc.utexas.edu"               : 23
+            ,"puhti.csc.fi"                      : 24
+            ,"stampede2.tacc.xsede.org"          : 25
+            ,"stampede.tacc.xsede.org"           : 26
+            ,"taito.csc.fi"                      : 27
+            ,"trestles.sdsc.edu"                 : 28
+            ,"ultrascan.chemie.uni-konstanz.de"  : 29
+            ,"us-lims1.aalto.fi"                 : 30
+            ,"us-lims2.aalto.fi"                 : 31
+            ,"uslims.uleth.ca"                   : 10
+            ,"uslimstest.genapp.rocks"           : 32
         }
 
 ## @attributes.method are grouped coarsely
