@@ -33,6 +33,7 @@ Options
 --limit                        : limit number of results per database
 --list-string-variants         : list all found string metadata string_mapping variants
 --metadata-output-directory    : specify metadata output directory, default is defined in the metadata-format-file
+--metadata-csv filename        : produce metadata in a single csv, suitable for python pandas load_csv, implies --metadata
 
 __EOD;
 
@@ -64,6 +65,7 @@ $metadata                 = false;
 $limit                    = 0;
 $liststringvariants       = false;
 $metadataoutputdirectory  = "";
+$metadatacsv              = "";
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $arg = $u_argv[ 0 ] ) {
@@ -101,6 +103,15 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                 error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
             }
             $metadataoutputdirectory = array_shift( $u_argv );
+            break;
+        }
+        case "--metadata-csv": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
+            }
+            $metadatacsv = array_shift( $u_argv );
+            $metadata    = true;
             break;
         }
         case "--debug": {
@@ -422,6 +433,7 @@ $counts_template->missing_edited_data          = 0;
 $counts_template->error_decoding_xml           = 0;
 
 $global_counts = json_decode( json_encode( $counts_template ) );
+$csv_data      = [];
 
 function accum_global_counts() {
     global $counts;
@@ -754,10 +766,8 @@ foreach ( $use_dbs as $db ) {
 
             if ( $metadata ) {
                 ## create files for input & target for this dataset
-                $dataset_base_filename =
-                    $metadata_format->output_dir
-                    . "/"
-                    . preg_replace(
+                $csv_base_name =
+                    preg_replace(
                         [
                          "/__version__/"
                          ,"/__db__/"
@@ -769,6 +779,12 @@ foreach ( $use_dbs as $db ) {
                             ,$thisreqid
                         ]
                         , $metadata_format->filename_format->base )
+                    ;
+
+                $dataset_base_filename =
+                    $metadata_format->output_dir
+                    . "/"
+                    . $csv_base_name
                     ;
 
                 echo "dataset_base_filename $dataset_base_filename\n";
@@ -805,12 +821,14 @@ foreach ( $use_dbs as $db ) {
                     # echo sprintf( "key %s : val %s\n", $input_format[$i], $input_data[$i] );
                 }
 
-                if ( false ===
-                     file_put_contents(
-                         $dataset_filename_input
-                         , implode( "\n", $input_data ) . "\n" )
-                    ) {
-                    error_exit( "error creating file $$dataset_filename_input" );
+                if ( empty( $metadatacsv ) ) {
+                    if ( false ===
+                         file_put_contents(
+                             $dataset_filename_input
+                             , implode( "\n", $input_data ) . "\n" )
+                        ) {
+                        error_exit( "error creating file $dataset_filename_input" );
+                    }
                 }
 
                 $target_data = [];
@@ -840,12 +858,22 @@ foreach ( $use_dbs as $db ) {
                     # echo sprintf( "key %s : val %s\n", $target_format[$i], $target_data[$i] );
                 }
 
-                if ( false ===
-                     file_put_contents(
-                         $dataset_filename_target
-                         , implode( "\n", $target_data ) . "\n" )
-                    ) {
-                    error_exit( "error creating file $$dataset_filename_target" );
+                if ( empty( $metadatacsv ) ) {
+                    if ( false ===
+                         file_put_contents(
+                             $dataset_filename_target
+                             , implode( "\n", $target_data ) . "\n" )
+                        ) {
+                        error_exit( "error creating file $dataset_filename_target" );
+                    }
+                } else {
+                    $csv_data[] =
+                        implode( " ", $input_data )
+                        . " "
+                        . implode( " ", $target_data )
+                        . "\t"
+                        . $csv_base_name
+                        ;
                 }
             }
 
@@ -861,6 +889,22 @@ foreach ( $use_dbs as $db ) {
     }
     echo_json( "counts", $counts );
 }
+
+if ( !empty( $metadatacsv ) ) {
+    $metadatacsvfile =
+        $metadata_format->output_dir
+        . "/"
+        $metadatacsv
+        ;
+
+    if ( false ===
+         file_put_contents(
+             $metadatacsvflie
+             , implode( "\n", $csv_data ) . "\n" )
+        ) {
+        error_exit( "error creating file $metadatacsvfile" );
+    }
+}    
 
 if ( count( $use_dbs ) > 1 ) {
     headerline( "summary" );
