@@ -894,12 +894,12 @@ if ( !empty( $metadatacsv ) ) {
     $metadatacsvfile =
         $metadata_format->output_dir
         . "/"
-        $metadatacsv
+        . $metadatacsv
         ;
 
     if ( false ===
          file_put_contents(
-             $metadatacsvflie
+             $metadatacsvfile
              , implode( "\n", $csv_data ) . "\n" )
         ) {
         error_exit( "error creating file $metadatacsvfile" );
