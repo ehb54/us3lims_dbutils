@@ -165,6 +165,13 @@ function check_global_config() {
         ,'maxproc'
         ];
 
+    $reqkey_metascheduler = [
+        'active'
+        ,'name'
+        ,'airavata'
+        ,'clusters'
+        ];
+
     $msg = (object)[];
     
     ksort( $cluster_details );
@@ -180,7 +187,10 @@ function check_global_config() {
         $msg->issues   = '';
         
         ## do all required keys exist for this cluster?
-        foreach ( $reqkey as $key ) {
+        foreach ( array_key_exists( "clusters", $v )
+                  ? $reqkey_metascheduler
+                  : $reqkey
+                  as $key ) {
             if ( !array_key_exists( $key, $v ) ) {
                 $msg->issues .= "missing '$key' ";
             }
@@ -255,7 +265,9 @@ function check_cluster_status() {
     foreach ( $global_cluster_details as $k => $v ) {
         if ( array_key_exists( 'active', $v )
              && $v['active'] 
-             && !array_key_exists( $k, $cluster_configuration ) ) {
+             && !array_key_exists( $k, $cluster_configuration )
+             && !array_key_exists( 'clusters', $v )
+            ) {
             $errors .= "WARNING: $k is active in global configuration, but not in cluster status\n";
         }
     }
@@ -410,6 +422,13 @@ function check_db_config( $use_db ) {
         ,'maxproc'
         ];
 
+    $reqkey_metascheduler = [
+        'active'
+        ,'name'
+        ,'airavata'
+        ,'clusters'
+        ];
+
     $msg = (object)[];
     
     ksort( $cluster_details );
@@ -442,7 +461,10 @@ function check_db_config( $use_db ) {
         }
 
         ## do all required keys exist for this cluster?
-        foreach ( $reqkey as $key ) {
+        foreach ( array_key_exists( "clusters", $v )
+                  ? $reqkey_metascheduler
+                  : $reqkey
+                  as $key ) {
             if ( !array_key_exists( $key, $v ) ) {
                 $msg->issues .= "missing '$key' ";
             }
@@ -462,8 +484,7 @@ function check_db_config( $use_db ) {
     }
 }
 
-
-$fmt  = " %-16s | %-8s | %-8s | %-8s | %-8s | %s\n";
+$fmt  = " %-18s | %-8s | %-8s | %-8s | %-8s | %s\n";
 $flen = 100;
 $header =
     sprintf(
