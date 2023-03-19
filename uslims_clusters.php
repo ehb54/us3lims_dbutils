@@ -182,6 +182,9 @@ function check_global_config() {
         $msg->cluster = $k;
         $msg->active   = array_key_exists( 'active',   $v ) ? boolstr( $v['active'],   'True', 'False' ) : 'Missing';
         $msg->airavata = array_key_exists( 'airavata', $v ) ? boolstr( $v['airavata'], 'True', 'False' ) : 'Missing';
+        if ( array_key_exists( 'airavata', $v ) && array_key_exists( 'clusters', $v ) ) {
+            $msg->airavata = sprintf( "Meta[%d]", count( $v['clusters'] ) );
+        }
         $msg->pmg      = boolstr( array_key_exists( 'pmg',     $v ) && $v['pmg'],     'True', 'False' );
         $msg->pmgonly  = boolstr( array_key_exists( 'pmgonly', $v ) && $v['pmgonly'], 'True', 'False' );
         $msg->issues   = '';
@@ -439,6 +442,9 @@ function check_db_config( $use_db ) {
         $msg->cluster = $k;
         $msg->active   = array_key_exists( 'active',   $v ) ? boolstr( $v['active'],   'True', 'False' ) : 'Missing';
         $msg->airavata = array_key_exists( 'airavata', $v ) ? boolstr( $v['airavata'], 'True', 'False' ) : 'Missing';
+        if ( array_key_exists( 'airavata', $v ) && array_key_exists( 'clusters', $v ) ) {
+            $msg->airavata = sprintf( "Meta[%d]", count( $v['clusters'] ) );
+        }
         $msg->pmg      = boolstr( array_key_exists( 'pmg',     $v ) && $v['pmg'],     'True', 'False' );
         $msg->pmgonly  = boolstr( array_key_exists( 'pmgonly', $v ) && $v['pmgonly'], 'True', 'False' );
         $msg->issues   = '';
