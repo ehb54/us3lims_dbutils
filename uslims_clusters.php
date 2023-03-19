@@ -182,12 +182,21 @@ function check_global_config() {
         $msg->cluster = $k;
         $msg->active   = array_key_exists( 'active',   $v ) ? boolstr( $v['active'],   'True', 'False' ) : 'Missing';
         $msg->airavata = array_key_exists( 'airavata', $v ) ? boolstr( $v['airavata'], 'True', 'False' ) : 'Missing';
-        if ( array_key_exists( 'airavata', $v ) && array_key_exists( 'clusters', $v ) ) {
-            $msg->airavata = sprintf( "Meta[%d]", count( $v['clusters'] ) );
-        }
         $msg->pmg      = boolstr( array_key_exists( 'pmg',     $v ) && $v['pmg'],     'True', 'False' );
         $msg->pmgonly  = boolstr( array_key_exists( 'pmgonly', $v ) && $v['pmgonly'], 'True', 'False' );
         $msg->issues   = '';
+        if ( array_key_exists( 'airavata', $v ) && array_key_exists( 'clusters', $v ) ) {
+            $msg->airavata = sprintf( "Meta[%d]", count( $v['clusters'] ) );
+            foreach ( $v['clusters'] as $v2 ) {
+                if ( !array_key_exists( $v2, $cluster_details ) ) {
+                    $msg->issues .= "meta $v2 missing. ";
+                } elseif ( !array_key_exists( 'active', $cluster_details[$v2] ) ) {
+                    $msg->issues .= "meta $v2 missing 'active' key. ";
+                } elseif ( !$cluster_details[$v2]['active'] ) {
+                    $msg->issues .= "meta $v2 is not active. ";
+                }
+            }
+        }
         
         ## do all required keys exist for this cluster?
         foreach ( array_key_exists( "clusters", $v )
@@ -442,12 +451,21 @@ function check_db_config( $use_db ) {
         $msg->cluster = $k;
         $msg->active   = array_key_exists( 'active',   $v ) ? boolstr( $v['active'],   'True', 'False' ) : 'Missing';
         $msg->airavata = array_key_exists( 'airavata', $v ) ? boolstr( $v['airavata'], 'True', 'False' ) : 'Missing';
-        if ( array_key_exists( 'airavata', $v ) && array_key_exists( 'clusters', $v ) ) {
-            $msg->airavata = sprintf( "Meta[%d]", count( $v['clusters'] ) );
-        }
         $msg->pmg      = boolstr( array_key_exists( 'pmg',     $v ) && $v['pmg'],     'True', 'False' );
         $msg->pmgonly  = boolstr( array_key_exists( 'pmgonly', $v ) && $v['pmgonly'], 'True', 'False' );
         $msg->issues   = '';
+        if ( array_key_exists( 'airavata', $v ) && array_key_exists( 'clusters', $v ) ) {
+            $msg->airavata = sprintf( "Meta[%d]", count( $v['clusters'] ) );
+            foreach ( $v['clusters'] as $v2 ) {
+                if ( !array_key_exists( $v2, $cluster_details ) ) {
+                    $msg->issues .= "meta $v2 missing. ";
+                } elseif ( !array_key_exists( 'active', $cluster_details[$v2] ) ) {
+                    $msg->issues .= "meta $v2 missing 'active' key. ";
+                } elseif ( !$cluster_details[$v2]['active'] ) {
+                    $msg->issues .= "meta $v2 is not active. ";
+                }
+            }
+        }
 
         ## is this present in $cluster_configuration ?
         if ( !array_key_exists( $k, $cluster_configuration ) ) {
