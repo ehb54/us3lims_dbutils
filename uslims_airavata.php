@@ -97,7 +97,16 @@ require $use_config_file;
 function gfacstatus( $id ) {
     echoline();
     echo "status for $id:\n" . json_encode( getExperimentStatus( $id ), JSON_PRETTY_PRINT ) . "\n";
-    echo "compute resource for $id:\n" . json_encode( getComputeResource( $id ), JSON_PRETTY_PRINT ) . "\n";
+
+#        $computeResource = json_encode( getComputeResource( $id ), JSON_PRETTY_PRINT );
+
+    try {
+        $computeResource = json_encode( getComputeResource( $id ), JSON_PRETTY_PRINT );
+    } catch (Exception $e) {
+        $computeResource = "getCompute resource failed\n";
+    }
+    
+    echo "compute resource for $id:\n$computeResource\n";
     echoline();
 }
     
