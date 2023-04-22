@@ -10,7 +10,7 @@ $cwd          = getcwd();
 $getrunbdir   = "$cwd/getrun";
 
 include "$us3bin/listen-config.php";
-if ( strpos( 'local', $class_dir_p ) !== false ) {
+if ( file_exists( $class_dir_p . "job_details.php" ) ) {
    include $class_dir_p . "job_details.php";
 }
 
