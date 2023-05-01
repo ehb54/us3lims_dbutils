@@ -35,6 +35,7 @@ Options
 --metadata-output-directory    : specify metadata output directory, default is defined in the metadata-format-file
 --metadata-csv filename        : produce metadata in a single csv, suitable for python pandas load_csv, implies --metadata
 
+
 __EOD;
 
 
@@ -373,6 +374,7 @@ if ( $metadata ) {
     for ( $i = 0; $i < $metadata_format->maximum_datasets; ++$i ) {
         $input_format[] = "edited_scans.$i";
         $input_format[] = "edited_radial_points.$i";
+        $input_format[] = "simpoints.$i";
     }
 
     sort( $input_format, SORT_NATURAL );
@@ -576,6 +578,7 @@ foreach ( $use_dbs as $db ) {
             $meta->datasets = (object)[];
             $meta->datasets->edited_radial_points = [];
             $meta->datasets->edited_data_points   = [];
+            $meta->datasets->simpoints            = [];
 
             # echo "HPCAnalysisRequestID $thisreqid checking dataset\n";
             # echo_json( "--> xmlj", $meta->xmlj );
@@ -586,9 +589,11 @@ foreach ( $use_dbs as $db ) {
                 if ( $meta->xmlj->job->datasetCount->{'@attributes'}->value == 1 ) {
                     $dataset = $meta->xmlj->dataset;
                 }
-                @$file  = $dataset->files->auc->{'@attributes'}->filename;
-                @$edit  = $dataset->files->edit->{'@attributes'}->filename;
-                @$expID = $dataset->parameters->speedstep->{'@attributes'}->expID;
+                echo_json( "dataset", $dataset );
+                @$file      = $dataset->files->auc->{'@attributes'}->filename;
+                @$edit      = $dataset->files->edit->{'@attributes'}->filename;
+                @$expID     = $dataset->parameters->speedstep->{'@attributes'}->expID;
+                @$simpoints = intVal( $dataset->parameters->simpoints->{'@attributes'}->value );
                 # echo "file $file expID $expID edit $edit (HPCAnalysisRequest experimentID $meta->experimentID)\n";
                 if ( !isset( $file ) || !isset($expID) || !isset($edit) ) {
                     ## error_exit( "HPCAnalysisRequestID $thisreqid missing expected dataset file & expID & edit" );
@@ -676,6 +681,7 @@ foreach ( $use_dbs as $db ) {
 
                 $meta->datasets->edited_radial_points[] = $datastats->edited_radial_points;
                 $meta->datasets->edited_scans[]         = $datastats->edited_scans;
+                $meta->datasets->simpoints[]            = $simpoints;
 
                 # echo_json( "auc2obj", $datastats );
 
@@ -691,6 +697,7 @@ foreach ( $use_dbs as $db ) {
             while( count( $meta->datasets->edited_scans ) < $metadata_format->maximum_datasets ) {
                 $meta->datasets->edited_radial_points[] = 0;
                 $meta->datasets->edited_scans[]         = 0;
+                $meta->datasets->simpoints[]            = 0;
             }
 
             if ( $skip ) {
