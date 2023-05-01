@@ -1,0 +1,184 @@
+# comments supported
+{
+    "version"          : "1.0"
+
+    ,"output_dir"      : "/tmp/training"
+
+# the __XX__'s will be replaced in uslims_job_metadata.php with appropriate values
+    ,"filename_format" : {
+## the base file will be created for each dataset
+        "base" : "v__version__-__db__-__requestid__"
+## the description file will be created once, it hold information to code/decode the training data
+        ,"description" : "description-v__version__"
+        ,"extension" : {
+            "input"   : "input"
+            ,"target" : "target"
+        }
+    }
+    
+# maximum number experiments (equivalently, datasets) in a global analysis
+    ,"maximum_datasets" : 10
+
+# list of fields to include in output
+    ,"fields" : {
+        "input" : [
+            "job.cluster.@attributes.name"
+            ,"CPUCount"
+            ,"@attributes.method"
+            ,"job.jobParameters.s_min.@attributes.value"
+            ,"job.jobParameters.s_max.@attributes.value"
+            ,"job.jobParameters.s_resolution.@attributes.value"
+            ,"job.jobParameters.s_grid_points.@attributes.value"
+            ,"job.jobParameters.ff0_min.@attributes.value"
+            ,"job.jobParameters.ff0_max.@attributes.value"
+            ,"job.jobParameters.ff0_resolution.@attributes.value"
+            ,"job.jobParameters.ff0_grid_points.@attributes.value"
+            ,"job.jobParameters.uniform_grid.@attributes.value"
+            ,"job.jobParameters.mc_iterations.@attributes.value"
+            ,"job.jobParameters.req_mgroupcount.@attributes.value"
+            ,"job.jobParameters.tinoise_option.@attributes.value"
+            ,"job.jobParameters.meniscus_range.@attributes.value"
+            ,"job.jobParameters.meniscus_points.@attributes.value"
+            ,"job.jobParameters.max_iterations.@attributes.value"
+            ,"job.jobParameters.rinoise_option.@attributes.value"
+            ,"job.jobParameters.req_mgroupcount.@attributes.value"
+            ,"job.jobParameters.demes.@attributes.value"
+            ,"job.jobParameters.population.@attributes.value"
+            ,"job.jobParameters.generations.@attributes.value"
+            ,"job.jobParameters.crossover.@attributes.value"
+            ,"job.jobParameters.mutation.@attributes.value"
+            ,"job.jobParameters.plague.@attributes.value"
+            ,"job.jobParameters.elitism.@attributes.value"
+            ,"job.jobParameters.migration.@attributes.value"
+            ,"job.jobParameters.regularization.@attributes.value"
+            ,"job.jobParameters.seed.@attributes.value"
+            ,"job.jobParameters.conc_threshold.@attributes.value"
+            ,"job.jobParameters.s_grid.@attributes.value"
+            ,"job.jobParameters.k_grid.@attributes.value"
+            ,"job.jobParameters.mutate_sigma.@attributes.value"
+            ,"job.jobParameters.p_mutate_s.@attributes.value"
+            ,"job.jobParameters.p_mutate_k.@attributes.value"
+            ,"job.jobParameters.p_mutate_sk.@attributes.value"
+            ,"job.jobParameters.bucket_fixed.@attributes.value"
+            ,"job.jobParameters.bucket_fixed.@attributes.fixedtype"
+            ,"job.jobParameters.bucket_fixed.@attributes.xtype"
+            ,"job.jobParameters.bucket_fixed.@attributes.ytype"
+            ,"job.jobParameters.curve_type.@attributes.value"
+            ,"job.jobParameters.solute_type.@attributes.value"
+            ,"job.jobParameters.req_mgroupcount.@attributes.value"
+            ,"job.jobParameters.tinoise_option.@attributes.value"
+            ,"job.jobParameters.rinoise_option.@attributes.value"
+            ,"job.jobParameters.x_min.@attributes.value"
+            ,"job.jobParameters.x_max.@attributes.value"
+            ,"job.jobParameters.y_min.@attributes.value"
+            ,"job.jobParameters.y_max.@attributes.value"
+            ,"job.jobParameters.z_value.@attributes.value"
+            ,"job.jobParameters.vars_count.@attributes.value"
+            ,"job.jobParameters.gfit_iterations.@attributes.value"
+            ,"job.jobParameters.thr_deltr_ratio.@attributes.value"
+            ,"job.jobParameters.curves_points.@attributes.value"
+            ,"job.jobParameters.tikreg_option.@attributes.value"
+            ,"job.jobParameters.tikreg_alpha.@attributes.value"
+        ]
+        ,"target" : [
+            "wallTime"
+            ,"max_rss"
+            ,"CPUTime"
+        ]
+    }
+
+    ,"string_mapping" : {
+        "job.cluster.@attributes.name" : {
+            "alamo.uthscsa.edu"                 : 1
+            ,"anvil.rcac.purdue.edu"             : 2
+            ,"aucserver.plantbio.lu.se"          : 3
+            ,"bcf.uthscsa.edu"                   : 4
+            ,"bridges2.psc.edu"                  : 5
+            ,"chinook.hs.umt.edu"                : 6
+            ,"comet.sdsc.edu"                    : 7
+            ,"comet.sdsc.xsede.org"              : 7
+            ,"demeler1.uleth.ca"                 : 8
+            ,"demeler3.uleth.ca"                 : 9
+            ,"demeler9.uleth.ca"                 : 10
+            ,"expanse.sdsc.edu"                  : 11
+            ,"gordon.sdsc.edu"                   : 12
+            ,"gordon.sdsc.xsede.org"             : 13
+            ,"H7-380489.ad.PSU.edu"              : 14
+            ,"jetstream.jetdomain"               : 15
+            ,"js-157-184.jetstream-cloud.org"    : 16
+            ,"js-169-137.jetstream-cloud.org"    : 16
+            ,"jureca.fz-juelich.de"              : 17
+            ,"juropa.fz-juelich.de"              : 18
+            ,"juwels.fz-juelich.de"              : 19
+            ,"login.gscc.umt.edu"                : 20
+            ,"lonestar5.tacc.teragrid.org"       : 21
+            ,"lonestar.tacc.teragrid.org"        : 22
+            ,"ls5.tacc.utexas.edu"               : 21
+            ,"ls6.tacc.utexas.edu"               : 23
+            ,"puhti.csc.fi"                      : 24
+            ,"stampede2.tacc.xsede.org"          : 25
+            ,"stampede.tacc.xsede.org"           : 26
+            ,"taito.csc.fi"                      : 27
+            ,"trestles.sdsc.edu"                 : 28
+            ,"ultrascan.chemie.uni-konstanz.de"  : 29
+            ,"us-lims1.aalto.fi"                 : 30
+            ,"us-lims2.aalto.fi"                 : 31
+            ,"uslims.uleth.ca"                   : 10
+            ,"uslimstest.genapp.rocks"           : 32
+            ,"BIC-AUC-1"                         : 33
+        }
+
+## @attributes.method are grouped coarsely
+## all relevant parameters for training should already be in the fields->input
+        ,"@attributes.method" : {
+            "2DSA"            : 1
+            ,"2DSA-CG"         : 1
+            ,"2DSA_CG"         : 1
+            ,"2DSA_CG-FB"      : 1
+            ,"2DSA_CG-FM"      : 1
+            ,"2DSA_CG-FM-IT"   : 1
+            ,"2DSA_CG-GL"      : 1
+            ,"2DSA_CG-IT"      : 1
+            ,"2DSA_CG-MC"      : 1
+            ,"2DSA-FB"         : 1
+            ,"2DSA-FB-IT"      : 1
+            ,"2DSA-FM"         : 1
+            ,"2DSA-FMB"        : 1
+            ,"2DSA-FMB-IT"     : 1
+            ,"2DSA-FM-IT"      : 1
+            ,"2DSA-FM-IT-MC"   : 1
+            ,"2DSA-GL"         : 1
+            ,"2DSA-GL-FM"      : 1
+            ,"2DSA-GL-IT"      : 1
+            ,"2DSA-GL-IT-MC"   : 1
+            ,"2DSA-GL-MC"      : 1
+            ,"2DSA-IT"         : 1
+            ,"2DSA-IT-MC"      : 1
+            ,"2DSA-MC"         : 1
+            ,"DMGA"            : 2
+            ,"DMGA-MC"         : 2
+            ,"GA"              : 3
+            ,"GA-GL"           : 3
+            ,"GA-GL-MC"        : 3
+            ,"GA-MC"           : 3
+            ,"PCSA"            : 4
+            ,"PCSA-2O"         : 4
+            ,"PCSA-2O-MC"      : 4
+            ,"PCSA-2O-TR"      : 4
+            ,"PCSA-All-TR"     : 4
+            ,"PCSA-All-TR-MC"  : 4
+            ,"PCSA-DS"         : 4
+            ,"PCSA-DS-TR"      : 4
+            ,"PCSA-GL-IS"      : 4
+            ,"PCSA-GL-IS-TR"   : 4
+            ,"PCSA-IS"         : 4
+            ,"PCSA-IS-MC"      : 4
+            ,"PCSA-IS-TR"      : 4
+            ,"PCSA-IS-TR-MC"   : 4
+            ,"PCSA-SL"         : 4
+            ,"PCSA-SL-TR"      : 4
+        }
+    }
+}        
+        
+    
