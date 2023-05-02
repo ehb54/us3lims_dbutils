@@ -34,6 +34,7 @@ Options
 --list-string-variants         : list all found string metadata string_mapping variants
 --metadata-output-directory    : specify metadata output directory, default is defined in the metadata-format-file
 --metadata-csv filename        : produce metadata in a single csv, suitable for python pandas load_csv, implies --metadata
+--python-pp-code               : generate python performance prediction code suitable for docker:tensorflow/tensorflow
 
 
 __EOD;
@@ -67,6 +68,7 @@ $limit                    = 0;
 $liststringvariants       = false;
 $metadataoutputdirectory  = "";
 $metadatacsv              = "";
+$pythonppcode             = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $arg = $u_argv[ 0 ] ) {
@@ -153,6 +155,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--list-string-variants": {
             array_shift( $u_argv );
             $liststringvariants = true;
+            break;
+        }
+        case "--python-pp-code": {
+            array_shift( $u_argv );
+            $pythonppcode = true;
             break;
         }
         case "--metadata-format-file": {
@@ -344,6 +351,10 @@ if (
     error_exit( "nothing to do" );
 }
 
+if ( $pythonppcode && !$metadata ) {
+    error_exit( "--python-pp-code requires --metadata" );
+}
+
 open_db();
 
 $existing_dbs = existing_dbs();
@@ -415,6 +426,10 @@ if ( $metadata ) {
         error_exit( "error creating file $metadata_format_copy_filename" );
     }
 
+    if ( $pythonppcode ) {
+        $pppcolnames = "    '" . implode( "',\n    '", array_merge( $input_format, $target_format ) ) . "'\n";
+        # echo "----\n" . $colnamespy . "\n----\n";
+    }
 }
     
 $string_variants = (object)[];
@@ -589,7 +604,7 @@ foreach ( $use_dbs as $db ) {
                 if ( $meta->xmlj->job->datasetCount->{'@attributes'}->value == 1 ) {
                     $dataset = $meta->xmlj->dataset;
                 }
-                echo_json( "dataset", $dataset );
+                # echo_json( "dataset", $dataset );
                 @$file      = $dataset->files->auc->{'@attributes'}->filename;
                 @$edit      = $dataset->files->edit->{'@attributes'}->filename;
                 @$expID     = $dataset->parameters->speedstep->{'@attributes'}->expID;
@@ -794,7 +809,7 @@ foreach ( $use_dbs as $db ) {
                     . $csv_base_name
                     ;
 
-                echo "dataset_base_filename $dataset_base_filename\n";
+                # echo "dataset_base_filename $dataset_base_filename\n";
 
                 $dataset_filename_input  = "$dataset_base_filename" . "." . $metadata_format->filename_format->extension->input;
                 $dataset_filename_target = "$dataset_base_filename" . "." . $metadata_format->filename_format->extension->target;
@@ -810,9 +825,14 @@ foreach ( $use_dbs as $db ) {
                     if ( isset( $metadata_format->string_mapping->{$input_format[$i]} ) ) {
                         ## check in $metadata_format->string_mapping
                         if ( !isset( $metadata_format->string_mapping->{$input_format[$i]}->{$meta->jmd->input->{$input_format[$i]}} ) ) {
-                            error_exit( "attribute '$input_format[$i]' found in \$metadata_format->string_mapping, but value '" . $meta->jmd->input->{$input_format[$i]} . "' missing" );
+                            if ( $meta->jmd->input->{$input_format[$i]} === "n/a" ) {
+                                $input_data[] = -1;
+                            } else {
+                                error_exit( "attribute '$input_format[$i]' found in \$metadata_format->string_mapping, but value '" . $meta->jmd->input->{$input_format[$i]} . "' missing" );
+                            }
+                        } else {
+                            $input_data[] = $metadata_format->string_mapping->{$input_format[$i]}->{$meta->jmd->input->{$input_format[$i]}};
                         }
-                        $input_data[] = $metadata_format->string_mapping->{$input_format[$i]}->{$meta->jmd->input->{$input_format[$i]}};
                     } else {
                         $input_data[] =
                             $meta->jmd->input->{$input_format[$i]} === "n/a"
@@ -822,6 +842,18 @@ foreach ( $use_dbs as $db ) {
                 }
 
                 for ( $i = 0; $i < count( $input_format ); ++$i ) {
+                    $input_data[$i] = trim( $input_data[$i] );
+                    if ( !strlen( $input_data[$i] ) ) {
+                        $input_data[$i] = 0;
+                    }
+                    if ( !is_numeric( $input_data[$i] ) ) {
+                        if ( preg_match( '/^-?(\\d+,\\d*|,\\d+)(|e-?\\d+)$/', $input_data[$i] ) ) {
+                            $input_data[$i] = str_replace( ',', '.', $input_data[$i] );
+                        }
+                        if ( !is_numeric( $input_data[$i] ) ) {
+                            error_exit( "non float data found in input data" );
+                        }
+                    }
                     if ( $input_data[$i] != floatval( $input_data[$i] ) ) {
                         error_exit( "non float data found in input data" );
                     }
@@ -925,4 +957,56 @@ if ( count( $use_dbs ) > 1 ) {
 
 if ( $liststringvariants ) {
     echo_json( "string variants", $string_variants );
+}
+
+if ( $pythonppcode ) {
+    $pyout = "test.py";
+    $python_performance_prediction_code = <<<_PPPC
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+
+# Make NumPy printouts easier to read.
+np.set_printoptions(precision=3, suppress=True)
+import tensorflow as tf
+
+from tensorflow import keras
+from tensorflow.keras import layers
+
+print(tf.__version__)
+
+datafile     = "summary_metadata.csv"
+column_names = [
+$pppcolnames
+    ]
+
+raw_dataset = pd.read_csv( datafile, names=column_names,
+                           na_values='?', comment='\\t',
+                           sep=' ', skipinitialspace=True, low_memory=False)
+dataset = raw_dataset.copy()
+dataset.tail()
+dataset.isna().sum()
+dataset = dataset.dropna()
+
+# dataset['Origin'] = dataset['Origin'].map({1: 'USA', 2: 'Europe', 3: 'Japan'})
+# dataset = pd.get_dummies(dataset, columns=['Origin'], prefix='', prefix_sep='')
+# dataset.tail()
+# train_dataset = dataset.sample(frac=0.8, random_state=0)
+# test_dataset = dataset.drop(train_dataset.index)
+# sns.pairplot(train_dataset[['MPG', 'Cylinders', 'Displacement', 'Weight']], diag_kind='kde')
+# plt.show()
+# train_dataset.describe().transpose()
+# train_features = train_dataset.copy()
+# test_features = test_dataset.copy()
+
+# train_labels = train_features.pop('MPG')
+# test_labels = test_features.pop('MPG')
+
+# train_dataset.describe().transpose()[['mean', 'std']]
+
+_PPPC;
+
+    file_put_contents( $pyout , $python_performance_prediction_code );
+    echo "created $pyout\n";
 }
