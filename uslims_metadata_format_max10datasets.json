@@ -124,6 +124,55 @@
             ,"BIC-AUC-1"                         : 33
         }
 
+        ,"job.jobParameters.bucket_fixed.@attributes.fixedtype" : {
+            ""        : 0
+            ,"MW"      : 1
+            ,"vbar"    : 2
+            ,"s"       : 3
+            ,"ff0"     : 4
+        }
+
+        ,"job.jobParameters.bucket_fixed.@attributes.xtype" : {
+            ""        : 0
+            ,"vbar"    : 1
+            ,"ff0"     : 2
+            ,"s"       : 3
+            ,"MW"      : 4
+            ,"D"       : 5
+        }
+
+        ,"job.jobParameters.bucket_fixed.@attributes.ytype" : {
+            ""        : 0
+            ,"ff0"     : 1
+            ,"s"       : 2
+            ,"vbar"    : 3
+            ,"f"       : 4
+            ,"D"       : 5
+            ,"MW"      : 6
+        }
+
+        ,"job.jobParameters.curve_type.@attributes.value" : {
+            "DS"      : 1
+            ,"IS"      : 2
+            ,"2O"      : 3
+            ,"SL"      : 4
+            ,"HL"      : 5
+            ,"All"     : 6
+        }
+
+        ,"job.jobParameters.solute_type.@attributes.value" : {
+            "013.skv" : 1
+            ,"023.swv" : 2
+            ,"031.svk" : 3
+            ,"032.svw" : 4
+            ,"043.sdv" : 5
+            ,"132.kvw" : 6
+            ,"203.wsv" : 7
+            ,"301.vsk" : 8
+            ,"312.vkv" : 9
+            ,"321.vwk" : 10
+        }
+
 ## @attributes.method are grouped coarsely
 ## all relevant parameters for training should already be in the fields->input
         ,"@attributes.method" : {
@@ -176,5 +225,3 @@
         }
     }
 }        
-        
-    
