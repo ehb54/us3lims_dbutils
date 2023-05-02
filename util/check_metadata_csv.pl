@@ -162,9 +162,6 @@ if ( !$badvalues_only ) {
             }
         }            
 
-        for my $k2 ( keys % { $values{$k} } ) {
-            $out .= " $k2";
-        }
         push @outlines, $out . "\n";
     }
 } else {
