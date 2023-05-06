@@ -367,6 +367,8 @@ if ( !count( $use_dbs ) ) {
     }
 }
 
+$csv_data      = [];
+
 if ( $metadata ) {
     if ( !is_dir( $metadata_format->output_dir ) ) {
         error_exit( "metadata output dir $metadata_format->output_dir is not an existing directory\nPlease create this directory and rerun" );
@@ -430,6 +432,9 @@ if ( $metadata ) {
         $pppcolnames = "    '" . implode( "',\n    '", array_merge( $input_format, $target_format ) ) . "'\n";
         # echo "----\n" . $colnamespy . "\n----\n";
     }
+    if ( $metadatacsv ) {
+        $csv_data[] = '"' . implode( '","', array_merge( $input_format, $target_format ) ) . '"';
+    }
 }
     
 $string_variants = (object)[];
@@ -450,7 +455,6 @@ $counts_template->missing_edited_data          = 0;
 $counts_template->error_decoding_xml           = 0;
 
 $global_counts = json_decode( json_encode( $counts_template ) );
-$csv_data      = [];
 
 function accum_global_counts() {
     global $counts;
@@ -962,6 +966,7 @@ if ( $liststringvariants ) {
 if ( $pythonppcode ) {
     $pyout = "test.py";
     $python_performance_prediction_code = <<<_PPPC
+# based upon https://www.tensorflow.org/tutorials/keras/regression retrieved 2023.05.03
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -985,25 +990,166 @@ raw_dataset = pd.read_csv( datafile, names=column_names,
                            na_values='?', comment='\\t',
                            sep=' ', skipinitialspace=True, low_memory=False)
 dataset = raw_dataset.copy()
-dataset.tail()
-dataset.isna().sum()
-dataset = dataset.dropna()
 
-# dataset['Origin'] = dataset['Origin'].map({1: 'USA', 2: 'Europe', 3: 'Japan'})
-# dataset = pd.get_dummies(dataset, columns=['Origin'], prefix='', prefix_sep='')
-# dataset.tail()
-# train_dataset = dataset.sample(frac=0.8, random_state=0)
-# test_dataset = dataset.drop(train_dataset.index)
-# sns.pairplot(train_dataset[['MPG', 'Cylinders', 'Displacement', 'Weight']], diag_kind='kde')
-# plt.show()
-# train_dataset.describe().transpose()
-# train_features = train_dataset.copy()
-# test_features = test_dataset.copy()
+# optionally find and drop n/a values
+# dataset.isna().sum()
+# dataset = dataset.dropna()
 
-# train_labels = train_features.pop('MPG')
-# test_labels = test_features.pop('MPG')
+# drop unused targets at this time
+dataset.pop( "max_rss" );
+dataset.pop( "wallTime" );
 
-# train_dataset.describe().transpose()[['mean', 'std']]
+# split data into trainig and test sets
+train_dataset  = dataset.sample(frac=0.5, random_state=0)
+test_dataset   = dataset.drop(train_dataset.index)
+
+# optionally inspect the data
+## add more columns to this, all columns takes awhile!
+'''
+sns.pairplot(train_dataset[['@attributes.method','CPUCount','simpoints.0']], diag_kind='kde' )
+plt.show()
+'''
+
+# optionally check overall statistics
+'''
+train_dataset.describe().transpose()
+train_dataset.describe().transpose()[['mean', 'std']]
+'''
+
+# split features (the input data) from labels (the target)
+
+train_features = train_dataset.copy()
+test_features  = test_dataset.copy()
+
+# target CPUTime
+
+train_labels   = train_features.pop('CPUTime')
+test_labels    = test_features.pop('CPUTime')
+
+# normalization
+
+normalizer = tf.keras.layers.Normalization(axis=-1)
+normalizer.adapt(np.array(train_features))
+print(normalizer.mean.numpy())
+
+# check normalization
+'''
+first = np.array(train_features[:1])
+
+with np.printoptions(precision=2, suppress=True):
+  print('First example:', first)
+  print()
+  print('Normalized:', normalizer(first).numpy())
+'''
+
+## multiple input linear regression
+
+linear_model = tf.keras.Sequential([
+        normalizer,
+        layers.Dense(units=1)
+    ])
+
+linear_model.predict(train_features[:10])
+linear_model.layers[1].kernel
+linear_model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.1),
+        loss='mean_absolute_error')
+
+print("fitting linear model")
+
+history = linear_model.fit(
+        train_features,
+        train_labels,
+        epochs=100,
+        # Suppress logging.
+        verbose=0,
+        # Calculate validation results on 20% of the training data.
+        # could also use validation_data instead of validation_split
+        validation_split = 0.2)
+
+def plot_loss(history):
+    plt.plot(history.history['loss'], label='loss')
+    plt.plot(history.history['val_loss'], label='val_loss')
+    # limits can be nice if the high epoch range is known
+    #    plt.ylim([0, 10])
+    plt.xlabel('Epoch')
+    plt.ylabel('Error [CPUTime]')
+    plt.legend()
+    plt.grid(True)
+    
+plot_loss(history)
+test_results['linear_model'] = linear_model.evaluate(
+        test_features, test_labels, verbose=0)
+
+## DNN
+# for some reason we had to split build_and_compile_model()
+
+## model definition is currently a the MPG example... likely needs more info
+
+def build_model(norm):
+    model = keras.Sequential([
+        norm,
+        layers.Dense(64, activation='relu'),
+        layers.Dense(64, activation='relu'),
+        layers.Dense(1)
+    ])
+    return model
+
+def compile_model(model):
+    model.compile(loss='mean_absolute_error',
+                  optimizer=tf.keras.optimizers.Adam(0.001))
+
+### build dnn_model
+
+dnn_model=build_model(normalizer)
+compile_model(dnn_model)
+dnn_model.summary()
+
+history = dnn_model.fit(
+        train_features,
+        train_labels,
+        validation_split=0.2,
+        verbose=0, epochs=100)
+
+test_results['dnn_model'] = dnn_model.evaluate(test_features, test_labels, verbose=0)
+
+## test set performance
+pd.DataFrame(test_results, index=['Mean absolute error [CPUTime]']).T
+
+## make predictions
+
+'''
+test_predictions = dnn_model.predict(test_features).flatten()
+
+a = plt.axes(aspect='equal')
+plt.scatter(test_labels, test_predictions)
+plt.xlabel('True Values [CPUTime]')
+plt.ylabel('Predictions [CPUTime]')
+# turned off limits for now
+#lims = [0, 50]
+#plt.xlim(lims)
+#plt.ylim(lims)
+#_ = plt.plot(lims, lims)
+plt.plot()
+
+## error distribution
+
+error = test_predictions - test_labels
+plt.hist(error, bins=25)
+plt.xlabel('Prediction Error [CPUTime]')
+_ = plt.ylabel('Count')
+
+
+## save model
+dnn_model.save('dnn_model')
+
+## reload
+reloaded = tf.keras.models.load_model('dnn_model')
+
+test_results['reloaded'] = reloaded.evaluate(
+    test_features, test_labels, verbose=0)
+
+'''
 
 _PPPC;
 
