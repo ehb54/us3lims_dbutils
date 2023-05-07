@@ -433,7 +433,7 @@ if ( $metadata ) {
         # echo "----\n" . $colnamespy . "\n----\n";
     }
     if ( $metadatacsv ) {
-        $csv_data[] = '"' . implode( '","', array_merge( $input_format, $target_format ) ) . '"';
+        $csv_data[] = implode( ' ', array_merge( $input_format, $target_format ) );
     }
 }
     
@@ -982,11 +982,12 @@ from tensorflow.keras import layers
 print(tf.__version__)
 
 datafile     = "summary_metadata.csv"
-column_names = [
-$pppcolnames
-    ]
+# column_names = [
+# \$pppcolnames
+#    ]
 
-raw_dataset = pd.read_csv( datafile, names=column_names,
+raw_dataset = pd.read_csv( datafile,
+#                           names=column_names,
                            na_values='?', comment='\\t',
                            sep=' ', skipinitialspace=True, low_memory=False)
 dataset = raw_dataset.copy()
