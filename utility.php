@@ -233,6 +233,20 @@ function is_admin( $must_be_root = true, $as_user = "" ) {
 
 $db_handle = NULL;
 
+function check_db( $sleep_seconds = 30 ) {
+    global $db_handle;
+        
+    while ( !mysqli_ping( $db_handle ) ) {
+        write_logld( "mysql server has gone away" );
+        sleep( $sleep_seconds );
+        write_logl( "attempting to reconnect" );
+        open_db();
+        if ( mysqli_ping( $db_handle ) ) {
+            write_logl( "reconnected - success" );
+        }            
+    }
+}
+
 function open_db() {
     global $db_handle;
     global $dbhost;
