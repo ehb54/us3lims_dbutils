@@ -152,6 +152,7 @@ if ( strlen( $errors ) ) {
 echo "Checking for valid metadata\n";
 foreach ( $dbnames_used as $db => $v ) {
     $query = "select * from newus3.metadata where dbname='$db'";
+    check_db();
     db_obj_result( $db_handle, $query );
 }
 echo "All metadata found\n";
@@ -168,6 +169,7 @@ if ( get_yn_answer( "drop existing dbinstance from the database (THIS CAN NOT BE
         echoline();
         echo "Dropping dbinstance: $db\n";
         $query = "drop database $db";
+        check_db();
         db_obj_result( $db_handle, $query );
     }
 }
@@ -201,6 +203,7 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
         }
 # get metadata
         $query = "select * from newus3.metadata where dbname='$db'";
+        check_db();
         $res = db_obj_result( $db_handle, $query );
         $dbuser      = $res->{ 'dbuser' };
         $dbpasswd    = $res->{ 'dbpasswd' };
@@ -210,7 +213,8 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
     "CREATE database $db",
         ];
         foreach ( $querys as $q ) {
-    # echo "query: $q\n";
+            # echo "query: $q\n";
+            check_db();
             $res = mysqli_query( $db_handle, $q );
             if ( !$res ) {
                 error_exit( "db query failed : $q\ndb query error: " . mysqli_error($db_handle) );
@@ -244,6 +248,7 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
         ];
         foreach ( $querys as $q ) {
     # echo "query: $q\n";
+            check_db();
             $res = mysqli_query( $db_handle, $q );
             if ( !$res ) {
                 error_exit( "db query failed : $q\ndb query error: " . mysqli_error($db_handle) );
