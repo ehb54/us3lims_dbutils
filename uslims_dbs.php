@@ -15,6 +15,7 @@ Options
 
 --help               : print this information and exit
 
+--db                 : restrict to specified database (can be specified multiple times)
 --times              : display last update time information
 --names              : display list names
 
@@ -25,6 +26,7 @@ require "utility.php";
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
+$use_dbs             = [];
 $times               = false;
 $names               = false;
 
@@ -33,6 +35,14 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--help": {
             echo $notes;
             exit;
+        }
+        case "--db": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
+            }
+            $use_dbs[] = array_shift( $u_argv );
+            break;
         }
         case "--times": {
             array_shift( $u_argv );
@@ -86,10 +96,22 @@ if ( $times && $names ) {
 # main
 
 $existing_dbs = existing_dbs();
+
+if ( !count( $use_dbs ) ) {
+    $use_dbs = $existing_dbs;
+}
+
+
+$db_diff = array_diff( $use_dbs, $existing_dbs );
+if ( count( $db_diff ) ) {
+    error_exit( "specified --db not found in database : " . implode( ' ', $db_diff ) );
+}
+
 if ( !$times && !$names ) {
-    echo implode( "\n", $existing_dbs ) . "\n";
+    echo implode( "\n", $use_dbs ) . "\n";
     exit;
 }
+
 
 if ( $times ) {
     if ( !is_admin() ) {
@@ -103,7 +125,7 @@ if ( $times ) {
     $data = [];
     fwrite( STDERR, "processing:\n" );
     $proccount = 0;
-    foreach ( $existing_dbs as $db ) {
+    foreach ( $use_dbs as $db ) {
         fwrite( STDERR, " $db" );
         if ( !(++$proccount % 6 ) ) {
             fwrite( STDERR, "\n" );
@@ -144,7 +166,7 @@ if ( $times ) {
 
 if ( $names ) {
     $data = [];
-    foreach ( $existing_dbs as $db ) {
+    foreach ( $use_dbs as $db ) {
         $query       = "select institution from newus3.metadata where dbname='$db'";
         $res         = db_obj_result( $db_handle, $query );
         $institution = $res->{'institution'};
