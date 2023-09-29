@@ -98,6 +98,7 @@ echo
     . "service mariadb stop\n"
     . "rm -fr $datadir/*\n"
     . "cp -rp  $newfile_dir/* $datadir\n"
+    . "chown -R mysql:mysql $datadir\n"
     . "service mariadb start\n"
     ;
 
