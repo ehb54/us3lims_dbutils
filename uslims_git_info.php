@@ -411,6 +411,7 @@ foreach ( $reposearchpaths as $v ) {
 $repos = (object)[];
 
 foreach ( $repodirs as $v ) {
+    run_cmd( "git config --global --add safe.directory $v" );
     $repos->{ $v } = (object)[];
     $repos->{ $v }->{ 'revision' } = (object)[];
     $repos->{ $v }->{ 'revision' }->{ 'date' }   = trim( run_cmd( "cd $v && git log -1 --shortstat .|grep Date:|sed -e 's/Date:   //'" ) );
@@ -501,7 +502,7 @@ if ( $summary ) {
         
 ## print std reports
 
-printf( "%-60s| %-60s %1s | %-15s %1s | %-13s | %-5s %1s | %-31s| %13s |\n", 
+printf( "%-60s| %-60s %1s | %-20s %1s | %-13s | %-5s %1s | %-31s| %13s |\n", 
         "Path"
         ,"Git remote url"
         ,""
@@ -514,10 +515,10 @@ printf( "%-60s| %-60s %1s | %-15s %1s | %-13s | %-5s %1s | %-31s| %13s |\n",
         ,"Local changes"
         ,""
     );
-echoline( "-", 221 );
+echoline( "-", 226 );
 foreach ( $repos as $k => $v ) {
     if ( !$skip_unknown || $v->{'use'} != 'unknown' ) {
-        printf( "%-60s| %-60s %1s | %-15s %1s | %-13s | %5d %1s | %-31s| %11d %1s |\n", 
+        printf( "%-60s| %-60s %1s | %-20s %1s | %-13s | %5d %1s | %-31s| %11d %1s |\n", 
                 substr( $k, 0, 60 )
                 ,substr( $v->{'remote'}, 0, 60 )
                 ,boolstr( $v->{'urldiffers'}, "Δ" )
@@ -532,7 +533,7 @@ foreach ( $repos as $k => $v ) {
             );
     }
 }
-echoline( "-", 221 );
+echoline( "-", 226 );
 
 if ( $diff_report ) {
     $diff_run = false;
