@@ -357,7 +357,7 @@ if ( $running || $restart ) {
     if ( !$res ) {
         if ( count( $jm_active ) ) {
             $out .=
-                $jm_only_report( $jm_active )
+                jm_only_report( $jm_active )
                 . $breakline
                 ;
             echo $out;
