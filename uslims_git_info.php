@@ -434,9 +434,13 @@ foreach ( $repodirs as $v ) {
         $repos->{ $v }->{ 'revision' }->{ 'remote' } = get_rev( $known_repos[ $v ][ 'git' ][ 'url' ] );
         $repos->{ $v }->{ 'revdiffers' }             = $repos->{ $v }->{ 'revision' }->{ 'remote' } != $repos->{ $v }->{ 'revision' }->{ 'number' };
     } else {
-        $repos->{ $v }->{ 'use' } = "unknown";
-        $repos->{ $v }->{ 'revision' }->{ 'remote' } = get_rev( $repos->{ $v }->{ 'remote' } );
-        $repos->{ $v }->{ 'revdiffers' }             = $repos->{ $v }->{ 'revision' }->{ 'remote' } != $repos->{ $v }->{ 'revision' }->{ 'number' };
+        if ( $skip_unknown ) {
+            unset( $repos->{ $v } );
+        } else {
+            $repos->{ $v }->{ 'use' } = "unknown";
+            $repos->{ $v }->{ 'revision' }->{ 'remote' } = get_rev( $repos->{ $v }->{ 'remote' } );
+            $repos->{ $v }->{ 'revdiffers' }             = $repos->{ $v }->{ 'revision' }->{ 'remote' } != $repos->{ $v }->{ 'revision' }->{ 'number' };
+        }
     }
 }
 
