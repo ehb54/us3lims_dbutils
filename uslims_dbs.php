@@ -31,7 +31,7 @@ $times               = false;
 $names               = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
-    switch( $u_argv[ 0 ] ) {
+    switch( $arg = $u_argv[ 0 ] ) {
         case "--help": {
             echo $notes;
             exit;

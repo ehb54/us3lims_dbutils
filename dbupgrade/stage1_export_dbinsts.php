@@ -5,35 +5,70 @@ $self = __FILE__;
 $compresswith = "pigz --fast";
 $compressext  = "gz";
 
-# $debug = 1;
+include "../utility.php";
 
 $notes = <<<__EOD
-usage: $self dbhost sql-git-rev# {config_file}
+usage: $self {options} dbhost {config_file}
 
 does importable mysql dumps of every uslims3_% database found
 if config_file specified, it will be used instead of ../db config
 produces multiple compressed files and a tar file
 my.cnf must exist in the current directory
 
+Options
+
+--help                 : print this information and exit
+--db                   : specify db to upgrade (can be specified multiple times)
+
 
 __EOD;
 
 $u_argv = $argv;
-array_shift( $u_argv );
+array_shift( $u_argv ); # first element is program name
 
-if ( count( $u_argv ) < 2 || count( $u_argv ) > 3 ) {
+$use_dbs             = [];
+$debug               = 0;
+
+while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
+    switch( $arg = $u_argv[ 0 ] ) {
+        case "--help": {
+            echo $notes;
+            exit;
+        }
+        case "--db": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
+            }
+            $use_dbs[] = array_shift( $u_argv );
+            break;
+        }
+        case "--debug": {
+            array_shift( $u_argv );
+            $debug++;
+            break;
+        }
+      default:
+        error_exit( "\nUnknown option '$u_argv[0]'\n\n$notes" );
+    }        
+}
+
+if ( count( $u_argv ) < 1 ) {
     echo $notes;
     exit;
 }
 
 $use_dbhost = array_shift( $u_argv );
-$schema_rev = array_shift( $u_argv );
 
 $config_file = "../db_config.php";
 if ( count( $u_argv ) ) {
     $use_config_file = array_shift( $u_argv );
 } else {
     $use_config_file = $config_file;
+}
+
+if ( count( $u_argv ) ) {
+    error_exit( "Incorrect command format\n$notes" );
 }
 
 if ( !file_exists( $use_config_file ) ) {
@@ -54,7 +89,6 @@ if ( count( $u_argv ) ) {
     exit;
 }    
             
-include "../utility.php";
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
@@ -74,12 +108,18 @@ if ( file_exists( $pkgname ) ) {
     error_exit( "You must move or remove '$pkgname'. Terminating\n" );
 }
 
-$schema_file = "../schema_rev$schema_rev.sql";
-if ( !file_exists( $schema_file ) ) {
-    error_exit( "$schema_file not found" );
+if ( count( $use_dbs ) ) {
+    $existing_dbs = existing_dbs();
+    $db_diff = array_diff( $use_dbs, $existing_dbs );
+    if ( count( $db_diff ) ) {
+        error_exit( "specified --db not found in database : " . implode( ' ', $db_diff ) );
+    }
 }
 
 $dbnames_used = array_fill_keys( existing_dbs(), 1 );
+if ( count( $use_dbs ) ) {
+    $dbnames_used = array_fill_keys( $use_dbs, 1 );
+}
 
 echoline( '=' );
 echo "found " . count( $dbnames_used ) . " unique dbname records as follows\n";
@@ -143,9 +183,18 @@ echoline();
 
 $extra_files = [];
 foreach ( $dbnames_used as $db => $val ) {
+    $cmd = "cd ../.. && php uslims_db_schemas.php --db-name-rev --db $db";
+    run_cmd( $cmd );
+
     $dumpfile = "export-$use_dbhost-$db.sql";
     $cmd = "mysqldump --defaults-file=../my.cnf -u root --no-create-info --complete-insert";
-    $retval = trim( run_cmd( "cd ../.. && php uslims_table_diffs.php --only-extras --rev $schema_rev $db" ) );
+
+    $schema_file = "../../schema_rev_tmp_$db.sql";
+    if ( !file_exists( $schema_file ) ) {
+        error_exit( "$schema_file not found" );
+    }
+
+    $retval = trim( run_cmd( "cd ../.. && php uslims_table_diffs.php --only-extras --rev _tmp_$db $db" ) );
     if ( strlen( $retval ) ) {
         $ignore_tables = explode( "\n", $retval );
     } else {

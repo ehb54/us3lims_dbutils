@@ -34,6 +34,8 @@ Options
 --compare              : compare with this system's version of lims sql ($limsdbpath)
 --compare-db dbname    : only compare named db (can be specified multiple times, default is to compare all)
 --compare-keep-ref-db  : do not recreate the reference db, assume it is correct from a previous run
+--db name              : only dump schema for named db (can be specified multiple times, mutually exclusive with compare)
+--db-name-rev          : set to name files by dbname, also puts schemas in current directory instead of subdir
 --show-diffs           : list the differences
 
 --debug                : turn on debugging
@@ -48,9 +50,11 @@ $compare_dbs         = [];
 $compare_keep_ref_db = false;
 $show_diffs          = false;
 $debug               = 0;
+$use_dbs             = [];
+$db_name_rev         = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
-    switch( $u_argv[ 0 ] ) {
+    switch( $arg = $u_argv[ 0 ] ) {
         case "--help": {
             echo $notes;
             exit;
@@ -60,10 +64,15 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $compare = true;
             break;
         }
+        case "--db-name-rev": {
+            array_shift( $u_argv );
+            $db_name_rev = true;
+            break;
+        }
         case "--compare-db": {
             array_shift( $u_argv );
             if ( !count( $u_argv ) ) {
-                error_exit( "\nOption --compare-db requires an argument\n\n$notes" );
+                error_exit( "\nOption '$arg' requires an argument\n\n$notes" );
             }
             $compare_dbs[] = array_shift( $u_argv );
             break;
@@ -71,6 +80,14 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--compare-keep-ref-db": {
             array_shift( $u_argv );
             $compare_keep_ref_db = true;
+            break;
+        }
+        case "--db": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
+            }
+            $use_dbs[] = array_shift( $u_argv );
             break;
         }
         case "--debug": {
@@ -124,11 +141,24 @@ if ( !file_exists( $myconf ) ) {
 }
 file_perms_must_be( $myconf );
 
+if ( ( $compare || count( $compare_dbs ) ) && count( $use_dbs ) ) {
+    error_exit( "--db can not be specified with --compare" );
+}
+
 $existing_dbs = existing_dbs();
+if ( !count( $use_dbs ) ) {
+    $use_dbs = $existing_dbs;
+}
+
+$db_diff = array_diff( $use_dbs, $existing_dbs );
+if ( count( $db_diff ) ) {
+    error_exit( "specified --db not found in database : " . implode( ' ', $db_diff ) );
+}
+
 
 function dump_cmd( $db, $outfile = "" ) {
     global $myconf;
-
+    global $db_name_rev;
 
     if ( !strlen( $db ) ) {
         error_exit( "dump_cmd requires a non-empty argument" );
@@ -139,8 +169,14 @@ function dump_cmd( $db, $outfile = "" ) {
         $outfile = $db;
     }
 
+    if ( $db_name_rev ) {
+        $use_myconf = "$myconf";
+    } else {
+        $use_myconf = "../$myconf";
+    }
+
     $cmd = 
-        "mysqldump --defaults-file=../$myconf -u root --no-data --events --routines $db | "
+        "mysqldump --defaults-file=$use_myconf -u root --no-data --events --routines $db | "
         . "grep -Fv "
         . "-e 'ENGINE=' "
         . "-e 'Dumping events' "
@@ -156,16 +192,24 @@ function dump_cmd( $db, $outfile = "" ) {
 }
 
 if ( !$compare ) {
-    # make & change to directory
-    newfile_dir_init( "schemas" );
-    if ( !chdir( $newfile_dir ) ) {
-        error_exit( "Could not change to directory $newfile_dir" );
+    if ( !$db_name_rev ) {
+        # make & change to directory
+        newfile_dir_init( "schemas" );
+        if ( !chdir( $newfile_dir ) ) {
+            error_exit( "Could not change to directory $newfile_dir" );
+        }
+    } else {
+        $newfile_dir = ".";
     }
 
-    foreach ( $existing_dbs as $db ) {
+    foreach ( $use_dbs as $db ) {
         echoline();
 
         $outfile = "$db.sql";
+        if ( $db_name_rev ) {
+            $outfile = "schema_rev_tmp_$db.sql";
+        }
+
         echo "exporting $db to $newfile_dir/$outfile\n";
        
         run_cmd( dump_cmd( $db, $outfile ) );
