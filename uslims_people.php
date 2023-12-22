@@ -14,14 +14,15 @@ Utility for comparing newus3.people against dbinstances and updating password
 
 Options
 
---help               : print this information and exit
+--help                 : print this information and exit
 
---admins             : list userlevel + advancelevel >= 3 in all dbs and exit
---emails             : output all email addresses from every db.people and exit
---db dbname          : restrict results to dbname (can be specified multiple times)
---only-deltas        : only display deltas
---quiet              : minimal output    
---update             : update dbinstance.people fname, lname, email & passwords to match newus3.people
+--admins               : list userlevel + advancelevel >= 3 in all dbs and exit
+--emails               : output all email addresses from every db.people and exit
+--db dbname            : restrict results to dbname (can be specified multiple times)
+--only-deltas          : only display deltas
+--quiet                : minimal output    
+--send-email-from-file : send emails to all users taking content from file. First line of file will is subject
+--update               : update dbinstance.people fname, lname, email & passwords to match newus3.people
 
 
 __EOD;
@@ -29,16 +30,17 @@ __EOD;
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
-$use_dbs             = [];
+$use_dbs              = [];
 
-$admins              = false;
-$only_deltas         = false;
-$quiet               = false;
-$update              = false;
-$emails              = false;
+$admins               = false;
+$only_deltas          = false;
+$quiet                = false;
+$update               = false;
+$emails               = false;
+$send_email_from_file = "";
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
-    switch( $u_argv[ 0 ] ) {
+    switch( $arg = $u_argv[ 0 ] ) {
         case "--help": {
             echo $notes;
             exit;
@@ -56,6 +58,33 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--emails": {
             array_shift( $u_argv );
             $emails = true;
+            break;
+        }
+        case "--send-email-from-file": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
+            }
+            $send_email_from_file = array_shift( $u_argv );
+            if ( !file_exists( $send_email_from_file ) ) {
+                error_exit( "ERROR: file '$send_email_from_file' does not exist" );
+            }
+            $send_email_file_contents = explode( "\n", file_get_contents( $send_email_from_file ) );
+            if ( count( $send_email_file_contents ) < 2 ) {
+                error_exit( "ERROR: file '$send_email_from_file' must contain at least 2 lines" );
+            }
+
+            $send_email_file_subject = array_shift( $send_email_file_contents );
+            $send_email_file_body    = implode( "\n", $send_email_file_contents );
+            
+            if ( !strlen( trim( $send_email_file_subject ) ) ) {
+                error_exit( "ERROR: file '$send_email_from_file' subject line can not be empty" );
+            }
+                
+            if ( !strlen( trim( $send_email_file_body ) ) ) {
+                error_exit( "ERROR: file '$send_email_from_file' body can not be empty" );
+            }
+
             break;
         }
         case "--update": {
@@ -123,7 +152,7 @@ if ( !count( $use_dbs ) ) {
 open_db();
 
 # email report
-if ( $emails ) {
+if ( $emails || strlen( $send_email_from_file ) ) {
     $emails_found = [];
     foreach ( $use_dbs as $db ) {
         $res = db_obj_result( $db_handle, "select email from $db.people", True );
@@ -132,7 +161,32 @@ if ( $emails ) {
         }
     }
     ksort( $emails_found );
-    echo implode( "\n", array_keys( $emails_found ) ) . "\n";
+    if ( !strlen( $send_email_from_file ) ) {
+        echo implode( "\n", array_keys( $emails_found ) ) . "\n";
+        exit;
+    }
+
+    $send_email_headers = "bcc: " . implode( ",", array_keys( $emails_found ) );
+    echoline();
+    echo "Subject: $send_email_file_subject\n";
+    echoline();
+    echo "Body:\n$send_email_file_body\n";
+    echoline();
+    echo $send_email_headers . "\n";
+
+    if ( get_yn_answer( "Send this email?" ) ) {
+        if ( !mail(
+                  ""
+                  ,$send_email_file_subject
+                  ,$send_email_file_body . "\n"
+                  ,$send_email_headers . "\n" )
+            ) {
+            error_exit( "email send failed" );
+        } else {
+            echo "sendmail accepted the message, check mail logs to verify\n";
+        }
+    }
+
     exit;
 }
 
