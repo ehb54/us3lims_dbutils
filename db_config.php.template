@@ -77,15 +77,15 @@ $usage_consolidation_add =
 
 $repo_branches =
     [
-     "https://github.com/ehb54/us3_sql.git"                      => "SET_SQL_BRANCH"
-     ,"https://github.com/ehb54/ultrascan3.git"                  => "SET_US3_BRANCH"
-     ,"https://github.com/ehb54/us3lims_dbutils.git"             => "main"
-     ,"https://github.com/ehb54/us3lims_gridctl.git"             => "master"
-     ,"https://github.com/ehb54/us3lims_common.git"              => "master"
-     ,"https://github.com/ehb54/us3lims_webinfo.git"             => "master"
-     ,"https://github.com/ehb54/us3lims_newinst.git"             => "master"
-     ,"https://github.com/ehb54/us3lims_dbinst.git"              => "master"
-     ,"https://github.com/SciGaP/ultrascan-airavata-bridge.git"  => "master"
+     "https://github.com/ehb54/us3_sql.git"                      => "SET-sql_branch"
+     ,"https://github.com/ehb54/ultrascan3.git"                  => "SET-us3_branch"
+     ,"https://github.com/ehb54/us3lims_dbutils.git"             => "SET-utils_branch"
+     ,"https://github.com/ehb54/us3lims_gridctl.git"             => "SET-gridctl_branch"
+     ,"https://github.com/ehb54/us3lims_common.git"              => "SET-common_branch"
+     ,"https://github.com/ehb54/us3lims_webinfo.git"             => "SET-webinfo_branch"
+     ,"https://github.com/ehb54/us3lims_newinst.git"             => "SET-newinst_branch"
+     ,"https://github.com/ehb54/us3lims_dbinst.git"              => "SET-dbinst_branch"
+     ,"https://github.com/SciGaP/ultrascan-airavata-bridge.git"  => "SET-airavata_branch"
     ];
 
 ## extra databases to backup
