@@ -4,7 +4,7 @@ require "utility.php";
 
 # user defines
 
-$us3home         = "/local/home/us3";
+$us3home         = exec( "ls -d ~us3" );
 $wwwpath         = "/srv/www/htdocs";
 $usguipath       = "/opt/ultrascan3";
 $rev_cache       = ".git_info_rev_cache";
