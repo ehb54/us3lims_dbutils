@@ -949,7 +949,9 @@ if ( $getrundir || $getrun || $copyrun ) {
     # echo "login   $login\n";
     # echo "workdir $workdir\n";
 
-    $inputfile = "hpcinput-localhost-$db-$reqid.tar";
+    $padreqid = str_pad( $reqid, 5, '0', STR_PAD_LEFT );
+
+    $inputfile = "hpcinput-localhost-$db-$padreqid.tar";
 
     $cmd = "runuser -l us3 -c \"ssh $login ls $workdir/PROCESS_*/$inputfile\" | grep PROCESS";
     $res = run_cmd( $cmd, false, true );
@@ -982,7 +984,7 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     ## get info
 
-    $reqxmlf = "hpcrequest-localhost-$db-$reqid.xml";
+    $reqxmlf = "hpcrequest-localhost-$db-$padreqid.xml";
 
     $getfiles = [
         "job_*.slurm"
