@@ -35,6 +35,7 @@ $rsync_no_sudo        = false;                 # set to true to not use sudo on 
 $rsync_add            = false;                 # set to true to include additonal directories in the rsync
 $rsync_add_delete     = false;                 # set to true to remove files from previous rsyncs
 $rsync_add_path       = "/backup/sys";         # path for the rsync_add's - can not be the same as $rsync_path nor a path under $rsync_path
+$rsync_path_sudo      = false;                 # set to true if --rsync-path='sudo rsync' is needed. requires rsync host user to allow sudo
 
 ## directories to include in the rsync "add"
 $rsync_add_includes   = [ '/etc', '/home' ];                         

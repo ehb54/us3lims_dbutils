@@ -160,15 +160,21 @@ if ( isset( $rsync_no_sudo ) && $rsync_no_sudo ) {
     $sudo_rsync = "sudo rsync";
 }
 
+if ( isset( $rsync_path_sudo ) && $rsync_path_sudo ) {
+    $use_rsync_path_sudo = "--rsync-path='$sudo_rsync'";
+} else {
+    $use_rsync_path_sudo = "";
+}
+
 # $cmd = "sudo -u $backup_user rsync -av -e 'ssh -l usadmin' --rsync-path='$sudo_rsync' --delete --update $backup_dir $rsync_user@$rsync_host:$rsync_path/$use_backup_host 2>&1 >> $logf";
-$cmd = "sudo -u $backup_user rsync -av -e 'ssh -l $rsync_user' --delete --update $backup_dir $rsync_user@$rsync_host:$rsync_path/$use_backup_host 2>&1 >> $logf";
+$cmd = "sudo -u $backup_user rsync -av -e 'ssh -l $rsync_user' $use_rsync_path_sudo --delete --update $backup_dir $rsync_user@$rsync_host:$rsync_path/$use_backup_host 2>&1 >> $logf";
 backup_rsync_run_cmd( $cmd );
 if ( isset( $rsync_add ) && $rsync_add ) {
 #    $cmd = "runuser -l $backup_user -c \"ssh -o StrictHostKeyChecking=no $rsync_user@$rsync_host -C 'sudo mkdir -p $rsync_add_path'\"";
     $cmd = "runuser -l $backup_user -c \"ssh -o StrictHostKeyChecking=no $rsync_user@$rsync_host -C 'mkdir -p $rsync_add_path'\"";
     backup_rsync_run_cmd( $cmd, false );
 #    $cmd = "sudo rsync -az --no-links --info=skip0 --no-specials --no-devices -e 'ssh -i /home/usadmin/.ssh/id_rsa -l $rsync_user' --rsync-path='$sudo_rsync' $rsync_add_details $rsync_user@$rsync_host:$rsync_add_path/$use_backup_host 2>&1 >> $logf";
-    $cmd = "sudo rsync -az --no-links --info=skip0 --no-specials --no-devices -e 'ssh -i /home/usadmin/.ssh/id_rsa -l $rsync_user' $rsync_add_details $rsync_user@$rsync_host:$rsync_add_path/$use_backup_host 2>&1 >> $logf";
+    $cmd = "sudo rsync -az --no-links --info=skip0 --no-specials --no-devices -e 'ssh -i /home/usadmin/.ssh/id_rsa -l $rsync_user' $use_rsync_path_sudo $rsync_add_details $rsync_user@$rsync_host:$rsync_add_path/$use_backup_host 2>&1 >> $logf";
     backup_rsync_run_cmd( $cmd );
 }
 backup_rsync_run_cmd( "(echo -n 'rsync finished: ' && date) >> $logf", false );
