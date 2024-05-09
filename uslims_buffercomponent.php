@@ -19,7 +19,9 @@ Options
 --short              : only ID, description
 --dbcmp dbname       : compare values with db (trimmed description)
 --details            : show details when compare
-    
+--cmp-exponent n     : when comparing numeric differences, accept abs( diff ) <= 10^-n
+--skip-same          : skip entries with no differences
+--skip-c-range       : ignore c_range comparisons
 
 __EOD;
 
@@ -31,6 +33,10 @@ $dbname              = "";
 $short               = false;
 $dbcmp               = "";
 $details             = false;
+$doexpnt             = false;
+$cmp_expnt           = 10;
+$skip_c_range        = false;
+$skip_same           = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $u_argv[ 0 ] ) {
@@ -68,6 +74,28 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--details": {
             array_shift( $u_argv );
             $details = true;
+            break;
+        }
+        case "--skip-c-range": {
+            array_shift( $u_argv );
+            $skip_c_range = true;
+            break;
+        }
+        case "--skip-same": {
+            array_shift( $u_argv );
+            $skip_same = true;
+            break;
+        }
+        case "--cmp-exponent": {
+            array_shift( $u_argv );
+            $doexpnt = true;
+            if ( !count( $u_argv ) ) {
+                error_exit( "\nOption --cmp-exponent requires an argument\n\n$notes" );
+            }
+            $cmp_expnt = array_shift( $u_argv );
+            if ( !strlen( $cmp_expnt ) ) {
+                error_exit( "--cmp-exponent requires a non-empty value\n\n$notes" );
+            }
             break;
         }
 
@@ -153,6 +181,82 @@ if ( empty( $dbcmp ) ) {
     exit();
 }
 
+function compare2( $field, $obj1, $obj2 ) {
+    global $doexpnt;
+    global $cmp_expnt;
+    global $skip_c_range;
+
+    switch( $field ) {
+        case "units" :
+            return $obj1->{ $field } == $obj2->{ $field };
+
+        case "description" :
+            return trim( $obj1->{ $field } ) == trim( $obj2->{ $field } );
+
+        case "viscosity" :
+        case "density" :
+
+            $nums1 = explode( ' ', $obj1->{ $field } );
+            $nums2 = explode( ' ', $obj2->{ $field } );
+            if ( count( $nums1 ) != count( $nums2 ) ) {
+                return false;
+            }
+            for ( $i = 0; $i < count( $nums1 ); ++$i ) {
+                if ( $doexpnt ) {
+                    if ( abs( $nums1[ $i ] - $nums2[ $i ] ) > 10**-$cmp_expnt ) {
+                        return false;
+                    }
+                } else {
+                    if ( floatval( $nums1[ $i ] ) != floatval( $nums2[ $i ] ) ) {
+                        return false;
+                    }
+                }                    
+            }
+            return true;
+            
+        case "c_range" :
+            
+            if ( $skip_c_range ) {
+                return true;
+            }
+
+            $vals1 = explode( ' ', $obj1->{ $field } );
+            $vals2 = explode( ' ', $obj2->{ $field } );
+            if ( count( $vals1 ) != count( $vals2 ) ) {
+                return false;
+            }
+
+            if ( $vals1[ 1 ] != $vals2[ 1 ] ) {
+                return false;
+            }
+
+            $nums1 = explode( '-', $vals1[ 0 ] );
+            $nums2 = explode( '-', $vals2[ 0 ] );
+
+            if ( count( $nums1 ) != count( $nums2 ) ) {
+                return false;
+            }
+
+            for ( $i = 0; $i < count( $nums1 ); ++$i ) {
+                if ( $doexpnt ) {
+                    if ( abs( $nums1[ $i ] - $nums2[ $i ] ) > 10**-$cmp_expnt ) {
+                        return false;
+                    }
+                } else {
+                    if ( floatval( $nums1[ $i ] ) != floatval( $nums2[ $i ] ) ) {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+
+        case "gradientForming" :
+            return $obj1->{ $field } == $obj2->{ $field };
+    }
+}
+
+
 if ( $dbcmp ) {
     # compare values for each key
 
@@ -185,33 +289,42 @@ if ( $dbcmp ) {
 
         # debug_json( "result from $dbcmp for id $rowo->bufferComponentID", $res2 );
         
-        print sprintf( $fmt
-                       ,$rowo->bufferComponentID
-                       ,trim( $rowo->description ) == trim( $res2->description ) ? "same" : "differ"
-                       ,trim( $rowo->units ) == trim( $res2->units ) ? "same" : "differ"
-                       ,trim( $rowo->viscosity ) == trim( $res2->viscosity ) ? "same" : "differ"
-                       ,trim( $rowo->density ) == trim( $res2->density ) ? "same" : "differ"
-                       ,trim( $rowo->c_range ) == trim( $res2->c_range ) ? "same" : "differ"
-                       ,$rowo->gradientForming == $res2->gradientForming ? "same" : "differ"
-                       ,trim( $rowo->description )
-            );
+        if ( !$skip_same
+             || !compare2( 'description', $rowo, $res2 ) 
+             || !compare2( 'units', $rowo, $res2 )
+             || !compare2( 'viscosity', $rowo, $res2 )
+             || !compare2( 'density', $rowo, $res2 )
+             || !compare2( 'c_range', $rowo, $res2 )
+             || !compare2( 'gradientForming', $rowo, $res2 )
+            ) {
+            print sprintf( $fmt
+                           ,$rowo->bufferComponentID
+                           ,compare2( 'description', $rowo, $res2 ) ? "same" : "differ"
+                           ,compare2( 'units', $rowo, $res2 ) ? "same" : "differ"
+                           ,compare2( 'viscosity', $rowo, $res2 ) ? "same" : "differ"
+                           ,compare2( 'density', $rowo, $res2 ) ? "same" : "differ"
+                           ,compare2( 'c_range', $rowo, $res2 ) ? "same" : "differ"
+                           ,compare2( 'gradientForming', $rowo, $res2 ) ? "same" : "differ"
+                           ,trim( $rowo->description )
+                );
 
-        if ( $details ) {
-            foreach ( [ "units", "viscosity", "density", "c_range" ] as $v ) {
-                if ( $rowo->{ $v } != $res2->{ $v } ) {
-                    print sprintf(
-                        "%-12s : %-20s : %-s\n"
-                        . "%-12s : %-20s : %-s\n"
-                        ,$dbname
-                        ,$v
-                        ,$rowo->{$v}
-                        ,$dbcmp
-                        ,$v
-                        ,$res2->{$v}
-                        );
+            if ( $details ) {
+                foreach ( [ "description", "units", "viscosity", "density", "c_range", "gradientForming" ] as $v ) {
+                    if ( !compare2( $v, $rowo, $res2 ) ) {
+                        print sprintf(
+                            "%-12s : %-20s : %-s\n"
+                            . "%-12s : %-20s : %-s\n"
+                            ,$dbname
+                            ,$v
+                            ,$rowo->{$v}
+                            ,$dbcmp
+                            ,$v
+                            ,$res2->{$v}
+                            );
+                    }
                 }
+                echoline( "-", $len );
             }
-            echoline( "-", $len );
         }
     }
 
