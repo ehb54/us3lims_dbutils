@@ -1,6 +1,18 @@
 <?php
 
+### users that can not be modified
+$system_user_list = [
+    "gfac"
+    ,"new_us3user"
+    ,"us3_notice"
+    ,"us3php"
+    ,"root"
+    ]
+    ;
+###
+
 $self = __FILE__;
+
 require "utility.php";
 
 $notes = <<<__EOD
@@ -13,18 +25,22 @@ Options
 
 --help                 : print this information and exit
 
---list-all-users       : list all users by user
---list-user name       : list specific user (can be included multiple times)
+--user                 : user (can be included multiple times)
+--all-users            : all existing users
+--system-users         : include system process users (by default these are excluded; can not be modified)
 
---show-grants          : show grant information with each listed user
---grant-host           : restrict grant info to the specific host (can be included multiple times)
+--list                 : list users    
+--list-grants          : show grant information with each listed user (implies --list)
+--grant-host           : restrict grants to the specific host (can be included multiple times)
 
 --pam-check            : validate PAM is active
 --pam-activate         : activate PAM
 --pam-disable          : disable PAM
 
---pam-user-add name    : add a user (can be included only once)
---pam-user-delete name : delete a user (can be included only once)
+--user-add             : add user(s)
+--user-delete          : delete user(s)
+--add-db dbname        : add db access for the users(s), use '*' for all dbs (for sysadmins only!)
+--remove-db dbname     : remove db access for the users(s)
 
 --debug                : increase debug output (can be used multiple times)
 
@@ -35,17 +51,23 @@ $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
 $users                = [];
-$grant_host           = [];
-$debug                = 0;
-$list_all_users       = false;
-$show_grants          = false;
+$all_users            = false;
+$system_users         = false;
 
-$pam_option_count     = 0;
+$list                 = false;
+$list_grants          = false;
+$grant_host           = [];
+
 $pam_check            = false;
 $pam_activate         = false;
 $pam_disable          = false;
-$pam_user_add         = "";
-$pam_user_delete      = "";
+
+$user_add             = false;
+$user_delete          = false;
+$add_db               = [];
+$remove_db            = [];
+
+$debug                = 0;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $arg = $u_argv[ 0 ] ) {
@@ -58,12 +80,7 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $debug++;
             break;
         }
-        case "--list-all-users": {
-            array_shift( $u_argv );
-            $list_all_users = true;
-            break;
-        }
-        case "--list-user": {
+        case "--user": {
             array_shift( $u_argv );
             if ( !count( $u_argv ) ) {
                 error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
@@ -71,9 +88,25 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $users[] = array_shift( $u_argv );
             break;
         }
-        case "--show-grants": {
+        case "--all-users": {
             array_shift( $u_argv );
-            $show_grants = true;
+            $all_users = true;
+            break;
+        }
+        case "--system-users": {
+            array_shift( $u_argv );
+            $system_users = true;
+            break;
+        }
+        case "--list": {
+            array_shift( $u_argv );
+            $list = true;
+            break;
+        }
+        case "--list-grants": {
+            array_shift( $u_argv );
+            $list_grants = true;
+            $list = true;
             break;
         }
         case "--grant-host": {
@@ -87,43 +120,48 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--pam-check": {
             array_shift( $u_argv );
             $pam_check = true;
-            $pam_option_count++;
             break;
         }
         case "--pam-activate": {
             array_shift( $u_argv );
             $pam_activate = true;
-            $pam_option_count++;
             break;
         }
         case "--pam-disable": {
             array_shift( $u_argv );
             $pam_disable = true;
-            $pam_option_count++;
             break;
         }
-        case "--pam-user-add": {
+        case "--user-add": {
+            array_shift( $u_argv );
+            if ( $user_add ) {
+                error_exit( "ERROR: option '$arg' can only be specified once" );
+            }
+            $user_add = true;
+            break;
+        }
+        case "--user-delete": {
+            array_shift( $u_argv );
+            if ( $user_delete ) {
+                error_exit( "ERROR: option '$arg' can only be specified once" );
+            }
+            $user_delete = true;
+            break;
+        }
+        case "--add-db": {
             array_shift( $u_argv );
             if ( !count( $u_argv ) ) {
                 error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
             }
-            if ( $pam_user_add ) {
-                error_exit( "ERROR: option '$arg' can only be specified once" );
-            }
-            $pam_user_add = array_shift( $u_argv );
-            $pam_option_count++;
+            $add_db[] = array_shift( $u_argv );
             break;
         }
-        case "--pam-user-delete": {
+        case "--remove-db": {
             array_shift( $u_argv );
             if ( !count( $u_argv ) ) {
                 error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
             }
-            if ( $pam_user_delete ) {
-                error_exit( "ERROR: option '$arg' can only be specified once" );
-            }
-            $pam_user_delete = array_shift( $u_argv );
-            $pam_option_count++;
+            $remove_db[] = array_shift( $u_argv );
             break;
         }
 
@@ -144,28 +182,28 @@ if ( count( $u_argv ) ) {
     exit;
 }
 
-if ( $list_all_users && count( $users ) ) {
-    error_exit( "--list-all-users is mutually exclusive with --list-user\n\n$notes" );
+if ( $all_users && count( $users ) ) {
+    error_exit( "--all-users is mutually exclusive with --user\n\n$notes" );
 }
 
-if ( $show_grants && !($list_all_users || count( $users ) ) ) {
-    error_exit( "--show-grants requires either --list-all-users or --list-user\n\n$notes" );
+if ( $list_grants && !$list ) {
+    error_exit( "--list-grants requires --list\n\n$notes" );
 }
 
-if ( count( $grant_host ) && !$show_grants ) {
-    error_exit( "--grant-host requires --show-grants\n\n$notes" );
+if ( $list_grants && !($all_users || count( $users ) ) ) {
+    error_exit( "--list-grants requires either --all-users or --user\n\n$notes" );
 }
 
-if ( $pam_user_add && $pam_user_delete ) {
-    error_exit( "--pam-user-add & --pam-user-delete are mutually exclusive\n\n$notes" );
+if ( count( $grant_host ) && !$list_grants ) {
+    error_exit( "--grant-host requires --list-grants\n\n$notes" );
 }
 
-if ( $pam_option_count > 0 && ( $list_all_users || count( $users ) ) ) {
-    error_exit( "--pam-* options are mutually exclusive with --list-* options\n\n$notes" );
+if ( $user_add && $user_delete ) {
+    error_exit( "--user-add & --user-delete are mutually exclusive\n\n$notes" );
 }
 
-if ( $pam_option_count > 1 ) {
-    error_exit( "on one --pam-* option can be specifice\n\n$notes" );
+if ( $user_add && !count( $add_db ) ) {
+    print "WARNING: no dbs specified, added users will have no access to any databases\n";
 }
 
 if ( !file_exists( $use_config_file ) ) {
@@ -190,7 +228,44 @@ if ( !is_admin() ) {
 
 open_db();
 
-if ( $list_all_users || count( $users ) ) {
+## collect user info
+
+if ( $all_users ) {
+    $res = db_obj_result( $db_handle, "select distinct user from mysql.user order by user", true );
+
+    while( $row = mysqli_fetch_array($res) ) {
+        $orow = (object) $row;
+        $users[] = $orow->user;
+    }
+}
+
+function is_system_user( $user ) {
+    global $system_user_list;
+    return
+        in_array( $user, $system_user_list )
+        || preg_match( '/_(sec|user)$/', $user )
+        ;
+}
+
+if ( !$system_users ) {
+    foreach( $users as $k => $user ) {
+        if ( is_system_user( $user ) ) {
+            unset( $users[ $k ] );
+        }
+    }
+}
+
+function do_list() {
+    global $users;
+    global $list_grants;
+    global $db_handle;
+    global $grant_host;
+
+    if ( !count( $users ) ) {
+        print "no users found\n";
+        exit;
+    }
+
     $res = db_obj_result( $db_handle, "select user,host from mysql.user order by user", true );
     $fmt = " %-30s | %-30s\n";
     $len = 128;
@@ -199,10 +274,12 @@ if ( $list_all_users || count( $users ) ) {
     
     while( $row = mysqli_fetch_array($res) ) {
         $orow = (object) $row;
-        if ( !isset( $user_hosts[ $orow->user ] ) ) {
-            $user_hosts[ $orow->user ] = [];
+        if ( in_array( $orow->user, $users ) ) {
+            if ( !isset( $user_hosts[ $orow->user ] ) ) {
+                $user_hosts[ $orow->user ] = [];
+            }
+            $user_hosts[ $orow->user ][] = $orow->host;
         }
-        $user_hosts[ $orow->user ][] = $orow->host;
     }
 
     echoline( "-", $len );
@@ -216,39 +293,39 @@ if ( $list_all_users || count( $users ) ) {
     ksort( $user_hosts, SORT_NATURAL );
 
     foreach ( $user_hosts as $k => $v ) {
-        if ( $list_all_users || in_array( $k, $users ) ) {
-            sort( $v, SORT_NATURAL );
-            print sprintf(
-                $fmt
-                ,$k
-                ,implode( ", ", $v )
-                );
-            if ( $show_grants ) {
-                echoline( "-", $len );
-                $any = false;
-                foreach ( $v as $host ) {
-                    if ( !count( $grant_host ) || in_array( $host, $grant_host ) ) {
-                        $res = db_obj_result( $db_handle, "show grants for '$k'@'$host'", true, true );
-                        if ( $res ) {
-                            while( $row = mysqli_fetch_array($res) ) {
-                                $orow = (object) $row;
-                                print $row[0] . "\n";
-                                $any = true;
-                            }
+        sort( $v, SORT_NATURAL );
+        print sprintf(
+            $fmt
+            ,$k
+            ,implode( ", ", $v )
+            );
+        if ( $list_grants ) {
+            echoline( "-", $len );
+            $any = false;
+            foreach ( $v as $host ) {
+                if ( !count( $grant_host ) || in_array( $host, $grant_host ) ) {
+                    $res = db_obj_result( $db_handle, "show grants for '$k'@'$host'", true, true );
+                    if ( $res ) {
+                        while( $row = mysqli_fetch_array($res) ) {
+                            $orow = (object) $row;
+                            print $row[0] . "\n";
+                            $any = true;
                         }
                     }
                 }
-                if ( !$any ) {
-                    print "no matching grant information found\n";
-                }
-                echoline( "-", $len );
             }
+            if ( !$any ) {
+                print "no matching grant information found\n";
+            }
+            echoline( "-", $len );
         }
     }
-
+    
     echoline( "-", $len );
+}
 
-    exit;
+if ( $list ) {
+    do_list();
 }
 
 function check_pam( $exitonerror = true ) {
@@ -275,7 +352,7 @@ function check_pam( $exitonerror = true ) {
         }
     }
 
-    print "PAM plugin loaded\n";
+    # print "PAM plugin loaded\n";
     return true;
 }
 
@@ -353,8 +430,7 @@ if ( $pam_activate ) {
     echo "verify db is running\n";
     open_db();
     echo "OK: db is running\n";
-
-    exit;
+    exit();
 }
         
 if ( $pam_disable ) {
@@ -367,31 +443,82 @@ if ( $pam_disable ) {
         );
 }
 
+if ( $pam_check ) {
+    if ( check_pam( false ) ) {
+        print "The PAM module is loaded\n";
+        exit;
+    } else {
+        print  "The PAM module is NOT loaded\n";
+        exit(-1);
+    }
+}
+
 ## pam required functions below
 
 check_pam();
 
-if ( $pam_user_delete ) {
-    $res = db_obj_result( $db_handle, "DROP USER '$pam_user_delete'" );
-    if ( $res ) {
-        print "user $pam_user_delete dropped\n";
+if ( $user_delete ) {
+    foreach ( $users as $user ) {
+        if ( is_system_user( $user ) ) {
+            print "WARNING: not deleting system user '$user'\n";
+        } else {
+            print "Deleting user '$user'...";
+            $res = db_obj_result( $db_handle, "DROP USER '$user'" );
+            if ( $res ) {
+                print "user '$user' dropped\n";
+            } else {
+                print "WARNING: dropping user '$user' did not succeed\n";
+            }
+        }
     }
-    exit;
 }
 
-if ( $pam_user_add ) {
-    $res = db_obj_result( $db_handle, "CREATE USER '$pam_user_add'@'%' IDENTIFIED VIA PAM USING 'mariadb' REQUIRE SSL", true );
-#    $res = db_obj_result( $db_handle, "CREATE USER '$pam_user_add'@'%' IDENTIFIED VIA PAM USING 'mariadb'", true );
-    debug_json( "res", $res );
+if ( $user_add ) {
+    foreach ( $users as $user ) {
+        print "Adding user '$user' ... ";
+        $res = db_obj_result( $db_handle, "CREATE USER IF NOT EXISTS '$user'@'%' IDENTIFIED VIA PAM USING 'mariadb' REQUIRE SSL", true );
+        if ( $res ) {
+            print "user '$user' added\n";
+        } else {
+            print "WARNING: add user '$user' did not succeed\n";
+        }
+    }
+}
 
-#    $res = db_obj_result( $db_handle, "GRANT USAGE,SELECT,INSERT,UPDATE,DELETE,EXECUTE ON *.* TO '$pam_user_add'@'%' IDENTIFIED VIA PAM USING 'mariadb'", true );
-    $res = db_obj_result( $db_handle, "GRANT USAGE,SELECT,INSERT,UPDATE,DELETE,EXECUTE ON *.* TO '$pam_user_add'@'%' IDENTIFIED VIA PAM USING 'mariadb' REQUIRE SSL", true );
-#    debug_json( "res", $res );
-    
-#    $res = db_obj_result( $db_handle, "GRANT EXECUTE ON *.* TO '$pam_user_add'@'%' IDENTIFIED VIA PAM", true );
-#    debug_json( "res", $res );
+if ( $add_db ) {
+    foreach ( $users as $user ) {
+        foreach ( $add_db as $db ) {
+            print "adding access for user '$user' to db '$db'... ";
+            $res = db_obj_result( $db_handle, "GRANT USAGE,SELECT,INSERT,UPDATE,DELETE,EXECUTE ON $db.* TO '$user'@'%' IDENTIFIED VIA PAM USING 'mariadb' REQUIRE SSL", true );
+            if ( $res ) {
+                print "success\n";
+            } else {
+                print "WARNING: did not succeed\n";
+            }
 
-    
-#    CREATE USER user_1@hostname IDENTIFIED VIA pam USING 'mariadb';
-#    GRANT SELECT ON db.* TO user_1@hostname IDENTIFIED VIA pam;
+        }
+    }
+}
+
+if ( $remove_db ) {
+    foreach ( $users as $user ) {
+        foreach ( $remove_db as $db ) {
+            print "removing access for user '$user' to db '$db'... ";
+            $res = db_obj_result( $db_handle, "REVOKE SELECT,INSERT,UPDATE,DELETE,EXECUTE ON $db.* from '$user'@'%'", true );
+            if ( $res ) {
+                print "success\n";
+            } else {
+                print "WARNING: did not succeed\n";
+            }
+
+        }
+    }
+}
+
+if ( $add_db || $remove_db ) {
+    echoline( "=" );
+    print "Grants after modifications\n";
+    echoline( "=" );
+    $list_grants = true;
+    do_list();
 }
