@@ -18,20 +18,20 @@ require "utility.php";
 $notes = <<<__EOD
 usage: $self {options} {db_config_file}
 
-Utility for managing USERS and GRANTS
+Utility for managing PAM authentication, USERS and GRANTS
 must be run with root privileges
 
 Options
 
 --help                 : print this information and exit
 
---user                 : user (can be included multiple times)
+--user username        : user (can be included multiple times)
 --all-users            : all existing users
 --system-users         : include system process users (by default these are excluded; can not be modified)
 
 --list                 : list users    
 --list-grants          : show grant information with each listed user (implies --list)
---grant-host           : restrict grants to the specific host (can be included multiple times)
+--grant-host hostname  : restrict grants to the specific host (can be included multiple times)
 
 --pam-check            : validate PAM is active
 --pam-activate         : activate PAM
@@ -192,6 +192,14 @@ if ( $list_grants && !$list ) {
 
 if ( $list_grants && !($all_users || count( $users ) ) ) {
     error_exit( "--list-grants requires either --all-users or --user\n\n$notes" );
+}
+
+if ( count( $grant_host ) &&
+     ( $user_add
+       || $user_delete
+       || $add_db
+       || $remove_db ) ) {
+    error_exit( "--grant-host is not currently supported for --user-add, --user-delete, --add-db and --remove-db\n\n$notes" );
 }
 
 if ( count( $grant_host ) && !$list_grants ) {
