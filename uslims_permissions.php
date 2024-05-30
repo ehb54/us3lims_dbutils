@@ -23,26 +23,29 @@ must be run with root privileges
 
 Options
 
---help                 : print this information and exit
+--help                        : print this information and exit
 
---user username        : user (can be included multiple times)
---all-users            : all existing users
---system-users         : include system process users (by default these are excluded; can not be modified)
+--user username               : user (can be included multiple times)
+--all-users                   : all existing users
+--system-users                : include system process users (by default these are excluded; can not be modified)
 
---list                 : list users    
---list-grants          : show grant information with each listed user (implies --list)
---grant-host hostname  : restrict grants to the specific host (can be included multiple times)
+--list                        : list users    
+--list-grants                 : show grant information with each listed user (implies --list)
+--grant-host hostname         : restrict grants to the specific host (can be included multiple times)
 
---pam-check            : validate PAM is active
---pam-activate         : activate PAM
---pam-disable          : disable PAM
+--pam-check                   : validate PAM is active
+--pam-activate                : activate PAM
+--pam-disable                 : disable PAM
 
---user-add             : add user(s)
---user-delete          : delete user(s)
---add-db dbname        : add db access for the users(s), use '*' for all dbs (for sysadmins only!)
---remove-db dbname     : remove db access for the users(s)
+--user-add                    : add user(s)
+--user-delete                 : delete user(s)
+--add-db dbname               : add db access for the users(s), use '*' for all dbs (for sysadmins only!)
+--remove-db dbname            : remove db access for the users(s)
 
---debug                : increase debug output (can be used multiple times)
+--grant-integrity dbname      : checks grant integrity for the specified db (can be included multiple times)
+--grant-integrity-fix         : fixes grant integrity for the specified dbs (requires --grant-integrity)
+
+--debug                       : increase debug output (can be used multiple times)
 
 
 __EOD;
@@ -66,6 +69,9 @@ $user_add             = false;
 $user_delete          = false;
 $add_db               = [];
 $remove_db            = [];
+
+$grant_integrity      = [];
+$grant_integrity_fix  = false;
 
 $debug                = 0;
 
@@ -164,6 +170,19 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $remove_db[] = array_shift( $u_argv );
             break;
         }
+        case "--grant-integrity": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
+            }
+            $grant_integrity[] = array_shift( $u_argv );
+            break;
+        }
+        case "--grant-integrity-fix": {
+            array_shift( $u_argv );
+            $grant_integrity_fix = true;
+            break;
+        }
 
       default:
         error_exit( "\nUnknown option '$u_argv[0]'\n\n$notes" );
@@ -208,6 +227,10 @@ if ( count( $grant_host ) && !$list_grants ) {
 
 if ( $user_add && $user_delete ) {
     error_exit( "--user-add & --user-delete are mutually exclusive\n\n$notes" );
+}
+
+if ( $grant_integrity_fix && !count( $grant_integrity ) ) {
+    error_exit( "--grant-integrity-fix requires --grant-integrity\n\n$notes" );
 }
 
 if ( $user_add && !count( $add_db ) ) {
@@ -262,6 +285,11 @@ if ( !$system_users ) {
         }
     }
 }
+
+# methinks we loop over people
+# if ( count( $grant_integrity ) && !count( $users ) ) {
+#    error_exit( "--grant-integrity requires users be defined\n\n$notes" );
+# }
 
 function do_list() {
     global $users;
@@ -465,14 +493,33 @@ if ( $pam_check ) {
 
 check_pam();
 
+function do_user_delete( $user ) {
+    global $db_handle;
+    return db_obj_result( $db_handle, "DROP USER '$user'" );
+}
+ 
+function do_user_add( $user ) {
+    global $db_handle;
+    return db_obj_result( $db_handle, "CREATE USER IF NOT EXISTS '$user'@'%' IDENTIFIED VIA PAM USING 'mariadb' REQUIRE SSL", true );
+}
+
+function do_db_add( $db, $user ) {
+    global $db_handle;
+    return db_obj_result( $db_handle, "GRANT USAGE,SELECT,INSERT,UPDATE,DELETE,EXECUTE ON $db.* TO '$user'@'%' IDENTIFIED VIA PAM USING 'mariadb' REQUIRE SSL", true );
+}
+
+function do_db_remove( $db, $user ) {
+    global $db_handle;
+    return db_obj_result( $db_handle, "REVOKE SELECT,INSERT,UPDATE,DELETE,EXECUTE ON $db.* from '$user'@'%'", true );
+}
+
 if ( $user_delete ) {
     foreach ( $users as $user ) {
         if ( is_system_user( $user ) ) {
             print "WARNING: not deleting system user '$user'\n";
         } else {
             print "Deleting user '$user'...";
-            $res = db_obj_result( $db_handle, "DROP USER '$user'" );
-            if ( $res ) {
+            if ( do_user_delete( $user ) ) {
                 print "user '$user' dropped\n";
             } else {
                 print "WARNING: dropping user '$user' did not succeed\n";
@@ -484,8 +531,7 @@ if ( $user_delete ) {
 if ( $user_add ) {
     foreach ( $users as $user ) {
         print "Adding user '$user' ... ";
-        $res = db_obj_result( $db_handle, "CREATE USER IF NOT EXISTS '$user'@'%' IDENTIFIED VIA PAM USING 'mariadb' REQUIRE SSL", true );
-        if ( $res ) {
+        if ( do_user_add( $user ) ) {
             print "user '$user' added\n";
         } else {
             print "WARNING: add user '$user' did not succeed\n";
@@ -497,8 +543,7 @@ if ( $add_db ) {
     foreach ( $users as $user ) {
         foreach ( $add_db as $db ) {
             print "adding access for user '$user' to db '$db'... ";
-            $res = db_obj_result( $db_handle, "GRANT USAGE,SELECT,INSERT,UPDATE,DELETE,EXECUTE ON $db.* TO '$user'@'%' IDENTIFIED VIA PAM USING 'mariadb' REQUIRE SSL", true );
-            if ( $res ) {
+            if ( do_db_add( $db, $user ) ) {
                 print "success\n";
             } else {
                 print "WARNING: did not succeed\n";
@@ -512,8 +557,7 @@ if ( $remove_db ) {
     foreach ( $users as $user ) {
         foreach ( $remove_db as $db ) {
             print "removing access for user '$user' to db '$db'... ";
-            $res = db_obj_result( $db_handle, "REVOKE SELECT,INSERT,UPDATE,DELETE,EXECUTE ON $db.* from '$user'@'%'", true );
-            if ( $res ) {
+            if ( do_db_remove( $db, $user ) ) {
                 print "success\n";
             } else {
                 print "WARNING: did not succeed\n";
@@ -530,3 +574,146 @@ if ( $add_db || $remove_db ) {
     $list_grants = true;
     do_list();
 }
+
+if ( count( $grant_integrity ) ) {
+
+
+    $fmt = " %-30s | %-30s | %-9s | %-3s | %-30s\n";
+    $len = 128;
+
+    echoline( "-", $len );
+    print sprintf(
+        $fmt
+        ,"db"
+        ,"userNamePAM"
+        ,"userlevel"
+        ,"PAM"
+        ,"issues"
+        );
+    echoline( "-", $len );
+
+    foreach ( $grant_integrity as $db ) {
+        $res = db_obj_result( $db_handle, "select * from $db.people", true );
+        while( $row = mysqli_fetch_array($res) ) {
+            $orow = (object) $row;
+            
+            $grants_ok = false;
+
+            $host = '%';
+
+            $res2 = db_obj_result( $db_handle, "show grants for '$orow->userNamePAM'@'$host'", true, true );
+
+            # build grant info tables for user
+            $grants                         = (object)[];
+
+            $grants->usage                  = (object)[];
+            $grants->usage->exists          = false;
+            $grants->usage->pam             = false;
+            $grants->usage->ssl             = false;
+            $grants->usage->expected_format = false;
+
+            $grants->dbs                    = (object)[];
+
+            $grants->unknown_lines          = 0;
+
+            if ( $res2 ) {
+                while( $row2 = mysqli_fetch_array($res2) ) {
+                    foreach ( $row2 as $v ) {
+                        if ( $debug ) {
+                            print "debug1: $v\n";
+                        }
+                        if ( preg_match( '/^GRANT USAGE/', $v ) ) {
+                            $grants->usage->exists = true;
+                            if ( preg_match( '/IDENTIFIED VIA PAM/', $v ) ) {
+                                $grants->usage->pam = true;
+                            }
+                            if ( preg_match( '/IDENTIFIED VIA PAM/', $v ) ) {
+                                $grants->usage->ssl = true;
+                            }
+                            if ( preg_match( '/REQUIRE SSL/', $v ) ) {
+                                $grants->usage->ssl = true;
+                            }
+                            if ( strstr( $v, "USAGE ON *.* TO ", $v ) ) {
+                                $grants->usage->expected_format = true;
+                            }
+                        }
+                        else if ( preg_match( '/^GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON `([^`]+)`/', $v, $matches ) ) {
+                            $grants->dbs->{$matches[1]} = (object)[];
+                        } else {
+                            ++$grants->unknown_lines;
+                        }
+                    }
+                }
+            }
+
+
+            $errors = "";
+
+            $tofix = (object)[];
+            
+            if ( $orow->authenticatePAM ) {
+                if ( !$grants->usage->exists ) {
+                    $errors .= " Missing USAGE;";
+                    $tofix->add_usage = true;
+                }
+                if ( !isset( $grants->dbs->{$db} ) ) {
+                    $errors .= " Missing GRANTS;";
+                    $tofix->add_grants = true;
+                }
+            } else {
+                if ( $grants->usage->exists ) {
+                    $errors .= " Has USAGE;";
+                    $tofix->remove_usage = true;
+                }
+                if ( isset( $grants->dbs->{$db} ) ) {
+                    $errors .= " Has GRANTS;";
+                    $tofix->remove_grants = true;
+                }
+            }
+
+            if ( $grants->unknown_lines ) {
+                $errors .= sprintf( " %3 unknown lines;", $grants->unknown_lines );
+            }
+
+            $errors = trim( $errors, "; " );
+
+            print sprintf(
+                $fmt
+                ,$db
+                ,$orow->userNamePAM
+                ,$orow->userlevel
+                ,$orow->authenticatePAM ? "Yes" : "No"
+                ,empty( $errors ) ? "" : $errors
+                );
+
+            if ( $debug ) {
+                debug_json( "grants", $grants );
+            }
+
+            if ( $grant_integrity_fix ) {
+                if ( isset( $tofix->remove_usage ) ) {
+                    if ( !do_user_delete( $orow->userNamePAM ) ) {
+                        print "ERRORS encounterd when trying to delete user '$user'\n";
+                    }
+                } else if ( isset( $tofix->remove_grants ) ) {
+                    if ( !do_db_remove( $db, $orow->userNamePAM ) ) {
+                        print "ERRORS encounterd when trying to remove user '$user' from db '$db'\n";
+                    }
+                }
+
+                if ( isset( $tofix->add_usage ) ) {
+                    if ( !do_user_add( $orow->userNamePAM ) ) {
+                        print "ERRORS encounterd when trying to add user '$user'\n";
+                    }
+                }
+                if ( isset( $tofix->add_grants ) ) {
+                    if ( !do_db_add( $db, $orow->userNamePAM ) ) {
+                        print "ERRORS encounterd when trying to add user '$user' to db '$db'\n";
+                    }
+                }
+            }
+        }
+    }
+    echoline( "-", $len );
+}        
+    
