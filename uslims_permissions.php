@@ -233,6 +233,10 @@ if ( $grant_integrity_fix && !count( $grant_integrity ) ) {
     error_exit( "--grant-integrity-fix requires --grant-integrity\n\n$notes" );
 }
 
+if ( $grant_integrity && $system_users ) {
+    error_exit( "--grant-integrity can not be run with --system-users\n\n$notes" );
+}
+
 if ( $user_add && !count( $add_db ) ) {
     print "WARNING: no dbs specified, added users will have no access to any databases\n";
 }
@@ -285,11 +289,6 @@ if ( !$system_users ) {
         }
     }
 }
-
-# methinks we loop over people
-# if ( count( $grant_integrity ) && !count( $users ) ) {
-#    error_exit( "--grant-integrity requires users be defined\n\n$notes" );
-# }
 
 function do_list() {
     global $users;
@@ -575,10 +574,93 @@ if ( $add_db || $remove_db ) {
     do_list();
 }
 
+function get_grants( $user, $host = '%' ) {
+    global $db_handle;
+
+    $res2 = db_obj_result( $db_handle, "show grants for '$user'@'$host'", true, true );
+
+    # build grant info tables for user
+    $grants                         = (object)[];
+
+    $grants->usage                  = (object)[];
+    $grants->usage->exists          = false;
+    $grants->usage->pam             = false;
+    $grants->usage->ssl             = false;
+    $grants->usage->expected_format = false;
+
+    $grants->dbs                    = (object)[];
+
+    $grants->unknown_lines          = 0;
+
+    if ( $res2 ) {
+        while( $row2 = mysqli_fetch_array($res2) ) {
+            foreach ( $row2 as $v ) {
+                if ( preg_match( '/^GRANT USAGE/', $v ) ) {
+                    $grants->usage->exists = true;
+                    if ( preg_match( '/IDENTIFIED VIA PAM/', $v ) ) {
+                        $grants->usage->pam = true;
+                    }
+                    if ( preg_match( '/IDENTIFIED VIA PAM/', $v ) ) {
+                        $grants->usage->ssl = true;
+                    }
+                    if ( preg_match( '/REQUIRE SSL/', $v ) ) {
+                        $grants->usage->ssl = true;
+                    }
+                    if ( strstr( $v, "USAGE ON *.* TO ", $v ) ) {
+                        $grants->usage->expected_format = true;
+                    }
+                }
+                else if ( preg_match( '/^GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON `([^`]+)`/', $v, $matches ) ) {
+                    $grants->dbs->{$matches[1]} = (object)[];
+                } else {
+                    ++$grants->unknown_lines;
+                }
+            }
+        }
+    }
+
+    return $grants;
+}
+
+function analyze_grants( $db, $grants, $authenticatePAM = false, $userlevel = 0 ) {
+
+    $tofix         = (object)[];
+    $tofix->errors = "";
+    
+    if ( $authenticatePAM && $userlevel >= 2 ) {
+        if ( !$grants->usage->exists ) {
+            $tofix->errors .= " Missing USAGE;";
+            $tofix->add_usage = true;
+        }
+        if ( !isset( $grants->dbs->{$db} ) ) {
+            $tofix->errors .= " Missing GRANTS;";
+            $tofix->add_grants = true;
+        }
+    } else {
+        if ( $grants->usage->exists
+             && count( (array) $grants->dbs ) - ( isset( $grants->dbs->{$db} ) ? 1 : 0 ) <= 0
+            ) {
+            $tofix->errors .= " Has USAGE;";
+            $tofix->remove_usage = true;
+        }
+        if ( isset( $grants->dbs->{$db} ) ) {
+            $tofix->errors .= " Has GRANTS;";
+            $tofix->remove_grants = true;
+        }
+    }
+
+    if ( $grants->unknown_lines ) {
+        $tofix->errors .= sprintf( " %3 unknown lines;", $grants->unknown_lines );
+    }
+
+    $tofix->errors = trim( $tofix->errors, "; " );
+
+    return $tofix;
+}
+
 if ( count( $grant_integrity ) ) {
 
-
-    $fmt = " %-30s | %-30s | %-9s | %-3s | %-30s\n";
+    $fmt = " %-25s | %-40s | %-13s | %-3s | %-30s\n";
     $len = 128;
 
     echoline( "-", $len );
@@ -593,89 +675,28 @@ if ( count( $grant_integrity ) ) {
     echoline( "-", $len );
 
     foreach ( $grant_integrity as $db ) {
+
+        $remaining_users = $users;
+
         $res = db_obj_result( $db_handle, "select * from $db.people", true );
         while( $row = mysqli_fetch_array($res) ) {
             $orow = (object) $row;
             
-            $grants_ok = false;
+            ## defined users override people
+            if ( count( $users ) && !in_array( $orow->userNamePAM, $users ) ) {
+                continue;
+            }
 
             $host = '%';
 
-            $res2 = db_obj_result( $db_handle, "show grants for '$orow->userNamePAM'@'$host'", true, true );
+            $remaining_users = array_diff( $remaining_users, [ $orow->userNamePAM ] );
 
-            # build grant info tables for user
-            $grants                         = (object)[];
-
-            $grants->usage                  = (object)[];
-            $grants->usage->exists          = false;
-            $grants->usage->pam             = false;
-            $grants->usage->ssl             = false;
-            $grants->usage->expected_format = false;
-
-            $grants->dbs                    = (object)[];
-
-            $grants->unknown_lines          = 0;
-
-            if ( $res2 ) {
-                while( $row2 = mysqli_fetch_array($res2) ) {
-                    foreach ( $row2 as $v ) {
-                        if ( $debug ) {
-                            print "debug1: $v\n";
-                        }
-                        if ( preg_match( '/^GRANT USAGE/', $v ) ) {
-                            $grants->usage->exists = true;
-                            if ( preg_match( '/IDENTIFIED VIA PAM/', $v ) ) {
-                                $grants->usage->pam = true;
-                            }
-                            if ( preg_match( '/IDENTIFIED VIA PAM/', $v ) ) {
-                                $grants->usage->ssl = true;
-                            }
-                            if ( preg_match( '/REQUIRE SSL/', $v ) ) {
-                                $grants->usage->ssl = true;
-                            }
-                            if ( strstr( $v, "USAGE ON *.* TO ", $v ) ) {
-                                $grants->usage->expected_format = true;
-                            }
-                        }
-                        else if ( preg_match( '/^GRANT SELECT, INSERT, UPDATE, DELETE, EXECUTE ON `([^`]+)`/', $v, $matches ) ) {
-                            $grants->dbs->{$matches[1]} = (object)[];
-                        } else {
-                            ++$grants->unknown_lines;
-                        }
-                    }
-                }
-            }
-
-
-            $errors = "";
-
-            $tofix = (object)[];
-            
-            if ( $orow->authenticatePAM ) {
-                if ( !$grants->usage->exists ) {
-                    $errors .= " Missing USAGE;";
-                    $tofix->add_usage = true;
-                }
-                if ( !isset( $grants->dbs->{$db} ) ) {
-                    $errors .= " Missing GRANTS;";
-                    $tofix->add_grants = true;
-                }
-            } else {
-                if ( $grants->usage->exists ) {
-                    $errors .= " Has USAGE;";
-                    $tofix->remove_usage = true;
-                }
-                if ( isset( $grants->dbs->{$db} ) ) {
-                    $errors .= " Has GRANTS;";
-                    $tofix->remove_grants = true;
-                }
-            }
-
-            if ( $grants->unknown_lines ) {
-                $errors .= sprintf( " %3 unknown lines;", $grants->unknown_lines );
-            }
-
-            $errors = trim( $errors, "; " );
+            $tofix = analyze_grants(
+                $db
+                ,get_grants( $orow->userNamePAM, $host )
+                ,$orow->authenticatePAM
+                ,$orow->userlevel
+                );
 
             print sprintf(
                 $fmt
@@ -683,12 +704,8 @@ if ( count( $grant_integrity ) ) {
                 ,$orow->userNamePAM
                 ,$orow->userlevel
                 ,$orow->authenticatePAM ? "Yes" : "No"
-                ,empty( $errors ) ? "" : $errors
+                ,empty( $tofix->errors ) ? "" : $tofix->errors
                 );
-
-            if ( $debug ) {
-                debug_json( "grants", $grants );
-            }
 
             if ( $grant_integrity_fix ) {
                 if ( isset( $tofix->remove_usage ) ) {
@@ -713,7 +730,50 @@ if ( count( $grant_integrity ) ) {
                 }
             }
         }
+        foreach ( $remaining_users as $user ) {
+            # these are not in the people table for the db
+            # silently remove the grants
+            $grants = get_grants( $user, $host );
+
+            $host = '%';
+            
+            $tofix = analyze_grants(
+                $db
+                ,get_grants( $user, $host )
+                );
+
+            print sprintf(
+                $fmt
+                ,$db
+                ,$user
+                ,"not in people"
+                ,"No"
+                ,empty( $tofix->errors ) ? "" : $tofix->errors
+                );
+
+            if ( $grant_integrity_fix ) {
+                if ( isset( $tofix->remove_usage ) ) {
+                    if ( !do_user_delete( $user ) ) {
+                        print "ERRORS encounterd when trying to delete user '$user'\n";
+                    }
+                } else if ( isset( $tofix->remove_grants ) ) {
+                    if ( !do_db_remove( $db, $user ) ) {
+                        print "ERRORS encounterd when trying to remove user '$user' from db '$db'\n";
+                    }
+                }
+
+                if ( isset( $tofix->add_usage ) ) {
+                    if ( !do_user_add( $user ) ) {
+                        print "ERRORS encounterd when trying to add user '$user'\n";
+                    }
+                }
+                if ( isset( $tofix->add_grants ) ) {
+                    if ( !do_db_add( $db, $user ) ) {
+                        print "ERRORS encounterd when trying to add user '$user' to db '$db'\n";
+                    }
+                }
+            }
+        }
     }
     echoline( "-", $len );
 }        
-    
