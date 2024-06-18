@@ -25,7 +25,7 @@ function write_logld( $msg, $this_level = 0 ) {
 }
 
 function db_obj_result( $db_handle, $query, $expectedMultiResult = false, $emptyok = false ) {
-    $result = mysqli_query( $db_handle, $query );
+    $result = @mysqli_query( $db_handle, $query );
 
     if ( !$result || ( is_object( $result ) && !$result->num_rows ) ) {
         if ( $result ) {
