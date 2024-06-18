@@ -733,10 +733,10 @@ if ( count( $grant_integrity ) ) {
         foreach ( $remaining_users as $user ) {
             # these are not in the people table for the db
             # silently remove the grants
+            $host = '%';
+
             $grants = get_grants( $user, $host );
 
-            $host = '%';
-            
             $tofix = analyze_grants(
                 $db
                 ,get_grants( $user, $host )
