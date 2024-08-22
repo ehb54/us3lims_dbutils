@@ -304,7 +304,7 @@ function check_cluster_status() {
             if ( array_key_exists( 'active', $v )
                  && !$v['active']
                  && $global_cluster_details[$k]['active'] ) {
-                $msg->issues .= "active in global_cluster.php, but not in cluster_config.php. ";
+                $msg->issues .= "active in global_config.php, but not in cluster_config.php. ";
             }
         }
 
