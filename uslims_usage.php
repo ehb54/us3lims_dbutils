@@ -20,8 +20,10 @@ $usage_approvedList =
      ,"alamo"
      ,"bcf"
      ,"bridges"
+     ,"canterbury"
      ,"comet"
      ,"expanse"
+     ,"fau"
      ,"gordon"
      ,"jetstream"
      ,"jureca"
@@ -30,6 +32,7 @@ $usage_approvedList =
      ,"konstanz"
      ,"lonestar"
      ,"lonestar5"
+     ,"pennstate"
      ,"puhti"
      ,"ranger"
      ,"stampede"
@@ -81,7 +84,11 @@ $usage_consolidation =
      ,"uslims.uleth.ca"                      => "uleth"
      ,"login.gscc.umt.edu"                   => "umontana"
      ,"chinook.hs.umt.edu"                   => "umontana"
-
+     ,"nrch.biochem.umt.edu"                 => "umontana"
+     ,"nrch.umt.edu"                         => "umontana"
+     ,"BIC-AUC-1.canterbury.ac.nz"           => "canterbury"
+     ,"H7-380489.ad.PSU.edu"                 => "pennstate"
+     ,"mvtpart43.mvt.uni-erlangen.de"        => "fau"
     ];
 
 
