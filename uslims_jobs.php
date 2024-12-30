@@ -45,6 +45,7 @@ Options
 --monitor                  : monitor the output (requires --gfacid)
 --running                  : report on all running jobs (gfac.analysis & active jobmonitor.php)
 --restart                  : restart jobmonitors if needed (e.g. after a system reboot)
+--restart-only       n     : restart n jobmonitors if needed (e.g. after a system reboot)
 --check-log                : checks the log (requires --gfacid & exclusive of --monitor)
 --getrundir                : gets running directory for airavata jobs 
 --getrun                   : collects running info from rundir into $getrunbdir/db/HPCAnalysisRequestID
@@ -61,25 +62,26 @@ require "utility.php";
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
-$db        = false;
-$reqid     = false;
-$gfacid    = false;
-$onlygfac  = false;
-$anyargs   = false;
-$fullrpt   = false;
-$qmesgs    = false;
-$monitor   = false;
-$running   = false;
-$restart   = false;
-$checklog  = false;
-$getrundir = false;
-$getrun    = false;
-$runinfo   = false;
-$copyrun   = false;
-$gatimes   = false;
-$adetails  = false;
-$pmg       = 0;
-$maxrss    = false;
+$db             = false;
+$reqid          = false;
+$gfacid         = false;
+$onlygfac       = false;
+$anyargs        = false;
+$fullrpt        = false;
+$qmesgs         = false;
+$monitor        = false;
+$running        = false;
+$restart        = false;
+$restart_only   = false;
+$checklog       = false;
+$getrundir      = false;
+$getrun         = false;
+$runinfo        = false;
+$copyrun        = false;
+$gatimes        = false;
+$adetails       = false;
+$pmg            = 0;
+$maxrss         = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     $anyargs = true;
@@ -178,6 +180,14 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $restart = true;
             break;
         }
+        case "--restart-only": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
+            }
+            $restart_only = array_shift( $u_argv );
+            break;
+        }
         case "--check-log": {
             array_shift( $u_argv );
             $checklog = true;
@@ -226,7 +236,7 @@ and edit with appropriate values
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
-if ( !$db && !$running && !$restart ) {
+if ( !$db && !$running && !$restart && !$restart_only) {
     error_exit( "ERROR: no database specified" );
 }
 
@@ -326,7 +336,7 @@ if ( $adetails ) {
     exit;
 }
 
-if ( $running || $restart ) {
+if ( $running || $restart || $restart_only ) {
     $jms = explode( "\n", trim( run_cmd( 'ps -efww | grep jobmonitor.php | grep -v grep | awk \'{ print $2 " " $10 " " $11 }\'' ) ) );
     $jm_active = [];
     foreach ( $jms as $v ) {
@@ -422,7 +432,7 @@ if ( $running || $restart ) {
         echo $out;
     }
 
-    if ( !$restart ) {
+    if ( !$restart && !$restart_only ) {
         exit;
     }
     
@@ -431,12 +441,17 @@ if ( $running || $restart ) {
         exit;
     }
 
+    $restarted = 0;
     foreach ( $jm_restart_db as $index => $db ) {
         $gfacid   = $jm_restart_gfacid  [ $index ];
         $hpcreqid = $jm_restart_hpcreqid[ $index ];
         $cmd = "php $us3bin/jobmonitor/jobmonitor.php $db $gfacid $hpcreqid";
         echo "restarting: $cmd\n";
         run_cmd( $cmd );
+        if ( $restart_only && ++$restarted >= $restart_only ) {
+            echo "Limit of $restart_only reached\n";
+            exit;
+        }
     }
     exit;
 }
