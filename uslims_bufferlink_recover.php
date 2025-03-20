@@ -34,8 +34,8 @@ Options
 --help                 : print this information and exit
     
 --db                   : db [required]
---update               : updates the current db
-
+--quiet                : minimal output
+--update               : updates the db if needed
 
 __EOD;
 
@@ -45,6 +45,7 @@ array_shift( $u_argv ); # first element is program name
 $anyargs             = false;
 
 $db                  = "";
+$quiet               = false;
 $update              = false;
 
 $debug               = 0;
@@ -62,6 +63,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                 error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
             }
             $db  = array_shift( $u_argv );
+            break;
+        }
+        case "--quiet": {
+            array_shift( $u_argv );
+            $quiet = true;
             break;
         }
         case "--update": {
@@ -131,6 +137,12 @@ if ( !file_exists( $stream_parser )
 
 ## get current DB bufferLink info
 
+if ( !$quiet ) {
+    echoline( "=" );
+    echo "bufferLink recovery analysis starting for db $db\n";
+    echoline();
+}
+
 open_db();
 
 $dbres = db_obj_result( $db_handle, "select * from $db.bufferLink", true, true );
@@ -166,7 +178,7 @@ if ( $dbres ) {
 
 ## get list of bufferLink.ibd's
 
-$bl_ibds = array_filter( explode( "\n", trim( `find . -name "bufferLink.ibd" | grep 'mariadb-binary-backup' | grep $db` ) ) );
+$bl_ibds = array_filter( explode( "\n", trim( `find . -name "bufferLink.ibd" | grep 'mariadb-binary-backup' | grep $db/` ) ) );
 
 if ( !count( $bl_ibds ) ) {
     error_exit( "no bufferLink.ibd found for database $db in mariadb-binary-backup*" );
@@ -208,14 +220,18 @@ function count_entries( $recs ) {
 }
 
 foreach ( $bl_ibds as $v ) {
-    echoline( "=" );
-    echo "processing $v\n";
-    echoline();
+    if ( !$quiet ) {
+        echoline();
+        echo "processing $v\n";
+        echoline();
+    }
     $usetmp = preg_replace( '/\/bufferLink.ibd/', '', $v );
     $usetmp = preg_replace( '/^\.\/mariadb-binary-backup-/', '', $usetmp );
     $usetmp = preg_replace( '/(\/|\.)/', '-', $usetmp );
     newfile_dir_init( "bufferLink-recovery-tmp-$usetmp" );
-    echo "using directory $newfile_dir\n";
+    if ( !$quiet ) {
+        echo "using directory $newfile_dir\n";
+    }
 
     $bufferLink_create_file = "bufferLink-create.sql";
     if ( !file_put_contents( "$newfile_dir/$bufferLink_create_file", $bufferLink_create_contents ) ) {
@@ -288,20 +304,31 @@ foreach ( $addrecs as $k => $v ) {
 debug_json( "addrecs count_entries() after removal of current = " . count_entries( $addrecs ), $addrecs, 1 );
 
 ## summary info
+if ( !$quiet ) {
+    echoline();
 
-echo sprintf(
-    "%d current bufferLink records exist\n"
-    ."%d new records were found\n"
-    , count_entries( $currentrecs )
-    , count_entries( $addrecs )
-    );
+    echo sprintf(
+        "%d current bufferLink records exist\n"
+        ."%d new records were found\n"
+        , count_entries( $currentrecs )
+        , count_entries( $addrecs )
+        );
+}
 
 if ( !count_entries( $addrecs ) ) {
-    echo "Nothing to do\n";
+    echo "Nothing to do for $db\n";
+    if ( !$quiet ) {
+        echoline();
+    }
     exit(0);
 }
 
-echo "New records bufferIDs : " . implode( ", " , array_keys( $addrecs ) ) . "\n";
+
+if ( !$quiet ) {
+    echoline();
+    echo "$db : New records bufferIDs : " . implode( ", " , array_keys( $addrecs ) ) . "\n";
+    echoline();
+}
 
 ## create sql
 
