@@ -129,6 +129,41 @@ if ( !file_exists( $stream_parser )
     error_exit( "$stream_parser & $c_parser do not exist, please run 'make' in $undrop_code_dir and try again" );
 }
 
+## get current DB bufferLink info
+
+open_db();
+
+$dbres = db_obj_result( $db_handle, "select * from $db.bufferLink", true, true );
+
+$currentrecs = [];
+
+if ( $dbres ) {
+    while( $row = mysqli_fetch_array($dbres) ) {
+        $orow = (object) $row;
+
+        $bufferID          = intval  ( $orow->bufferID );
+        $bufferComponentID = intval  ( $orow->bufferComponentID );
+        $concentration     = round( floatval( $orow->concentration ), 4 );
+
+        if ( isset( $currentrecs[ $bufferID ] ) ) {
+            if ( isset( $currentrecs[ $bufferID ][ $bufferComponentID ] ) ) {
+                if ( $currentrecs[ $bufferID ][ $bufferComponentID ] != $concentration ) {
+                    error_exit( "bufferID $bufferID bufferComponentID $bufferComponentID concentration mismatch $currentrecs[$bufferID][$bufferComponentID] != $concentration" );
+                } else {
+                    ## ok, duplicate
+                }
+            } else {
+                ## new bufferID bufferComponentID pair
+                $currentrecs[ $bufferID ][ $bufferComponentID ] = $concentration;
+            }
+        } else {
+            ## new bufferID
+            $currentrecs[ $bufferID ] = [];
+            $currentrecs[ $bufferID ][ $bufferComponentID ] = $concentration;
+        }
+    }
+}
+
 ## get list of bufferLink.ibd's
 
 $bl_ibds = array_filter( explode( "\n", trim( `find . -name "bufferLink.ibd" | grep 'mariadb-binary-backup' | grep $db` ) ) );
@@ -137,7 +172,7 @@ if ( !count( $bl_ibds ) ) {
     error_exit( "no bufferLink.ibd found for database $db in mariadb-binary-backup*" );
 }
 
-debug_json( "found bufferLinks:", $bl_ibds );
+debug_json( "found bufferLinks:", $bl_ibds, 1 );
 
 ## could also be extracted from ../sql/us3.sql 
 
@@ -162,11 +197,24 @@ ENGINE = InnoDB;
 
 __EOD;
 
+$addrecs = [];
+
+function count_entries( $recs ) {
+    $count = 0;
+    foreach ( $recs as $v ) {
+        $count += count( $v );
+    }
+    return $count;
+}
+
 foreach ( $bl_ibds as $v ) {
     echoline( "=" );
     echo "processing $v\n";
     echoline();
-    newfile_dir_init( "bufferLink-recovery-tmp" );
+    $usetmp = preg_replace( '/\/bufferLink.ibd/', '', $v );
+    $usetmp = preg_replace( '/^\.\/mariadb-binary-backup-/', '', $usetmp );
+    $usetmp = preg_replace( '/(\/|\.)/', '-', $usetmp );
+    newfile_dir_init( "bufferLink-recovery-tmp-$usetmp" );
     echo "using directory $newfile_dir\n";
 
     $bufferLink_create_file = "bufferLink-create.sql";
@@ -179,14 +227,97 @@ foreach ( $bl_ibds as $v ) {
 
     $cmd = "cd $newfile_dir && find pages-bufferLink.ibd/FIL_PAGE_INDEX -name '*.page'";
     $res = run_cmd( $cmd, true, true );
-    debug_json( "res", $res );
+    debug_json( "res", $res, 1 );
 
     foreach ( $res as $page ) {
-        $cmd = "cd $newfile_dir && ../$c_parser -6f $page -t $bufferLink_create_file";
-        print "$cmd\n";
+        $cmd = "cd $newfile_dir && ( ../$c_parser -6f $page -t $bufferLink_create_file | grep -v '2147483647' ) > stdout 2> stderr ";
+        run_cmd( $cmd );
+        $pagecontent = run_cmd( "cat $newfile_dir/stdout", true, true );
+        debug_json( "page $page:",  $pagecontent, 1 );
+        $recs = preg_grep( '/Link\t\d+\t\d+/', $pagecontent );
+        debug_json( "recs:",  $recs, 1 );
+        foreach ( $recs as $rec ) {
+            $userec = preg_replace( '/^.*Link/', 'bufferLink', $rec );
+            $recarray = explode( "\t", $userec );
+            if ( count( $recarray ) < 4 ) {
+                error_exit( "ERROR: unexpected record '$rec' in $page" );
+            }
+            $bufferID          = intval  ( $recarray[ 1 ] );
+            $bufferComponentID = intval  ( $recarray[ 2 ] );
+            $concentration     = round( floatval( $recarray[ 3 ] ), 4 );
+
+            if ( isset( $addrecs[ $bufferID ] ) ) {
+                if ( isset( $addrecs[ $bufferID ][ $bufferComponentID ] ) ) {
+                    if ( $addrecs[ $bufferID ][ $bufferComponentID ] != $concentration ) {
+                        error_exit( "bufferID $bufferID bufferComponentID $bufferComponentID concentration mismatch $addrecs[$bufferID][$bufferComponentID] != $concentration" );
+                    } else {
+                        ## ok, duplicate
+                    }
+                } else {
+                    ## new bufferID bufferComponentID pair
+                    $addrecs[ $bufferID ][ $bufferComponentID ] = $concentration;
+                }
+            } else {
+                ## new bufferID
+                $addrecs[ $bufferID ] = [];
+                $addrecs[ $bufferID ][ $bufferComponentID ] = $concentration;
+            }
+        }            
     }
-    error_exit( "testing" );
+
+}
+debug_json( "addrecs count_entries() = " . count_entries( $addrecs ), $addrecs, 1 );
+
+## prune addrecs if already in currentrecs and equal, die if differ
+
+foreach ( $addrecs as $k => $v ) {
+    if ( isset( $currentrecs[ $k ] ) ) {
+        ## do all values match?
+        if ( $addrecs[ $k ] !== $currentrecs[ $k ] ) {
+            echo "WARNING, bufferID $k to restore & current mismatch:\n"
+                . debug_json( "to restore:", $addrecs[ $k ] )
+                . debug_json( "current:", $currentrecs[ $k ] )
+                ;
+                
+            error_exit( "bufferID $k to restore & current don't match" );
+        }
+        unset( $addrecs[ $k ] );
+    }
+}
+
+debug_json( "addrecs count_entries() after removal of current = " . count_entries( $addrecs ), $addrecs, 1 );
+
+## summary info
+
+echo sprintf(
+    "%d current bufferLink records exist\n"
+    ."%d new records were found\n"
+    , count_entries( $currentrecs )
+    , count_entries( $addrecs )
+    );
+
+if ( !count_entries( $addrecs ) ) {
+    echo "Nothing to do\n";
+    exit(0);
+}
+
+echo "New records bufferIDs : " . implode( ", " , array_keys( $addrecs ) ) . "\n";
+
+## create sql
+
+if ( $update ) {    
+    foreach ( $addrecs as $bufferID => $v ) {
+        foreach ( $v as $bufferComponentID => $concentration ) {
+            $query = "insert into $db.bufferLink values ($bufferID,$bufferComponentID,$concentration);";
+            $res = mysqli_query( $db_handle, $query );
+            if ( !$res ) {
+                error_exit( "db query failed : $query\ndb query error: " . mysqli_error($db_handle) );
+            }
+        }
+    }
+} else {
+    echo "Database $db needs updating\n";
+    exit( -1 );
 }
 
 
-    
