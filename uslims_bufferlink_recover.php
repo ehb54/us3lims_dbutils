@@ -357,6 +357,7 @@ if ( !$quiet ) {
 ## create sql
 
 if ( $update ) {    
+    echo "Updating database $db\n";
     foreach ( $addrecs as $bufferID => $v ) {
         foreach ( $v as $bufferComponentID => $concentration ) {
             $query = "insert into $db.bufferLink values ($bufferID,$bufferComponentID,$concentration);";
