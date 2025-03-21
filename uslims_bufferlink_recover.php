@@ -127,7 +127,7 @@ if ( !is_dir( $undrop_code_dir ) ) {
 
 if ( !file_exists( $stream_parser )
      || !file_exists( $c_parser ) ) {
-    error_exit( "$stream_parser & $c_parser do not exist, please run 'make' in $undrop_code_dir and try again" );
+    error_exit( "$stream_parser & $c_parser do not exist, please run 'git submodule update --init' and then 'make' in $undrop_code_dir and try again" );
 }
 
 ## get current DB bufferLink info
