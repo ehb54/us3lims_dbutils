@@ -344,7 +344,9 @@ if ( !count_entries( $addrecs ) ) {
 
 if ( !$quiet ) {
     echoline();
-    echo "$db : New records bufferIDs : " . implode( ", " , array_keys( $addrecs ) ) . "\n";
+    $bufferIDs = array_keys( $addrecs );
+    sort( $bufferIDs );
+    echo "$db : New records bufferIDs : " . implode( ", " , $bufferIDs ) . "\n";
     echoline();
 }
 
