@@ -45,7 +45,7 @@ Options
 --monitor                  : monitor the output (requires --gfacid)
 --running                  : report on all running jobs (gfac.analysis & active jobmonitor.php)
 --restart                  : restart jobmonitors if needed (e.g. after a system reboot)
---restart-only       n     : restart n jobmonitors if needed (e.g. after a system reboot)
+--restart-only       n     : restart n jobmonitors if needed (typically for debugging purposes)
 --check-log                : checks the log (requires --gfacid & exclusive of --monitor)
 --getrundir                : gets running directory for airavata jobs 
 --getrun                   : collects running info from rundir into $getrunbdir/db/HPCAnalysisRequestID
