@@ -187,6 +187,8 @@ if ( !count( $bl_ibds ) ) {
 debug_json( "found bufferLinks:", $bl_ibds, 1 );
 
 ## could also be extracted from ../sql/us3.sql 
+## this structure needs to match the .ibd's binary content 
+### (i.e. the schema that was in place when it was created)
 
 $bufferLink_create_contents = <<<__EOD
 CREATE TABLE bufferLink (
