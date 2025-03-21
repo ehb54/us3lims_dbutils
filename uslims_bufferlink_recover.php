@@ -31,7 +31,7 @@ Options
 --quiet                : minimal output
 --update               : updates the db if needed
 
-    
+
 __EOD;
 
 $u_argv = $argv;
