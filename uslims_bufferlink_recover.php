@@ -225,6 +225,8 @@ function count_entries( $recs ) {
 
 ## extract each ibd found and accumulate into $addrecs
 
+$warnings = [];
+
 foreach ( $bl_ibds as $v ) {
     if ( !$quiet ) {
         echoline();
@@ -267,20 +269,34 @@ foreach ( $bl_ibds as $v ) {
         run_cmd( $cmd );
         $pagecontent = run_cmd( "cat $newfile_dir/stdout", true, true );
         debug_json( "page $page:",  $pagecontent, 1 );
-        $recs = preg_grep( '/Link\t\d+\t\d+/', $pagecontent );
+        $recs = preg_grep( '/Link\t\d+/', $pagecontent );
         debug_json( "recs:",  $recs, 1 );
         foreach ( $recs as $rec ) {
             
             ## if you examine the actual output, some lines can be trucated, so I searched for a good matching character string
-            
+
             $userec = preg_replace( '/^.*Link/', 'bufferLink', $rec );
-            $recarray = explode( "\t", $userec );
+
+            $recarray = preg_split( '/\s+/', $userec );
+
+            # record validation checks
+
             if ( count( $recarray ) < 4 ) {
-                error_exit( "ERROR: unexpected record '$rec' in $page" );
+                $warnings[ "WARNING: skipped : possible mangeled record '$rec'" ] = true;
+                continue;
             }
+            if ( !preg_match( '/[0-9]$/', $userec ) ) {
+                $warnings[ "WARNING: included : possible mangeled record '$rec'" ] = true;
+            }
+
             $bufferID          = intval  ( $recarray[ 1 ] );
             $bufferComponentID = intval  ( $recarray[ 2 ] );
             $concentration     = round( floatval( $recarray[ 3 ] ), 4 );
+
+            if ( $bufferID == 0 ) {
+                $warnings[ "WARNING: skipped : record with bufferID of zero '$userec'" ] = true;
+                continue;
+            }
 
             # create the $addrecs data
             
@@ -307,15 +323,22 @@ foreach ( $bl_ibds as $v ) {
 
 debug_json( "addrecs count_entries() = " . count_entries( $addrecs ), $addrecs, 1 );
 
+if ( count( $warnings ) ) {
+    echoline();
+    echo "WARNINGS EXIST\n";
+    echo implode( "\n", array_keys( $warnings ) ) . "\n";
+    echoline();
+}
+
 ## prune addrecs (newly found from ibd) if already in currentrecs (those in the active database) and equal, die if differ
 
 foreach ( $addrecs as $k => $v ) {
     if ( isset( $currentrecs[ $k ] ) ) {
         ## do all values match?
         if ( $addrecs[ $k ] !== $currentrecs[ $k ] ) {
-            echo "WARNING, bufferID $k to restore & current mismatch:\n"
-                . debug_json( "to restore:", $addrecs[ $k ] )
-                . debug_json( "current:", $currentrecs[ $k ] )
+            echo "WARNING: bufferID $k to restore & current mismatch:\n"
+                . "to restore:" . json_encode( $addrecs[ $k ] , JSON_PRETTY_PRINT ) . "\n"
+                . "current:" . json_encode( $currentrecs[ $k ] , JSON_PRETTY_PRINT ) . "\n"
                 ;
                 
             error_exit( "bufferID $k to restore & current don't match" );
