@@ -130,6 +130,12 @@ if ( !file_exists( $stream_parser )
     error_exit( "$stream_parser & $c_parser do not exist, please run 'git submodule update --init' and then 'make' in $undrop_code_dir and try again" );
 }
 
+open_db();
+
+if ( !in_array( $db, existing_dbs() ) ) {
+    error_exit( "The selected database '$db' is not a currently existing database." );
+}
+
 ## get current DB bufferLink info
 
 if ( !$quiet ) {
@@ -137,8 +143,6 @@ if ( !$quiet ) {
     echo "bufferLink recovery analysis starting for db $db\n";
     echoline();
 }
-
-open_db();
 
 $dbres = db_obj_result( $db_handle, "select * from $db.bufferLink", true, true );
 
