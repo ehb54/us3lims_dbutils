@@ -8,12 +8,11 @@ $c_parser           = "$undrop_code_dir/c_parser";
 
 # end user defines
 
-require "utility.php";
+require_once "utility.php";
 
 $self = __FILE__;
 $cwd  = getcwd();
 
-# $debug = 1;
 date_default_timezone_set('UTC');
 
 $notes = <<<__EOD
@@ -77,7 +76,7 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         }
       default:
         error_exit( "\nUnknown option '$u_argv[0]'\n\n$notes" );
-    }        
+    }
 }
 
 $config_file = "db_config.php";
@@ -93,7 +92,7 @@ if ( !$anyargs || count( $u_argv ) ) {
 }
 
 if ( !file_exists( $use_config_file ) ) {
-    fwrite( STDERR, "$self: 
+    fwrite( STDERR, "$self:
 $use_config_file does not exist
 
 to fix:
@@ -106,11 +105,11 @@ and edit with appropriate values
 }
 
 file_perms_must_be( $use_config_file );
-require $use_config_file;
+require_once $use_config_file;
 
 $myconf = "my.cnf";
 if ( !file_exists( $myconf ) ) {
-   error_exit( "create a file '$myconf' in the current directory with the following contents:\n" 
+   error_exit( "create a file '$myconf' in the current directory with the following contents:\n"
                . "[client]\n"
                . "password=YOUR_ROOT_DB_PASSWORD\n"
                . "max_allowed_packet=256M\n"
@@ -185,8 +184,8 @@ if ( !count( $bl_ibds ) ) {
 
 debug_json( "found bufferLinks:", $bl_ibds, 1 );
 
-## could also be extracted from ../sql/us3.sql 
-## this structure needs to match the .ibd's binary content 
+## could also be extracted from ../sql/us3.sql
+## this structure needs to match the .ibd's binary content
 ### (i.e. the schema that was in place when it was created)
 
 $bufferLink_create_contents = <<<__EOD
@@ -285,7 +284,7 @@ foreach ( $bl_ibds as $v ) {
                 $warnings[ "WARNING: skipped : possible mangeled record '$rec'" ] = true;
                 continue;
             }
-            if ( !preg_match( '/[0-9]$/', $userec ) ) {
+            if ( !preg_match( '/\d$/', $userec ) ) {
                 $warnings[ "WARNING: included : possible mangeled record '$rec'" ] = true;
             }
 
@@ -299,8 +298,8 @@ foreach ( $bl_ibds as $v ) {
             }
 
             # create the $addrecs data
-            
-            if ( isset( $addrecs[ $bufferID ] ) ) { 
+
+            if ( isset( $addrecs[ $bufferID ] ) ) {
                 if ( isset( $addrecs[ $bufferID ][ $bufferComponentID ] ) ) {
                     ## check to see if we already had this entry with a different concentration
                     if ( $addrecs[ $bufferID ][ $bufferComponentID ] != $concentration ) {
@@ -379,7 +378,7 @@ if ( !$quiet ) {
 
 ## create sql
 
-if ( $update ) {    
+if ( $update ) {
     echo "Updating database $db\n";
     foreach ( $addrecs as $bufferID => $v ) {
         foreach ( $v as $bufferComponentID => $concentration ) {
@@ -394,5 +393,3 @@ if ( $update ) {
     echo "Database $db needs updating\n";
     exit( -1 );
 }
-
-
