@@ -23,13 +23,6 @@ accumulates all bufferLink data from mariadb-binary-backup* and optionally inser
 
 my.cnf must exist in the current directory
 
-
-__EOD;
-
-$notes = <<<__EOD
-usage: $self {options}
-
-
 Options
 
 --help                 : print this information and exit
@@ -38,6 +31,7 @@ Options
 --quiet                : minimal output
 --update               : updates the db if needed
 
+    
 __EOD;
 
 $u_argv = $argv;
