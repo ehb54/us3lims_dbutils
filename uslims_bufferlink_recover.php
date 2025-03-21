@@ -213,6 +213,8 @@ __EOD;
 
 $addrecs = [];
 
+## count_entries() to find all bufferID/bufferComponentID records
+
 function count_entries( $recs ) {
     $count = 0;
     foreach ( $recs as $v ) {
@@ -221,12 +223,18 @@ function count_entries( $recs ) {
     return $count;
 }
 
+
+## extract each ibd found and accumulate into $addrecs
+
 foreach ( $bl_ibds as $v ) {
     if ( !$quiet ) {
         echoline();
         echo "processing $v\n";
         echoline();
     }
+
+    ## shorten the ibd file path to make the temporary directory
+    
     $usetmp = preg_replace( '/\/bufferLink.ibd/', '', $v );
     $usetmp = preg_replace( '/^\.\/mariadb-binary-backup-/', '', $usetmp );
     $usetmp = preg_replace( '/(\/|\.)/', '-', $usetmp );
@@ -235,18 +243,26 @@ foreach ( $bl_ibds as $v ) {
         echo "using directory $newfile_dir\n";
     }
 
+    ## the bufferLink-create.sql is needed by the undrop code to extract data from the ibd
+    
     $bufferLink_create_file = "bufferLink-create.sql";
     if ( !file_put_contents( "$newfile_dir/$bufferLink_create_file", $bufferLink_create_contents ) ) {
         error_exit( "error creating $newfile_dir/$bufferLink_create_file" );
     }
 
+    ## run the undrop parser
+    
     $cmd = "cd $newfile_dir && ../$stream_parser -f ../$v";
     run_cmd( $cmd );
 
+    ## find all the .page files the undrop parser produced
+    
     $cmd = "cd $newfile_dir && find pages-bufferLink.ibd/FIL_PAGE_INDEX -name '*.page'";
     $res = run_cmd( $cmd, true, true );
     debug_json( "res", $res, 1 );
 
+    ## extract data from each .page file produced by the undrop parser
+    
     foreach ( $res as $page ) {
         $cmd = "cd $newfile_dir && ( ../$c_parser -6f $page -t $bufferLink_create_file | grep -v '2147483647' ) > stdout 2> stderr ";
         run_cmd( $cmd );
@@ -255,6 +271,9 @@ foreach ( $bl_ibds as $v ) {
         $recs = preg_grep( '/Link\t\d+\t\d+/', $pagecontent );
         debug_json( "recs:",  $recs, 1 );
         foreach ( $recs as $rec ) {
+            
+            ## if you examine the actual output, some lines can be trucated, so I searched for a good matching character string
+            
             $userec = preg_replace( '/^.*Link/', 'bufferLink', $rec );
             $recarray = explode( "\t", $userec );
             if ( count( $recarray ) < 4 ) {
@@ -264,29 +283,32 @@ foreach ( $bl_ibds as $v ) {
             $bufferComponentID = intval  ( $recarray[ 2 ] );
             $concentration     = round( floatval( $recarray[ 3 ] ), 4 );
 
-            if ( isset( $addrecs[ $bufferID ] ) ) {
+            # create the $addrecs data
+            
+            if ( isset( $addrecs[ $bufferID ] ) ) { 
                 if ( isset( $addrecs[ $bufferID ][ $bufferComponentID ] ) ) {
+                    ## check to see if we already had this entry with a different concentration
                     if ( $addrecs[ $bufferID ][ $bufferComponentID ] != $concentration ) {
                         error_exit( "bufferID $bufferID bufferComponentID $bufferComponentID concentration mismatch $addrecs[$bufferID][$bufferComponentID] != $concentration" );
                     } else {
                         ## ok, duplicate
                     }
                 } else {
-                    ## new bufferID bufferComponentID pair
+                    ## found new bufferID bufferComponentID pair
                     $addrecs[ $bufferID ][ $bufferComponentID ] = $concentration;
                 }
             } else {
-                ## new bufferID
+                ## found new bufferID
                 $addrecs[ $bufferID ] = [];
                 $addrecs[ $bufferID ][ $bufferComponentID ] = $concentration;
             }
-        }            
+        }
     }
-
 }
+
 debug_json( "addrecs count_entries() = " . count_entries( $addrecs ), $addrecs, 1 );
 
-## prune addrecs if already in currentrecs and equal, die if differ
+## prune addrecs (newly found from ibd) if already in currentrecs (those in the active database) and equal, die if differ
 
 foreach ( $addrecs as $k => $v ) {
     if ( isset( $currentrecs[ $k ] ) ) {
@@ -324,7 +346,6 @@ if ( !count_entries( $addrecs ) ) {
     }
     exit(0);
 }
-
 
 if ( !$quiet ) {
     echoline();
