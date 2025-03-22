@@ -237,7 +237,7 @@ foreach ( $bl_ibds as $v ) {
     
     $usetmp = preg_replace( '/\/bufferLink.ibd/', '', $v );
     $usetmp = preg_replace( '/^\.\/mariadb-binary-backup-/', '', $usetmp );
-    $usetmp = preg_replace( '/(\/|\.)/', '-', $usetmp );
+    $usetmp = preg_replace( '/[\/.]/', '-', $usetmp );
     newfile_dir_init( "bufferLink-recovery-tmp-$usetmp" );
     if ( !$quiet ) {
         echo "using directory $newfile_dir\n";
