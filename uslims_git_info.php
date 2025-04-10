@@ -22,6 +22,9 @@ $reposearchpaths =
      ,$wwwpath
     ];
 
+## regexp list of directory names to ignore
+$ignore_repos = [ '/undrop-for-innodb/' ];
+
 # user defines continued
 $known_repos =
     [
@@ -408,6 +411,14 @@ foreach ( $reposearchpaths as $v ) {
     $repodirs = array_merge( $repodirs, array_filter( explode( "\n", trim( run_cmd( "find $v -follow -name '*.git' 2>/dev/null | sed 's/.git\$//' | sed 's/\/\$//'" ) ) ) ) );
 }
 
+foreach ( $repodirs as $k => $v ) {
+    foreach ( $ignore_repos as $ignore ) {
+        if ( preg_match( $ignore, $v ) ) {
+            unset( $repodirs[ $k ] );
+        }
+    }
+}
+            
 $repos = (object)[];
 
 foreach ( $repodirs as $v ) {
