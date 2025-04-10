@@ -411,8 +411,6 @@ foreach ( $reposearchpaths as $v ) {
     $repodirs = array_merge( $repodirs, array_filter( explode( "\n", trim( run_cmd( "find $v -follow -name '*.git' 2>/dev/null | sed 's/.git\$//' | sed 's/\/\$//'" ) ) ) ) );
 }
 
-debug_json( "repodirs before ignore", $repodirs );
-
 foreach ( $repodirs as $k => $v ) {
     foreach ( $ignore_repos as $ignore ) {
         if ( preg_match( $ignore, $v ) ) {
@@ -421,9 +419,6 @@ foreach ( $repodirs as $k => $v ) {
     }
 }
             
-debug_json( "repodirs after ignore", $repodirs );
-error_exit( "testing" );
-
 $repos = (object)[];
 
 foreach ( $repodirs as $v ) {
