@@ -1,5 +1,7 @@
 <?php
 
+{};
+
 # user defines
 
 $limsdbpath = "/home/us3/lims/database/sql";
@@ -277,10 +279,11 @@ debug_echo( echoline( '-', 80, false ) );
 debug_echo( "exporting $ref_db to $newfile_dir/$ref_db\n" );
 run_cmd( dump_cmd( $ref_db ) );
 
-
 # dump & compare each db, build report data
 $db_diffs        = [];
 $db_diff_results = [];
+$db_with_diffs   = [];
+
 foreach ( $compare_dbs as $db ) {
     debug_echo( echoline( '-', 80, false ) );
 
@@ -292,6 +295,9 @@ foreach ( $compare_dbs as $db ) {
     $result = trim( run_cmd( "diff $ref_db $db", false ) );
     $db_diffs[ $db ]        = strlen( $result ) ? 1 : 0;
     $db_diff_results[ $db ] = $result;
+    if ( strlen( $result ) ) {
+        $db_with_diffs[] = $db;
+    }
 }
 
 # cleanup
@@ -332,7 +338,10 @@ if ( $show_diffs ) {
         }
     }
 } else {
-    echo "$dbcount,$dbdiffs\n";
+    echo "$dbcount database(s) compared to the reference schema : " . implode( ", ", array_keys( $db_diffs ) ) . "\n";
+    if ( count( $db_with_diffs ) ) {
+        echo "$dbdiffs database(s) found with table, function or procedure differences with respect to the reference schema : " . implode( ", ", $db_with_diffs ) . "\n";
+    } else {
+        echo "No differences found in any database comparing all tables, functions and procedures with respect to the reference schema.\n";
+    }
 }
-
-
