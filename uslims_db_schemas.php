@@ -340,7 +340,7 @@ if ( $show_diffs ) {
 } else {
     echo "$dbcount database(s) compared to the reference schema : " . implode( ", ", array_keys( $db_diffs ) ) . "\n";
     if ( count( $db_with_diffs ) ) {
-        echo "$dbdiffs database(s) found with with table, function or procedure differences with respect to the reference schema : " . implode( ", ", $db_with_diffs ) . "\n";
+        echo "$dbdiffs database(s) found with table, function or procedure differences with respect to the reference schema : " . implode( ", ", $db_with_diffs ) . "\n";
     } else {
         echo "No differences found in any database comparing all tables, functions and procedures with respect to the reference schema.\n";
     }
