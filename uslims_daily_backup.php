@@ -11,6 +11,8 @@ $us3bin               = exec( "ls -d ~us3/lims/bin" );
 include_once          "$us3bin/listen-config.php";
 $rsync_php            = "uslims_daily_rsync.php";
 
+$backup_file_mode     = isset( $backup_file_mode ) ? $backup_file_mode : "400";
+
 $duration_status_file = "$hdir/.uslims_backup_stats";
 
 # $debug = 1;
@@ -239,7 +241,7 @@ foreach ( $dbnames_used as $db => $val ) {
     }
     echo "complete: exporting $db to $dumpfile\n";
     backup_rsync_run_cmd( "sudo chown $backup_user:$backup_user $dumpfile" );
-    backup_rsync_run_cmd( "sudo chmod 400 $dumpfile" );
+    backup_rsync_run_cmd( "sudo chmod $backup_file_mode $dumpfile" );
 
     $dumped[] = $dumpfile;
 
@@ -252,7 +254,7 @@ foreach ( $dbnames_used as $db => $val ) {
     }
     echo "completed: compressing $dumpfile with $compresswith\n";
     backup_rsync_run_cmd( "sudo chown $backup_user:$backup_user $cdumpfile" );
-    backup_rsync_run_cmd( "sudo chmod 400 $cdumpfile" );
+    backup_rsync_run_cmd( "sudo chmod $backup_file_mode $cdumpfile" );
     $cdumped[] = $cdumpfile;
 }
 
@@ -275,12 +277,12 @@ foreach ( $dbnames_used as $db => $val ) {
     }
     echo "completed: compressing $dumpfile with $compresswith\n";
     backup_rsync_run_cmd( "sudo chown $backup_user:$backup_user $cdumpfile" );
-    backup_rsync_run_cmd( "sudo chmod 400 $cdumpfile" );
+    backup_rsync_run_cmd( "sudo chmod $backup_file_mode $cdumpfile" );
     $cdumped[] = $cdumpfile;
 }
  
 backup_rsync_run_cmd( "sudo chown $backup_user:$backup_user $logf" );
-backup_rsync_run_cmd( "sudo chmod 400 $logf" );
+backup_rsync_run_cmd( "sudo chmod $backup_file_mode $logf" );
 # check for old backups
 foreach ( $dbnames_used as $db => $val ) {
     $cmd = "ls -1t $db-dump*.sql.$compressext";
@@ -352,16 +354,16 @@ if ( $backup_rsync ) {
             if ( file_exists( $pcdumpfile ) ) {
                 echo "computing deltas: $db from $pcdumpfile\n";
                 # create signature file in $backup_rdiff_temp
-                backup_rsync_run_cmd( "$rdiff_bin signature $pcdumpfile $backup_rdiff_temp/$file_sig && sudo chown $backup_user:$backup_user $backup_rdiff_temp/$file_sig && sudo chmod 400 $backup_rdiff_temp/$file_sig" );
+                backup_rsync_run_cmd( "$rdiff_bin signature $pcdumpfile $backup_rdiff_temp/$file_sig && sudo chown $backup_user:$backup_user $backup_rdiff_temp/$file_sig && sudo chmod $backup_file_mode $backup_rdiff_temp/$file_sig" );
                 # create delta file in normal rsync directory
-                backup_rsync_run_cmd( "$rdiff_bin delta     $backup_rdiff_temp/$file_sig $cdumpfile $file_delta && sudo chown $backup_user:$backup_user $file_delta && sudo chmod 400 $file_delta" );
+                backup_rsync_run_cmd( "$rdiff_bin delta     $backup_rdiff_temp/$file_sig $cdumpfile $file_delta && sudo chown $backup_user:$backup_user $file_delta && sudo chmod $backup_file_mode $file_delta" );
                 # move backup file to $backup_rdiff_temp
                 backup_rsync_run_cmd( "mv -f $cdumpfile $backup_rdiff_temp/" );
                 # setup restore commands to be run after rsync
                 $remote_restore_cmds .=
                       "rdiff patch $rsync_dest/$pcdumpfile $rsync_dest/$file_delta $rsync_dest/$cdumpfile\n"
                     . "chown $rsync_user:$rsync_user $rsync_dest/$cdumpfile\n"
-                    . "chmod 400 $rsync_dest/$cdumpfile\n"
+                    . "chmod $backup_file_mode $rsync_dest/$cdumpfile\n"
                     . "rm -f $rsync_dest/$file_delta\n"
                     ;
                 $rdiff_restore_cmds[] = "mv -f $backup_rdiff_temp/$cdumpfile . && rm -f $file_delta $backup_rdiff_temp/$file_sig";
@@ -570,7 +572,7 @@ Rsync destination  %s:%s
 
     file_put_contents( $emaillog, echoline( "=", 80, false ) . $subject . "\n" . echoline( "=", 80, false ) . $summary_report );
     run_cmd( "sudo chown $backup_user:$backup_user $emaillog", false );
-    run_cmd( "sudo chmod 400 $emaillog", false );
+    run_cmd( "sudo chmod $backup_file_mode $emaillog", false );
     
     if ( !mail( 
                $backup_email_address

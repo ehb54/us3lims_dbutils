@@ -18,6 +18,8 @@ $backup_email_address = "SET_EMAIL";           # email addresses for backups
 $backup_rdiff         = false;
 $backup_rdiff_temp    = "/srv/data/temp";      # path for temporary storage for rdiffs note : must be on the same partition as the $backups_dir 
 
+# $backup_file_mode     = "400";                 # if not defined, set as "400" (read only)
+
 $backup_df_pct_warn   = 80;                    # the warning threshold
 $backup_df_check      = [];                    # array of mounts to check for free space, leave empty for no checks
 
