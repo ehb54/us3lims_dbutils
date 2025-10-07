@@ -53,7 +53,7 @@ Options
 --copyrun            queue : gets running info and sends to remote cluster for testing
 --ga-times                 : reports timings for ga mc jobs (experimental)
 --pmg                n     : report timings for specific pmg # (default 0), use 'all' do show all, 'most-recent' for just most recent, 'max-gen' for details about pmg with maximum generation
---airavata-details         : get current airavata job details (requires --gfacid)
+--airavata-details         : get current airavata job details
 --maxrss                   : maximum memory used report for selected database
 --get-prior-ids      n     : report n previously completed ids
 
@@ -247,7 +247,7 @@ and edit with appropriate values
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
-if ( !$db && !$running && !$restart && !$restart_only) {
+if ( !$db && !$running && !$restart && !$restart_only && !$getpriorids ) {
     error_exit( "ERROR: no database specified" );
 }
 
@@ -299,10 +299,6 @@ if ( $adetails && ( !$gfacid || !$db ) ) {
     error_exit( "ERROR: --airavata-details requires --gfacid and --db" );
 }
 
-if ( $getpriorids && !$db ) {
-    error_exit( "ERROR: --get-prior-ids requires --db" );
-}
-
 function jm_only_report( $jm_active ) {
     $out = "";
     if ( count( $jm_active ) ) {
@@ -327,6 +323,7 @@ function jm_only_report( $jm_active ) {
 
 if ( $getpriorids ) {
     open_db();
+    if ( $db ) {
     $query = 
         "SELECT r.HPCAnalysisRequestID, r.gfacID, r.queueStatus, r.endTime, a.clusterName FROM $db.HPCAnalysisResult AS r"
         . " JOIN uslims3_Demo.HPCAnalysisRequest AS a"
@@ -334,11 +331,74 @@ if ( $getpriorids ) {
         . " ORDER BY r.endTime DESC"
         . " LIMIT $getpriorids"
         ;
+    } else {
+        # 1) discover schemas (single statement)
+        $schema_sql =
+            $schema_sql =
+            "SELECT SCHEMA_NAME"
+            . " FROM information_schema.SCHEMATA"
+            . " WHERE SCHEMA_NAME REGEXP '^uslims3_[A-Za-z0-9_]+$'"
+            . " AND SCHEMA_NAME <> 'uslims3_global'"
+            ;
+        
+        $schemas_res = db_obj_result( $db_handle, $schema_sql, true, true );
+        # debug if needed
+        # if ( $schemas_res && method_exists($schemas_res, 'num_rows') ) {
+        # echo "schemas found: " . $schemas_res->num_rows . "\n";
+        # }
+        
+        if ( !$schemas_res ) {
+            echo "no uslims3_% schemas (excluding uslims3_global) found\n";
+            exit;
+        }
+
+        # 2) build subselects (keep each sub limited so UNION stays small)
+        $subs = [];
+        $per_schema_limit = max( 25, (int) $getpriorids );
+
+        while ( $row = mysqli_fetch_array( $schemas_res ) ) {
+            $schema = $row[ 'SCHEMA_NAME' ];
+
+            # safety: only allow expected identifiers
+            if ( !preg_match( '/^uslims3_[A-Za-z0-9_]+$/', $schema ) ) {
+                continue;
+            }
+
+            $subs[] =
+                "(SELECT '$schema' AS db"
+                . " , r.HPCAnalysisRequestID"
+                . " , r.gfacID"
+                . " , r.queueStatus"
+                . " , r.endTime"
+                . " , a.clusterName"
+                . " FROM `$schema`.HPCAnalysisResult r"
+                . " JOIN `$schema`.HPCAnalysisRequest a"
+                . "   ON a.HPCAnalysisRequestID = r.HPCAnalysisRequestID"
+                . " ORDER BY (r.endTime IS NULL), r.endTime DESC"
+                . " LIMIT $per_schema_limit)"
+                ;
+            
+        }
+
+        if ( empty( $subs ) ) {
+            echo "no eligible schemas after validation\n";
+            exit;
+        }
+
+        # 3) final single-statement UNION query (portable NULLS LAST)
+        $query =
+            "SELECT db, HPCAnalysisRequestID, gfacID, queueStatus, endTime, clusterName"
+          . " FROM (" . implode( " UNION ALL ", $subs ) . ") x"
+          . " ORDER BY (endTime IS NULL), endTime DESC"
+          . " LIMIT " . (int) $getpriorids
+          ;
+    }
 
     # echo "$query\n";
 
     $res = db_obj_result( $db_handle, $query, true, true );
     if ( !$res ) {
+        echo "error " . mysqli_error($db_handle) . "\n";
         echo "no prior job results found for db $db\n";
         exit;
     }
@@ -365,7 +425,7 @@ if ( $getpriorids ) {
         echo sprintf(
             $fmt
             , substr( $rowo->clusterName, 0, $maxclusternamelen )
-            , $db
+            , ( isset( $rowo->db ) ? $rowo->db : $db )   # <-- use returned db for multi-schema
             , $rowo->HPCAnalysisRequestID
             , $rowo->gfacID
             , $rowo->endTime
