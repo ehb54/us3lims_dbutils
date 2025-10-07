@@ -55,6 +55,8 @@ Options
 --pmg                n     : report timings for specific pmg # (default 0), use 'all' do show all, 'most-recent' for just most recent, 'max-gen' for details about pmg with maximum generation
 --airavata-details         : get current airavata job details (requires --gfacid)
 --maxrss                   : maximum memory used report for selected database
+--get-prior-ids      n     : report n previously completed ids
+
 
 __EOD;
 
@@ -82,6 +84,7 @@ $gatimes        = false;
 $adetails       = false;
 $pmg            = 0;
 $maxrss         = false;
+$getpriorids    = 0;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     $anyargs = true;
@@ -104,6 +107,14 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                 error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
             }
             $pmg = array_shift( $u_argv );
+            break;
+        }
+        case "--get-prior-ids": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
+            }
+            $getpriorids = array_shift( $u_argv );
             break;
         }
         case "--getrundir": {
@@ -288,6 +299,10 @@ if ( $adetails && ( !$gfacid || !$db ) ) {
     error_exit( "ERROR: --airavata-details requires --gfacid and --db" );
 }
 
+if ( $getpriorids && !$db ) {
+    error_exit( "ERROR: --get-prior-ids requires --db" );
+}
+
 function jm_only_report( $jm_active ) {
     $out = "";
     if ( count( $jm_active ) ) {
@@ -308,6 +323,59 @@ function jm_only_report( $jm_active ) {
         }
     }
     return $out;
+}
+
+if ( $getpriorids ) {
+    open_db();
+    $query = 
+        "SELECT r.HPCAnalysisRequestID, r.gfacID, r.queueStatus, r.endTime, a.clusterName FROM $db.HPCAnalysisResult AS r"
+        . " JOIN uslims3_Demo.HPCAnalysisRequest AS a"
+        . " ON a.HPCAnalysisRequestID = r.HPCAnalysisRequestID"
+        . " ORDER BY r.endTime DESC"
+        . " LIMIT $getpriorids"
+        ;
+
+    # echo "$query\n";
+
+    $res = db_obj_result( $db_handle, $query, true, true );
+    if ( !$res ) {
+        echo "no prior job results found for db $db\n";
+        exit;
+    }
+
+    $maxclusternamelen = 30;
+
+    $fmt = "%-${maxclusternamelen}s | %-20s | %-6s | %-45s | %-19s | %-12s\n";
+    $fmtlen = $maxclusternamelen + 3 + 20 + 3 + 6 + 3 + 45 + 3 + 19 + 3 + 12;
+
+    echoline( "-", $fmtlen );
+    echo sprintf(
+        $fmt
+        , 'cluster'
+        , 'db'
+        , 'reqid'
+        , 'gfacid'
+        , 'end'
+        , 'status'
+        );
+    echoline( "-", $fmtlen );
+
+    while( $row = mysqli_fetch_array( $res ) ) {
+        $rowo = (object) $row;
+        echo sprintf(
+            $fmt
+            , substr( $rowo->clusterName, 0, $maxclusternamelen )
+            , $db
+            , $rowo->HPCAnalysisRequestID
+            , $rowo->gfacID
+            , $rowo->endTime
+            , $rowo->queueStatus
+            );
+        # error_exit( "testing" );
+    }
+        
+    echoline( "-", $fmtlen );
+    exit;
 }
 
 if ( $adetails ) {
