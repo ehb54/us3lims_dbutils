@@ -589,7 +589,6 @@ foreach ( $use_dbs as $db ) {
                 // Add job submission time from HPCAnalysisRequest
                 $meta->xmls->submitTime = $hpcareq['submitTime'] ?? null;
 
-
                 $meta->jmd->target->wallTime = $hpcares['wallTime'];
                 $meta->jmd->target->CPUTime  = $hpcares['CPUTime'];
                 $meta->jmd->target->max_rss  = $hpcares['max_rss'];

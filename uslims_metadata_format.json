@@ -24,6 +24,10 @@
         "input" : [
             "job.cluster.@attributes.name"
             ,"CPUCount"
+            ,"submitTime"
+            ,"startTime"
+            ,"endTime"
+            ,"updateTime"
             ,"@attributes.method"
             ,"job.jobParameters.s_min.@attributes.value"
             ,"job.jobParameters.s_max.@attributes.value"
