@@ -581,6 +581,15 @@ foreach ( $use_dbs as $db ) {
                 ## additional inputs go to xmls
                 $meta->xmls->CPUCount = $hpcares['CPUCount'];
 
+                // Add job timing fields from HPCAnalysisResult
+                $meta->xmls->startTime  = $hpcares['startTime'];
+                $meta->xmls->endTime    = $hpcares['endTime'];
+                $meta->xmls->updateTime = $hpcares['updateTime'];
+
+                // Add job submission time from HPCAnalysisRequest
+                $meta->xmls->submitTime = $hpcareq['submitTime'] ?? null;
+
+
                 $meta->jmd->target->wallTime = $hpcares['wallTime'];
                 $meta->jmd->target->CPUTime  = $hpcares['CPUTime'];
                 $meta->jmd->target->max_rss  = $hpcares['max_rss'];
