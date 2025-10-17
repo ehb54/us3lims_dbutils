@@ -581,13 +581,13 @@ foreach ( $use_dbs as $db ) {
                 ## additional inputs go to xmls
                 $meta->xmls->CPUCount = $hpcares['CPUCount'];
 
-                // Add job timing fields from HPCAnalysisResult
-                $meta->xmls->startTime  = $hpcares['startTime'];
-                $meta->xmls->endTime    = $hpcares['endTime'];
-                $meta->xmls->updateTime = $hpcares['updateTime'];
+                ## Add job timing fields from HPCAnalysisResult (convert to numeric timestamps)
+                $meta->xmls->startTime  = !empty($hpcares['startTime']) ? strtotime($hpcares['startTime']) : null;
+                $meta->xmls->endTime    = !empty($hpcares['endTime']) ? strtotime($hpcares['endTime']) : null;
+                $meta->xmls->updateTime = !empty($hpcares['updateTime']) ? strtotime($hpcares['updateTime']) : null;
 
-                // Add job submission time from HPCAnalysisRequest
-                $meta->xmls->submitTime = $hpcareq['submitTime'] ?? null;
+                ## Add job submission time from HPCAnalysisRequest (convert to numeric timestamp)
+                $meta->xmls->submitTime = !empty($hpcareq['submitTime']) ? strtotime($hpcareq['submitTime']) : null;
 
                 $meta->jmd->target->wallTime = $hpcares['wallTime'];
                 $meta->jmd->target->CPUTime  = $hpcares['CPUTime'];
@@ -863,7 +863,7 @@ foreach ( $use_dbs as $db ) {
                             $input_data[$i] = str_replace( ',', '.', $input_data[$i] );
                         }
                         if ( !is_numeric( $input_data[$i] ) ) {
-                            error_exit( "non float data found in input data" );
+                            error_exit( "non float data found in input data <$input_data[$i]>" );
                         }
                     }
                     if ( $input_data[$i] != floatval( $input_data[$i] ) ) {
