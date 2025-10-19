@@ -127,6 +127,7 @@
             ,"uslimstest.genapp.rocks"           : 32
             ,"BIC-AUC-1"                         : 33
             ,"BIC-AUC-1.canterbury.ac.nz"        : 33
+            ,"nrch.umt.edu"                      : 34
         }
 
         ,"job.jobParameters.bucket_fixed.@attributes.fixedtype" : {
