@@ -128,6 +128,7 @@
             ,"BIC-AUC-1"                         : 33
             ,"BIC-AUC-1.canterbury.ac.nz"        : 33
             ,"nrch.umt.edu"                      : 34
+            ,"mvtpart43.mvt.uni-erlangen.de"     : 35
         }
 
         ,"job.jobParameters.bucket_fixed.@attributes.fixedtype" : {
