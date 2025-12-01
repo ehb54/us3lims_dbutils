@@ -24,6 +24,10 @@
         "input" : [
             "job.cluster.@attributes.name"
             ,"CPUCount"
+            ,"submitTime"
+            ,"startTime"
+            ,"endTime"
+            ,"updateTime"
             ,"@attributes.method"
             ,"job.jobParameters.s_min.@attributes.value"
             ,"job.jobParameters.s_max.@attributes.value"
@@ -123,6 +127,8 @@
             ,"uslimstest.genapp.rocks"           : 32
             ,"BIC-AUC-1"                         : 33
             ,"BIC-AUC-1.canterbury.ac.nz"        : 33
+            ,"nrch.umt.edu"                      : 34
+            ,"mvtpart43.mvt.uni-erlangen.de"     : 35
         }
 
         ,"job.jobParameters.bucket_fixed.@attributes.fixedtype" : {
@@ -172,6 +178,7 @@
             ,"301.vsk" : 8
             ,"312.vkv" : 9
             ,"321.vwk" : 10
+            ,"403.dsv" : 11
         }
 
 ## @attributes.method are grouped coarsely
