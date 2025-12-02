@@ -53,7 +53,7 @@ Options
 --copyrun            queue : gets running info and sends to remote cluster for testing
 --ga-times                 : reports timings for ga mc jobs (experimental)
 --pmg                n     : report timings for specific pmg # (default 0), use 'all' do show all, 'most-recent' for just most recent, 'max-gen' for details about pmg with maximum generation
---airavata-details         : get current airavata job details
+--airavata-details         : get current airavata job details (requires --gfacid)
 --maxrss                   : maximum memory used report for selected database
 --get-prior-ids      n     : report n previously completed ids
 
@@ -326,7 +326,7 @@ if ( $getpriorids ) {
     if ( $db ) {
     $query = 
         "SELECT r.HPCAnalysisRequestID, r.gfacID, r.queueStatus, r.endTime, a.clusterName FROM $db.HPCAnalysisResult AS r"
-        . " JOIN uslims3_Demo.HPCAnalysisRequest AS a"
+        . " JOIN $db.HPCAnalysisRequest AS a"
         . " ON a.HPCAnalysisRequestID = r.HPCAnalysisRequestID"
         . " ORDER BY r.endTime DESC"
         . " LIMIT $getpriorids"
