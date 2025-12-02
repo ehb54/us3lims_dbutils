@@ -324,7 +324,7 @@ function jm_only_report( $jm_active ) {
 if ( $getpriorids ) {
     open_db();
     if ( $db ) {
-    $query = 
+    $query =
         "SELECT r.HPCAnalysisRequestID, r.gfacID, r.queueStatus, r.endTime, a.clusterName FROM $db.HPCAnalysisResult AS r"
         . " JOIN $db.HPCAnalysisRequest AS a"
         . " ON a.HPCAnalysisRequestID = r.HPCAnalysisRequestID"
@@ -360,7 +360,7 @@ if ( $getpriorids ) {
             $schema = $row[ 'SCHEMA_NAME' ];
 
             # safety: only allow expected identifiers
-            if ( !preg_match( '/^uslims3_[A-Za-z0-9_]+$/', $schema ) ) {
+            if ( !preg_match( '/^uslims3_\w+$/', $schema ) ) {
                 continue;
             }
 
@@ -393,8 +393,6 @@ if ( $getpriorids ) {
           . " LIMIT " . (int) $getpriorids
           ;
     }
-
-    # echo "$query\n";
 
     $res = db_obj_result( $db_handle, $query, true, true );
     if ( !$res ) {
@@ -431,7 +429,6 @@ if ( $getpriorids ) {
             , $rowo->endTime
             , $rowo->queueStatus
             );
-        # error_exit( "testing" );
     }
         
     echoline( "-", $fmtlen );
