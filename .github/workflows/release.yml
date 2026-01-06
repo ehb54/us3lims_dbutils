@@ -58,7 +58,9 @@ permissions:
 
 jobs:
   call-set-version-tag:
-    uses: ehb54/uslims_version_workflows/.github/workflows/set-version-tag.yml@main
+    # uslims_version_workflows commit for v0.0.2:
+    # 4fe2c4caa05d198e40406f59d042c79df5078c34
+    uses: ehb54/uslims_version_workflows/.github/workflows/set-version-tag.yml@4fe2c4caa05d198e40406f59d042c79df5078c34
     with:
       version: ${{ inputs.version }}
       # Convert dropdown choice -> boolean expected by the reusable workflow
