@@ -1,7 +1,7 @@
-name: Start Release
+name: Bump Version
 
-# Manually triggered workflow that initiates the release PR creation process.
-# Prompts for a version number and delegates to the reusable release workflow.
+# Manually triggered workflow that initiates the bump-to PR creation process.
+# Prompts for a version number and delegates to the reusable bump-to workflow.
 # Supports standard versions (1.2.3) and pre-release versions (1.2.3-RC1).
 
 on:
@@ -18,6 +18,6 @@ permissions:
 
 jobs:
   create-release-pr:
-    uses: ehb54/uslims_version_workflows/.github/workflows/create-release-pr.yml@7f688a892797756f48ebbef368f434f380a42505
+    uses: ehb54/uslims_version_workflows/.github/workflows/create-bump-pr.yml@9294a6b076e45375e31e2c724f22737f9debd8a2
     with:
       version: ${{ inputs.version }}
