@@ -183,7 +183,7 @@ if ( $backup_df_run ) {
 }
 
 
-$dbnames_used = array_fill_keys( existing_dbs(), 1 );
+$dbnames_used = array_fill_keys( existing_dbs( true ), 1 );
 $dbnames_used[ "newus3" ] = 1;
 if ( isset( $backup_extra_dbs ) ) {
     if ( !is_array( $backup_extra_dbs ) ) {
@@ -233,7 +233,7 @@ echoline();
 $extra_files = [];
 foreach ( $dbnames_used as $db => $val ) {
     $dumpfile = "$db-dump-$date.sql";
-    $cmd = "mysqldump --defaults-file=$myconf -u root $db > $dumpfile 2>> $logf";
+    $cmd = "mysqldump --defaults-file=$myconf --single-transaction --quick --routines --triggers --events -u root $db > $dumpfile 2>> $logf";
     echo "starting: exporting $db to $dumpfile\n";
     backup_rsync_run_cmd( $cmd );
     if ( !file_exists( $dumpfile ) ) {
