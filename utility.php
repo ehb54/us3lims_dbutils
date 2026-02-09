@@ -259,7 +259,7 @@ function open_db() {
     }
 }    
     
-function existing_dbs() {
+function existing_dbs( $include_global = false ) {
     global $db_handle;
     if ( $db_handle === NULL ) {
         open_db();
@@ -268,7 +268,7 @@ function existing_dbs() {
     $existing_dbs = [];
     while( $row = mysqli_fetch_array($res) ) {
         $this_db = (string)$row[0];
-        if ( $this_db != "uslims3_global" ) {
+        if ( $this_db != "uslims3_global" || $include_global ) {
             $existing_dbs[] = $this_db;
         }
     }
