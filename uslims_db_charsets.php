@@ -4,7 +4,7 @@
 
 # end user defines
 
-require "utility.php";
+require_once "utility.php";
 
 $self = __FILE__;
 $cwd  = getcwd();
@@ -86,7 +86,7 @@ and edit with appropriate values
 }
             
 file_perms_must_be( $use_config_file );
-require $use_config_file;
+require_once $use_config_file;
 
 $myconf = "my.cnf";
 if ( !file_exists( $myconf ) ) {
