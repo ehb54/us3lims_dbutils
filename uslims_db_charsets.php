@@ -62,7 +62,7 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         }
       default:
         error_exit( "\nUnknown option '$u_argv[0]'\n\n$notes" );
-    }        
+    }
 }
 
 $config_file = "db_config.php";
@@ -73,7 +73,7 @@ if ( count( $u_argv ) ) {
 }
 
 if ( !file_exists( $use_config_file ) ) {
-    fwrite( STDERR, "$self: 
+    fwrite( STDERR, "$self:
 $use_config_file does not exist
 
 to fix:
@@ -113,7 +113,7 @@ if ( !count( $use_dbs ) ) {
     error_exit( "no dbs selected" );
 }
 
-$summary = (object)[ 
+$summary = (object)[
     "engines"     => (object)[]
     ,"charsets"   => (object)[]
     ,"collations" => (object)[]
@@ -136,7 +136,7 @@ echoline( '-', $fmtlen );
 foreach ( $use_dbs as $db ) {
 
     $query = <<< __EOQ
-SELECT 
+SELECT
     'SCHEMA' AS level,
     s.SCHEMA_NAME AS schema_name,
     NULL AS table_name,
@@ -149,7 +149,7 @@ WHERE s.SCHEMA_NAME = '$db'
 
 UNION ALL
 
-SELECT 
+SELECT
     'TABLE' AS level,
     t.TABLE_SCHEMA AS schema_name,
     t.TABLE_NAME AS table_name,
@@ -164,7 +164,7 @@ WHERE t.TABLE_SCHEMA = '$db'
 
 UNION ALL
 
-SELECT 
+SELECT
     'COLUMN' AS level,
     c.TABLE_SCHEMA AS schema_name,
     c.TABLE_NAME AS table_name,
@@ -196,6 +196,6 @@ __EOQ;
         $summary->charsets->{$orow->charset} = ($summary->charsets->{$orow->charset} ?? 0) + 1;
         $summary->collations->{$orow->collation} = ($summary->collations->{$orow->collation} ?? 0) + 1;
     }
-}    
+}
 
 debug_json( "summary", $summary );
