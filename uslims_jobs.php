@@ -10,9 +10,6 @@ $cwd          = getcwd();
 $getrunbdir   = "$cwd/getrun";
 
 include "$us3bin/listen-config.php";
-if ( file_exists( $class_dir_p . "job_details.php" ) ) {
-   include $class_dir_p . "job_details.php";
-}
 
 $global_config_file = $class_dir_p . "../global_config.php";
 
@@ -81,7 +78,6 @@ $getrun         = false;
 $runinfo        = false;
 $copyrun        = false;
 $gatimes        = false;
-$adetails       = false;
 $pmg            = 0;
 $maxrss         = false;
 $getpriorids    = 0;
@@ -202,11 +198,6 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--check-log": {
             array_shift( $u_argv );
             $checklog = true;
-            break;
-        }
-        case "--airavata-details": {
-            array_shift( $u_argv );
-            $adetails = true;
             break;
         }
         case "--maxrss": {
@@ -432,32 +423,6 @@ if ( $getpriorids ) {
     }
         
     echoline( "-", $fmtlen );
-    exit;
-}
-
-if ( $adetails ) {
-    if ( !is_aira_job( $gfacid ) ) {
-        error_exit( "$gfacid does not appear to be a valid id for an Airavata managed job" );
-    }
-    $jobDetails = getJobDetails( $gfacid );
-    if ( $jobDetails ) {
-        if ( $jobDetails === ' No Job Details ' ) {
-            $jdstdout = $jobDetails;
-            $jdstderr = $jobDetails;
-            
-        } else {
-            $jdstdout = isset( $jobDetails->stdOut ) ? trim( $jobDetails->stdOut ) : "n/a";
-            $jdstderr = isset( $jobDetails->stdErr ) ? trim( $jobDetails->stdErr ) : "n/a";
-        }
-    } else {
-        $jdstdout = "failed to get job details";
-        $jdstderr = "failed to get job details";
-    }
-    $aira_details =
-        sprintf(   "   Airavata stdout : %s\n", $jdstdout )
-        . sprintf( "   Airavata stderr : %s\n", $jdstderr )
-        ;
-    echo $aira_details;
     exit;
 }
 
@@ -910,35 +875,9 @@ if ( $reqid && !$getrundir && !$getrun && !$copyrun) {
     exit(0);
 }
 
-function is_aira_job( $gfacID ) {
-    return preg_match( "/US3-A/i", $gfacID ) ? true : false;
-}
-
 if ( $gfacid ) {
     $out = "";
     $out .= gfacanalysisout( $gfacid );
-    if ( is_aira_job( $gfacid ) ) {
-        $out .= echoline( '-', 80, false );
-        $jobDetails = getJobDetails( $gfacid );
-        if ( $jobDetails ) {
-            if ( $jobDetails === ' No Job Details ' ) {
-                $jdstdout = $jobDetails;
-                $jdstderr = $jobDetails;
-                
-            } else {
-                $jdstdout = isset( $jobDetails->stdOut ) ? trim( $jobDetails->stdOut ) : "n/a";
-                $jdstderr = isset( $jobDetails->stdErr ) ? trim( $jobDetails->stdErr ) : "n/a";
-            }
-        } else {
-            $jdstdout = "failed to get job details";
-            $jdstderr = "failed to get job details";
-        }
-        $out .=
-            sprintf( "Airavata job stdout    %s\n", $jdstdout )
-            . sprintf( "Airavata job stderr    %s\n", $jdstderr )
-            ;
-    }
-
     $out .= hpcresbyreqout( $gfacid, true );
 
     echo $out;
