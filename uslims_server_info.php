@@ -18,7 +18,7 @@ Options
 
 __EOD;
 
-require "utility.php";
+require_once "utility.php";
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
@@ -34,7 +34,7 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         }
       default:
         error_exit( "\nUnknown option '$u_argv[0]'\n\n$notes" );
-    }        
+    }
 }
 
 $config_file = "db_config.php";
@@ -63,7 +63,7 @@ and edit with appropriate values
 }
             
 file_perms_must_be( $use_config_file );
-require $use_config_file;
+require_once $use_config_file;
 
 # checks
 
