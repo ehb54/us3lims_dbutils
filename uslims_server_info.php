@@ -50,7 +50,7 @@ if ( count( $u_argv ) ) {
 }
 
 if ( !file_exists( $use_config_file ) ) {
-    fwrite( STDERR, "$self: 
+    fwrite( STDERR, "$self:
 $use_config_file does not exist
 
 to fix:
