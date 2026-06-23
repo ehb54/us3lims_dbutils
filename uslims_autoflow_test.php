@@ -628,13 +628,20 @@ function watch_request( $db, $reqid, $timeout, $poll_interval, $log_files ) {
 # fault injection helpers
 ####################################################################
 
-function write_fake_sbatch( $test_bin_dir, $test_state_dir, $mode ) {
+function write_fake_sbatch( $test_bin_dir, $test_state_dir, $mode, $expected_user ) {
     if ( !is_dir( $test_bin_dir ) ) {
         mkdir( $test_bin_dir, 0755, true );
     }
     if ( !is_dir( $test_state_dir ) ) {
         mkdir( $test_state_dir, 0755, true );
     }
+    # The fake sbatch script below runs as $expected_user (submitctl.php is
+    # restarted as that user), but these dirs are typically created by
+    # whoever runs this harness (often root) - chown them so $expected_user
+    # can actually write its counter file regardless of who created them.
+    @chown( $test_bin_dir, $expected_user );
+    @chown( $test_state_dir, $expected_user );
+
     $counter_file = "$test_state_dir/sbatch_fail_once_counter";
     if ( file_exists( $counter_file ) ) {
         unlink( $counter_file );
@@ -702,7 +709,7 @@ switch ( $mode ) {
 
         if ( $fake_sbatch != "succeed" ) {
             echo "*** --fake-sbatch=$fake_sbatch enabled: restarting submitctl.php with a PATH override (this affects ANY in-flight jobs on this system) ***\n";
-            $fake_path = write_fake_sbatch( $test_bin_dir, $test_state_dir, $fake_sbatch );
+            $fake_path = write_fake_sbatch( $test_bin_dir, $test_state_dir, $fake_sbatch, $expected_user );
             restart_submitctl_with_path( $gridctl_dir, $test_bin_dir, $expected_user );
         }
 
