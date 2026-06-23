@@ -131,10 +131,20 @@ argv-parsing + `utility.php` convention.
 - 2026-06-23: `--check` validated live on uslimstest; found `elog.txt` (0644,
   owner-writable by `us3` but not by `apache`) vs `elog2.txt` (0666, writable by
   both) — an inconsistency the original dir-only/`is_writable()` check would have
-  missed entirely.
+  missed entirely. Initially misread as a real gap because the default
+  `--web-user apache` was wrong for this deployment (httpd workers here actually
+  run as `us3`, per `ps -ef`) — fixed by auto-detecting the real non-root
+  httpd/apache2/nginx/php-fpm process owner instead of hardcoding `apache`.
 - 2026-06-23: `--run --scenario 2dsa` validated live on uslimstest end-to-end
   through real `sbatch` submission (job 280) and `SUBMITTED` status, with all
-  logs correctly interleaved.
+  logs correctly interleaved. A later `--run` attempt failed with `mkdir`/`cp`
+  status 127 errors; root-caused to `/bin/mkdir`/`/bin/cp` having been
+  overwritten by an accidental terminal paste (confirmed unrelated to this
+  harness or any gridctl/common code) — resolved via `yum reinstall coreutils`.
+- Reproduced the same `mkdir`/`cp` failure independently via the actual browser
+  submission UI (no harness involved), which is what confirmed it was an OS-level
+  binary corruption issue rather than anything in this tool or in
+  `submit_local.php`.
 - Not yet validated live: `--fake-sbatch fail-always`/`fail-once`, `--cleanup`,
   non-2dsa scenarios (`pcsa`, `pcsa-onechannel`, `mc-cluster`, `cg`).
 
