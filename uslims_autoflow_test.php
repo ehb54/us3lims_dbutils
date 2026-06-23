@@ -64,7 +64,15 @@ Common options
 --expect-status       status  : if given, harness exits 0 only if the request
                                  ends at this status instead of the default
                                  FINISHED (e.g. --expect-status FAILED for a
-                                 deliberately-faulted run)
+                                 deliberately-faulted run, or WAIT for a
+                                 scenario that includes an interactive stage
+                                 like FITMEN)
+--cleanup                     : opt-in. After the watch ends (FINISHED, FAILED,
+                                 WAIT, or timeout), delete the autoflow/
+                                 analysisprofile/autoflowAnalysis rows this
+                                 --run created. Without --cleanup, the
+                                 equivalent DELETE statements are printed
+                                 instead so cleanup is still a copy-paste away.
 
 --watch options
 
@@ -104,6 +112,7 @@ $expect_status    = "FINISHED";
 $reqid            = false;
 $fake_sbatch      = "succeed";
 $confirm_restart  = false;
+$cleanup          = false;
 
 $scenario_scripts = [
     "2dsa"             => "makeafrequest.php",
@@ -216,6 +225,11 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--yes-i-know-this-restarts-submitctl": {
             array_shift( $u_argv );
             $confirm_restart = true;
+            break;
+        }
+        case "--cleanup": {
+            array_shift( $u_argv );
+            $cleanup = true;
             break;
         }
         default: {
@@ -500,6 +514,45 @@ function fetch_autoflow_row( $h, $db, $reqid ) {
     return mysqli_fetch_assoc( $res );
 }
 
+# Removes the autoflow/analysisprofile/autoflowAnalysis rows created by a
+# --run invocation, regardless of how the watch ended (FINISHED/FAILED/WAIT/
+# timeout) - they're synthetic test data either way. Opt-in only: a WAIT row
+# in particular can be a legitimate request a human still wants to finish by
+# hand, so this is never run unless --cleanup was explicitly given. Without
+# --cleanup, prints the equivalent DELETE statements so cleanup is still a
+# one-line copy-paste away.
+function cleanup_request( $db, $reqid, $do_cleanup ) {
+    $h = db_connect_lims();
+    $res = mysqli_query( $h, "SELECT autoflowID, aprofileGUID FROM ${db}.autoflowAnalysis WHERE requestID=$reqid" );
+    $row = $res ? mysqli_fetch_assoc( $res ) : false;
+    if ( !$row ) {
+        echo "[cleanup] requestID $reqid not found (already removed?) - nothing to do\n";
+        return;
+    }
+
+    $aprofileguid_esc = mysqli_real_escape_string( $h, $row[ "aprofileGUID" ] );
+    $autoflowid        = (int) $row[ "autoflowID" ];
+    $deletes = [
+        "DELETE FROM ${db}.autoflowAnalysis WHERE requestID=$reqid",
+        "DELETE FROM ${db}.analysisprofile WHERE aprofileGUID='$aprofileguid_esc'",
+        "DELETE FROM ${db}.autoflow WHERE ID=$autoflowid",
+    ];
+
+    if ( $do_cleanup ) {
+        echo "[cleanup] --cleanup given: removing test data for requestID=$reqid (autoflow ID=$autoflowid, analysisprofile aprofileGUID={$row['aprofileGUID']})\n";
+        foreach ( $deletes as $sql ) {
+            if ( !mysqli_query( $h, $sql ) ) {
+                echo "[cleanup] ERROR running '$sql': " . mysqli_error( $h ) . "\n";
+            }
+        }
+    } else {
+        echo "[cleanup] test data left in place (pass --cleanup to remove it). To clean up manually:\n";
+        foreach ( $deletes as $sql ) {
+            echo "  $sql;\n";
+        }
+    }
+}
+
 function watch_request( $db, $reqid, $timeout, $poll_interval, $log_files ) {
     headerline( "watching autoflowAnalysis requestID=$reqid (db=$db)" );
 
@@ -523,6 +576,15 @@ function watch_request( $db, $reqid, $timeout, $poll_interval, $log_files ) {
         tail_state_poll( $tail_state );
 
         if ( in_array( $row[ "status" ], [ "FINISHED", "FAILED" ] ) ) {
+            $final = $row;
+            break;
+        }
+        if ( strtoupper( $row[ "status" ] ) === "WAIT" ) {
+            $statusJson = json_decode( $row[ "statusJson" ] );
+            $waiting_on = $statusJson && isset( $statusJson->submitted ) ? $statusJson->submitted : "(unknown stage)";
+            echo timestamp() . "[watch] requestID $reqid is WAITing on stage '$waiting_on' - this is expected for interactive\n";
+            echo timestamp() . "[watch] stages (e.g. FITMEN requires a human to run interactive fitting in the desktop client\n";
+            echo timestamp() . "[watch] and post results back). This is NOT a failure or a hang; stopping the watch here.\n";
             $final = $row;
             break;
         }
@@ -647,6 +709,7 @@ switch ( $mode ) {
 
         if ( !$final ) {
             echo "RESULT: requestID $found_reqid disappeared mid-watch - FAIL\n";
+            cleanup_request( $db, $found_reqid, $cleanup );
             exit( 1 );
         }
 
@@ -654,13 +717,13 @@ switch ( $mode ) {
         echo "requestID={$final['requestID']} status={$final['status']} statusMsg={$final['statusMsg']}\n";
         echo "statusJson={$final['statusJson']}\n";
 
-        if ( $final[ "status" ] === $expect_status ) {
-            echo "RESULT: PASS (status matches expected '$expect_status')\n";
-            exit( 0 );
-        } else {
-            echo "RESULT: FAIL (status '{$final['status']}' != expected '$expect_status')\n";
-            exit( 1 );
-        }
+        $passed = strcasecmp( $final[ "status" ], $expect_status ) === 0;
+        echo $passed
+            ? "RESULT: PASS (status matches expected '$expect_status')\n"
+            : "RESULT: FAIL (status '{$final['status']}' != expected '$expect_status')\n";
+
+        cleanup_request( $db, $found_reqid, $cleanup );
+        exit( $passed ? 0 : 1 );
     }
 
     case "watch": {
@@ -677,6 +740,6 @@ switch ( $mode ) {
         }
         headerline( "final result" );
         echo "requestID={$final['requestID']} status={$final['status']} statusMsg={$final['statusMsg']}\n";
-        exit( in_array( $final[ "status" ], [ "FINISHED" ] ) ? 0 : 1 );
+        exit( strcasecmp( $final[ "status" ], $expect_status ) === 0 ? 0 : 1 );
     }
 }
