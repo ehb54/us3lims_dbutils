@@ -47,7 +47,10 @@ Common options
                                  owned as (default: us3)
 --web-user            name    : username the web server runs as, which also
                                  writes some of these log files via the
-                                 browser-triggered submission flow (default: apache)
+                                 browser-triggered submission flow. Default:
+                                 auto-detected from the running httpd/apache2/
+                                 nginx/php-fpm worker process owner (falls back
+                                 to "apache" if that can't be determined)
 --timeout             secs    : max seconds to watch before giving up (default: 600)
 --poll-interval       secs    : seconds between DB/log polls (default: 5)
 
@@ -113,6 +116,7 @@ $reqid            = false;
 $fake_sbatch      = "succeed";
 $confirm_restart  = false;
 $cleanup          = false;
+$web_user_explicit = false;
 
 $scenario_scripts = [
     "2dsa"             => "makeafrequest.php",
@@ -166,6 +170,7 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             array_shift( $u_argv );
             if ( !count( $u_argv ) ) { error_exit( "ERROR: option '$arg' requires an argument\n$notes" ); }
             $web_user = array_shift( $u_argv );
+            $web_user_explicit = true;
             break;
         }
         case "--timeout": {
@@ -289,6 +294,20 @@ if ( !$gridctl_dir ) {
 
 if ( $mode == "run" && !is_dir( "$gridctl_dir/autoflow_util" ) ) {
     error_exit( "ERROR: '$gridctl_dir/autoflow_util' not found - pass --gridctl-dir if us3lims_gridctl isn't deployed at ~us3/lims/bin" );
+}
+
+# Web server worker processes aren't always actually owned by a user named
+# "apache" (e.g. some deployments run httpd workers as the lims user itself) -
+# detect the real non-root owner of the running web server process and use
+# that as the default unless --web-user was explicitly given.
+if ( !$web_user_explicit ) {
+    $detected = trim( run_cmd(
+        "ps -eo user,comm 2>/dev/null | awk '\$2 ~ /^(httpd|apache2|nginx|php-fpm)\$/ && \$1 != \"root\" {print \$1; exit}'",
+        false
+    ) );
+    if ( $detected !== "" ) {
+        $web_user = $detected;
+    }
 }
 
 $test_bin_dir   = __DIR__ . "/test_bin";
