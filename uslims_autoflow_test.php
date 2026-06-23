@@ -496,7 +496,7 @@ function run_check( $db, $expected_user, $web_user, $lock_dir, $home, $submit_lo
     foreach ( $paths as $label => $spec ) {
         foreach ( $spec[ "candidates" ] as $path ) {
             $kind = is_dir( $path ) ? "dir " : "file";
-            foreach ( $spec[ "users" ] as $for_user ) {
+            foreach ( array_unique( $spec[ "users" ] ) as $for_user ) {
                 $info = path_owner_writable( $path, $for_user );
                 if ( !$info[ "exists" ] ) {
                     echo "  [$label] $kind $path : DOES NOT EXIST\n";
