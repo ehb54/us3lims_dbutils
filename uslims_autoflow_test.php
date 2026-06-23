@@ -39,9 +39,10 @@ Common options
 
 --help                        : print this information and exit
 --db                  name    : (required) lims database name, e.g. uslims3_Demo
---gridctl-dir         path    : (required for --run) path to a checked-out
-                                 us3lims_gridctl repo containing autoflow_util/,
-                                 submitctl.php, services.php
+--gridctl-dir         path    : path to the deployed us3lims_gridctl tree
+                                 containing autoflow_util/, submitctl.php,
+                                 services.php (default: ~us3/lims/bin, where
+                                 it's normally deployed)
 --expected-user       name    : username daemons/files are expected to run/be
                                  owned as (default: us3)
 --web-user            name    : username the web server runs as, which also
@@ -244,10 +245,6 @@ if ( !$db ) {
     error_exit( "ERROR: --db must be specified\n---\n$notes" );
 }
 
-if ( $mode == "run" && !$gridctl_dir ) {
-    error_exit( "ERROR: --run requires --gridctl-dir\n---\n$notes" );
-}
-
 if ( $mode == "run" && ( !$invid || !$rawid ) ) {
     error_exit( "ERROR: --run requires --invid and --rawid\n---\n$notes" );
 }
@@ -271,6 +268,14 @@ if ( !is_dir( $us3bin ) ) {
     error_exit( "ERROR: could not resolve ~us3/lims/bin (got '$us3bin') - is this tool running on a us3lims host?" );
 }
 include "$us3bin/listen-config.php";
+
+if ( !$gridctl_dir ) {
+    $gridctl_dir = $us3bin;
+}
+
+if ( $mode == "run" && !is_dir( "$gridctl_dir/autoflow_util" ) ) {
+    error_exit( "ERROR: '$gridctl_dir/autoflow_util' not found - pass --gridctl-dir if us3lims_gridctl isn't deployed at ~us3/lims/bin" );
+}
 
 $test_bin_dir   = __DIR__ . "/test_bin";
 $test_state_dir = "$test_bin_dir/state";
