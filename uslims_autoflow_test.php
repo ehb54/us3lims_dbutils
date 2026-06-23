@@ -93,7 +93,11 @@ Fault injection (opt-in, environment-only, never edits gridctl/common code)
                                  override, affecting any other in-flight jobs
                                  on a shared system. submitctl.php is restarted
                                  again with the original PATH once the watch
-                                 ends.
+                                 ends. Both restarts run as --expected-user
+                                 (via `su`), not whoever invokes this script, so
+                                 submitctl.php's owner is unchanged afterward -
+                                 this requires running this script as root (or
+                                 as --expected-user itself).
 
 __EOD;
 
@@ -664,9 +668,16 @@ function write_fake_sbatch( $test_bin_dir, $test_state_dir, $mode ) {
     return $path;
 }
 
-function restart_submitctl_with_path( $gridctl_dir, $prepend_path ) {
+## services.php's start() does no privilege-dropping itself (gridctl
+## services.php:87-100 just exec()s "nohup php $v &") - it inherits whatever
+## user calls "php services.php restart". Run it via su as $expected_user
+## explicitly so the restarted submitctl.php always ends up owned by the same
+## user it had before, regardless of which user is running this harness.
+function restart_submitctl_with_path( $gridctl_dir, $prepend_path, $expected_user ) {
     $path_env = $prepend_path ? "PATH=$prepend_path:\$PATH " : "";
-    echo run_cmd( "cd " . escapeshellarg( $gridctl_dir ) . " && $path_env php services.php restart 2>&1", false );
+    $inner = "cd " . escapeshellarg( $gridctl_dir ) . " && {$path_env}php services.php restart 2>&1";
+    $cmd = "su -s /bin/bash -c " . escapeshellarg( $inner ) . " " . escapeshellarg( $expected_user );
+    echo run_cmd( $cmd, false );
 }
 
 ####################################################################
@@ -692,7 +703,7 @@ switch ( $mode ) {
         if ( $fake_sbatch != "succeed" ) {
             echo "*** --fake-sbatch=$fake_sbatch enabled: restarting submitctl.php with a PATH override (this affects ANY in-flight jobs on this system) ***\n";
             $fake_path = write_fake_sbatch( $test_bin_dir, $test_state_dir, $fake_sbatch );
-            restart_submitctl_with_path( $gridctl_dir, $test_bin_dir );
+            restart_submitctl_with_path( $gridctl_dir, $test_bin_dir, $expected_user );
         }
 
         echo "Creating request via " . basename( $script ) . " $db $invid $rawid ...\n";
@@ -723,7 +734,7 @@ switch ( $mode ) {
 
         if ( $fake_sbatch != "succeed" ) {
             echo "*** restoring submitctl.php to its normal PATH ***\n";
-            restart_submitctl_with_path( $gridctl_dir, false );
+            restart_submitctl_with_path( $gridctl_dir, false, $expected_user );
         }
 
         if ( !$final ) {
