@@ -76,6 +76,13 @@ $usage_consolidation_add =
     ];
 
 
+## uslims_git_info.php: additional regexps of directory names to ignore when discovering git repos
+## (e.g. unexpected vendored repos like PHPMailer found on some client systems)
+
+$ignore_repos_add =
+    [
+    ];
+
 ## git branches
 
 $repo_branches =
