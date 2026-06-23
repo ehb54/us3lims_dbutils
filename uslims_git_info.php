@@ -24,6 +24,7 @@ $reposearchpaths =
 
 ## regexp list of directory names to ignore
 $ignore_repos = [ '/undrop-for-innodb/' ];
+## additional site-specific ignores can be added via $ignore_repos_add in db_config.php
 
 # user defines continued
 $known_repos =
@@ -276,6 +277,13 @@ and edit with appropriate values
 
 file_perms_must_be( $use_config_file );
 require $use_config_file;
+
+if ( isset( $ignore_repos_add ) ) {
+    if ( !is_array( $ignore_repos_add ) ) {
+        error_exit( "\$ignore_repos_add is improperly defined, check $use_config_file" );
+    }
+    $ignore_repos = array_merge( $ignore_repos, $ignore_repos_add );
+}
 
 if ( $update_pull_build && !$update_pull ) {
     error_exit( "\nOption --update_pull_build requires --update_pull to be specified.\n\n$notes" );
