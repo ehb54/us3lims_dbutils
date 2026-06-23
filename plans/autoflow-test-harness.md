@@ -97,8 +97,11 @@ argv-parsing + `utility.php` convention.
   owner/group/permission bits + `id -nG` group membership — **not** PHP's
   `is_writable()`, which silently lies when the harness itself runs as root;
   `elog.txt`/`elog2.txt` are checked against both `--expected-user` and
-  `--web-user` (default `apache`) since browser-triggered submissions can write
-  those directly; and a stale-`autoflowAnalysis`-rows query.
+  `--web-user` (default: auto-detected from the running httpd/apache2/nginx/
+  php-fpm worker's actual owner, falling back to `apache` — some deployments,
+  e.g. uslimstest, run web workers as `us3` rather than a literal `apache`
+  account) since browser-triggered submissions can write those directly; and a
+  stale-`autoflowAnalysis`-rows query.
 - `--run --invid <id> --rawid <id> --scenario <name>`: drives a fresh request via
   one of the `makeafrequest*.php` variants, then watches/tails it, interleaving
   every log file in the inventory above. `--gridctl-dir` defaults to
@@ -124,7 +127,12 @@ argv-parsing + `utility.php` convention.
   restarts `submitctl.php` via the existing `services.php restart` with that dir
   prepended to `PATH`, runs the scenario, then restores the original `PATH`
   afterward. `test_bin/sbatch` and `test_bin/state/` are gitignored (regenerated each
-  run); `test_bin/` itself is tracked so the directory exists.
+  run); `test_bin/` itself is tracked so the directory exists. Both restarts run
+  as `--expected-user` via `su` (gridctl's `services.php:start()` does no
+  privilege-dropping itself — it inherits whoever calls `php services.php
+  restart`), so `submitctl.php` ends up owned by the same user it started as
+  regardless of which user runs this script; requires running as root or as
+  `--expected-user` itself.
 
 ## Status
 
@@ -154,8 +162,13 @@ argv-parsing + `utility.php` convention.
   `autoflow`/`analysisprofile`/`autoflowAnalysis` rows it created. Full happy path
   (`--check`, multi-stage `--run`, `WAIT`-awareness, `--cleanup`) confirmed working
   together.
-- Not yet validated live: `--fake-sbatch fail-always`/`fail-once`, non-2dsa
-  scenarios (`pcsa`, `pcsa-onechannel`, `mc-cluster`, `cg`).
+- 2026-06-23: found (before any live `--fake-sbatch` testing) that the
+  `submitctl.php` restart it performs would inherit whatever user runs this
+  script rather than preserving the daemon's real owner — fixed by routing both
+  restarts through `su -s /bin/bash -c ... $expected_user` instead of running
+  `services.php restart` directly from the harness's own process.
+- Not yet validated live: `--fake-sbatch fail-always`/`fail-once` (about to be
+  tested), non-2dsa scenarios (`pcsa`, `pcsa-onechannel`, `mc-cluster`, `cg`).
 
 ## Verification
 - Run harness against a real GMP host for a normal `makeafrequest.php` 2DSA-chain
