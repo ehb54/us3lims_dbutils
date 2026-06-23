@@ -145,8 +145,17 @@ argv-parsing + `utility.php` convention.
   submission UI (no harness involved), which is what confirmed it was an OS-level
   binary corruption issue rather than anything in this tool or in
   `submit_local.php`.
-- Not yet validated live: `--fake-sbatch fail-always`/`fail-once`, `--cleanup`,
-  non-2dsa scenarios (`pcsa`, `pcsa-onechannel`, `mc-cluster`, `cg`).
+- 2026-06-23: after the `coreutils` reinstall, `--run --scenario 2dsa --expect-status
+  WAIT --cleanup` validated fully live end-to-end: `2DSA` and `2DSA_FM` both ran for
+  real on the grid (`COMPLETE`, with real `maxrss`/runtime stats) and `submitctl.php`
+  auto-advanced through both stages while the harness watched/tailed every log; it
+  then correctly stopped at `WAIT` on `FITMEN` (reported as expected, not a hang),
+  `RESULT: PASS` against `--expect-status WAIT`, and `--cleanup` removed the
+  `autoflow`/`analysisprofile`/`autoflowAnalysis` rows it created. Full happy path
+  (`--check`, multi-stage `--run`, `WAIT`-awareness, `--cleanup`) confirmed working
+  together.
+- Not yet validated live: `--fake-sbatch fail-always`/`fail-once`, non-2dsa
+  scenarios (`pcsa`, `pcsa-onechannel`, `mc-cluster`, `cg`).
 
 ## Verification
 - Run harness against a real GMP host for a normal `makeafrequest.php` 2DSA-chain
