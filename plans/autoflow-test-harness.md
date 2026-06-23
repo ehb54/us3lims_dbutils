@@ -167,8 +167,16 @@ argv-parsing + `utility.php` convention.
   script rather than preserving the daemon's real owner — fixed by routing both
   restarts through `su -s /bin/bash -c ... $expected_user` instead of running
   `services.php restart` directly from the harness's own process.
-- Not yet validated live: `--fake-sbatch fail-always`/`fail-once` (about to be
-  tested), non-2dsa scenarios (`pcsa`, `pcsa-onechannel`, `mc-cluster`, `cg`).
+- 2026-06-23: first live `--fake-sbatch fail-once` attempt failed correctly-but-
+  for-the-wrong-reason: the fake `sbatch`'s counter-file write hit "Permission
+  denied" because `test_bin/state/` was created by the (often root) user running
+  this harness, while the script itself now correctly runs as `--expected-user`
+  after the `su`-restart fix above — the privilege fix surfaced a pre-existing
+  ownership mismatch that used to be masked. Fixed by `chown`ing `test_bin/` and
+  `test_bin/state/` to `--expected-user` whenever `write_fake_sbatch()` runs.
+- Not yet validated live: `--fake-sbatch fail-always`/`fail-once` (retry pending
+  after the chown fix), non-2dsa scenarios (`pcsa`, `pcsa-onechannel`,
+  `mc-cluster`, `cg`).
 
 ## Verification
 - Run harness against a real GMP host for a normal `makeafrequest.php` 2DSA-chain
