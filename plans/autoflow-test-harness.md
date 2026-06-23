@@ -91,14 +91,34 @@ fakes local `sbatch`.
 Lives at the repo root, following the `uslims_autoflow.php`/`uslims_jobs.php`
 argv-parsing + `utility.php` convention.
 
-- `--check` (default, read-only): `services.php status`, lock-file PID/owner checks
-  against `--expected-user` (default `us3`, configurable), writability/ownership of
-  the shared log/lock paths, and a stale-`autoflowAnalysis`-rows query.
-- `--run --gridctl-dir <path> --invid <id> --rawid <id> --scenario <name>`: drives a
-  fresh request via one of the `makeafrequest*.php` variants, then watches/tails it
-  to `FINISHED`/`FAILED`/timeout, interleaving every log file in the inventory above.
-  Exits 0 if the final status matches `--expect-status` (default `FINISHED`).
+- `--check` (default, read-only): `services.php status`; lock-file PID/owner checks
+  against `--expected-user` (default `us3`); writability of the shared log/lock
+  *paths and files* (not just directories) computed from each file's actual
+  owner/group/permission bits + `id -nG` group membership — **not** PHP's
+  `is_writable()`, which silently lies when the harness itself runs as root;
+  `elog.txt`/`elog2.txt` are checked against both `--expected-user` and
+  `--web-user` (default `apache`) since browser-triggered submissions can write
+  those directly; and a stale-`autoflowAnalysis`-rows query.
+- `--run --invid <id> --rawid <id> --scenario <name>`: drives a fresh request via
+  one of the `makeafrequest*.php` variants, then watches/tails it, interleaving
+  every log file in the inventory above. `--gridctl-dir` defaults to
+  `~us3/lims/bin` (where the daemon scripts and `autoflow_util/` are normally
+  deployed) and only needs overriding for non-standard layouts.
 - `--watch --reqid N`: same watch/tail behavior for an already-existing request.
+- Both `--run` and `--watch` stop on `FINISHED`, `FAILED`, **or `WAIT`** (status
+  comparisons are case-insensitive, since the column mixes daemon-set uppercase
+  values like `READY`/`FINISHED` with lowercase job-state values like `wait`).
+  `WAIT` is reported as an expected stop, not a hang/timeout — stages like
+  `FITMEN` (`interactive="1"` in the analysis profile XML) genuinely require a
+  human to act in the desktop client, so a `2dsa`-scenario run will always end at
+  `WAIT` there. `--expect-status` (default `FINISHED`) accepts `WAIT`/`FAILED`
+  as valid pass conditions for scenarios that are expected to land there.
+- `--cleanup` (opt-in, `--run` only): after the watch ends regardless of outcome,
+  deletes the `autoflow`/`analysisprofile`/`autoflowAnalysis` rows that `--run`
+  itself created. Never applies to `--watch` (which targets a row it didn't
+  create) and never fires automatically on `WAIT`, since a waiting request can be
+  a real one someone still wants to finish by hand. Without `--cleanup`, prints
+  the equivalent `DELETE` statements instead.
 - `--fake-sbatch fail-always|fail-once` (opt-in, gated behind
   `--yes-i-know-this-restarts-submitctl`): writes a fake `sbatch` into `test_bin/`,
   restarts `submitctl.php` via the existing `services.php restart` with that dir
@@ -106,10 +126,23 @@ argv-parsing + `utility.php` convention.
   afterward. `test_bin/sbatch` and `test_bin/state/` are gitignored (regenerated each
   run); `test_bin/` itself is tracked so the directory exists.
 
+## Status
+
+- 2026-06-23: `--check` validated live on uslimstest; found `elog.txt` (0644,
+  owner-writable by `us3` but not by `apache`) vs `elog2.txt` (0666, writable by
+  both) — an inconsistency the original dir-only/`is_writable()` check would have
+  missed entirely.
+- 2026-06-23: `--run --scenario 2dsa` validated live on uslimstest end-to-end
+  through real `sbatch` submission (job 280) and `SUBMITTED` status, with all
+  logs correctly interleaved.
+- Not yet validated live: `--fake-sbatch fail-always`/`fail-once`, `--cleanup`,
+  non-2dsa scenarios (`pcsa`, `pcsa-onechannel`, `mc-cluster`, `cg`).
+
 ## Verification
 - Run harness against a real GMP host for a normal `makeafrequest.php` 2DSA-chain
-  request end-to-end, confirm it traces every status transition through to
-  `FINISHED` and exits 0.
+  request end-to-end, confirm it traces every status transition through to `WAIT`
+  on `FITMEN` (the expected stopping point for this scenario) and exits 0 with
+  `--expect-status WAIT`.
 - Run with `--fake-sbatch fail-always`, confirm it traces through to `FAILED` with
   the expected `ERROR:`-derived `statusMsg`, exits non-zero, and that `scancel`
   logic in `submitctl.php` is not erroneously triggered (no real job was ever
@@ -117,3 +150,6 @@ argv-parsing + `utility.php` convention.
 - Run with `--fake-sbatch fail-once`, confirm the retry/backoff path in
   `submit_local.php::attemptSubmit()` is exercised and the job still ultimately
   succeeds.
+- Run with `--cleanup`, confirm the `autoflow`/`analysisprofile`/`autoflowAnalysis`
+  rows are actually removed; run without it, confirm the printed `DELETE`
+  statements are correct and runnable as-is.
