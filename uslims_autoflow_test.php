@@ -44,6 +44,9 @@ Common options
                                  submitctl.php, services.php
 --expected-user       name    : username daemons/files are expected to run/be
                                  owned as (default: us3)
+--web-user            name    : username the web server runs as, which also
+                                 writes some of these log files via the
+                                 browser-triggered submission flow (default: apache)
 --timeout             secs    : max seconds to watch before giving up (default: 600)
 --poll-interval       secs    : seconds between DB/log polls (default: 5)
 
@@ -90,6 +93,7 @@ $mode             = "check";
 $db               = false;
 $gridctl_dir      = false;
 $expected_user    = "us3";
+$web_user         = "apache";
 $timeout          = 600;
 $poll_interval    = 5;
 $invid            = false;
@@ -146,6 +150,12 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             array_shift( $u_argv );
             if ( !count( $u_argv ) ) { error_exit( "ERROR: option '$arg' requires an argument\n$notes" ); }
             $expected_user = array_shift( $u_argv );
+            break;
+        }
+        case "--web-user": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) { error_exit( "ERROR: option '$arg' requires an argument\n$notes" ); }
+            $web_user = array_shift( $u_argv );
             break;
         }
         case "--timeout": {
@@ -303,19 +313,59 @@ function process_owner( $pid ) {
     return $owner ?: false;
 }
 
+function user_groups( $user ) {
+    static $cache = [];
+    if ( array_key_exists( $user, $cache ) ) {
+        return $cache[ $user ];
+    }
+    $groups = explode( " ", trim( run_cmd( "id -nG " . escapeshellarg( $user ) . " 2>/dev/null || true", false ) ) );
+    $cache[ $user ] = array_filter( $groups, function( $g ) { return $g !== ""; } );
+    return $cache[ $user ];
+}
+
+# Determine whether $expected_user can write $path based on the file's own
+# owner/group/permission bits - NOT PHP's is_writable(), which reflects the
+# privileges of whatever user is running *this* check (often root) and would
+# silently report "writable" even when the real daemon user could not write.
 function path_owner_writable( $path, $expected_user ) {
     if ( !file_exists( $path ) ) {
         return [ "exists" => false ];
     }
-    $stat   = stat( $path );
-    $ownerinfo = posix_getpwuid( $stat[ 'uid' ] );
-    $owner  = $ownerinfo ? $ownerinfo[ 'name' ] : (string) $stat[ 'uid' ];
+    $stat       = stat( $path );
+    $ownerinfo  = posix_getpwuid( $stat[ 'uid' ] );
+    $groupinfo  = posix_getgrgid( $stat[ 'gid' ] );
+    $owner      = $ownerinfo ? $ownerinfo[ 'name' ] : (string) $stat[ 'uid' ];
+    $group      = $groupinfo ? $groupinfo[ 'name' ] : (string) $stat[ 'gid' ];
+    $perm_octal = fileperms( $path ) & 0777;
+
+    $owner_w_bit = (bool) ( $perm_octal & 0200 );
+    $group_w_bit = (bool) ( $perm_octal & 0020 );
+    $other_w_bit = (bool) ( $perm_octal & 0002 );
+
+    $owner_matches = $owner === $expected_user;
+    $in_group      = in_array( $group, user_groups( $expected_user ), true );
+
+    $effective_writable =
+        ( $owner_matches && $owner_w_bit )
+        || ( $in_group && $group_w_bit )
+        || $other_w_bit;
+
+    $reason = $other_w_bit
+        ? "other-writable"
+        : ( ( $in_group && $group_w_bit )
+            ? "group-writable, $expected_user in group $group"
+            : ( ( $owner_matches && $owner_w_bit )
+                ? "owner-writable"
+                : "NOT writable by $expected_user (owner=$owner group=$group, $expected_user " . ( $in_group ? "is" : "is NOT" ) . " in group $group)" ) );
+
     return [
-        "exists"        => true,
-        "owner"         => $owner,
-        "owner_matches" => $owner === $expected_user,
-        "writable"      => is_writable( $path ),
-        "perms"         => substr( sprintf( '%o', fileperms( $path ) ), -4 ),
+        "exists"              => true,
+        "owner"               => $owner,
+        "group"               => $group,
+        "owner_matches"       => $owner_matches,
+        "effective_writable"  => $effective_writable,
+        "reason"              => $reason,
+        "perms"               => sprintf( '%04o', $perm_octal ),
     ];
 }
 
@@ -357,7 +407,7 @@ function tail_state_poll( &$state ) {
 # --check : read-only validation
 ####################################################################
 
-function run_check( $db, $expected_user, $lock_dir, $home, $submit_log, $udp_log, $dump_dir, $elog_file, $elog2_file, $us3bin ) {
+function run_check( $db, $expected_user, $web_user, $lock_dir, $home, $submit_log, $udp_log, $dump_dir, $elog_file, $elog2_file, $us3bin ) {
     headerline( "autoflow pipeline health check" );
 
     $services_php = "$us3bin/services.php";
@@ -390,24 +440,35 @@ function run_check( $db, $expected_user, $lock_dir, $home, $submit_log, $udp_log
              " expected=$expected_user " . ( $ok ? "OK" : "** MISMATCH/PROBLEM **" ) . "\n";
     }
 
-    echo "\nWritable paths (expected owner/writer: $expected_user):\n";
+    echo "\nWritable paths/files:\n";
+    echo "(checking both the containing directory - for new file creation - and the file itself if it already exists,\n";
+    echo " using the file's actual owner/group/permission bits, not is_writable(), so this is accurate even run as root.\n";
+    echo " Paths only ever written by the submitctl/submitone daemons are checked against --expected-user ($expected_user,\n";
+    echo " groups: " . implode( ",", user_groups( $expected_user ) ) . "). elog.txt/elog2.txt can ALSO be written directly\n";
+    echo " by browser-triggered submissions running as --web-user ($web_user, groups: " . implode( ",", user_groups( $web_user ) ) . "),\n";
+    echo " so those are checked against both.)\n";
     $paths = [
-        "lock_dir"        => $lock_dir,
-        "submit.log dir"  => dirname( $submit_log ),
-        "udp.log dir"     => dirname( $udp_log ),
-        "dump dir"        => $dump_dir,
-        "elog.txt dir"    => dirname( $elog_file ),
-        "elog2.txt dir"   => dirname( $elog2_file ),
+        "lock_dir"       => [ "users" => [ $expected_user ],             "candidates" => [ $lock_dir ] ],
+        "submit.log"     => [ "users" => [ $expected_user ],             "candidates" => [ dirname( $submit_log ), $submit_log ] ],
+        "udp.log"        => [ "users" => [ $expected_user ],             "candidates" => [ dirname( $udp_log ), $udp_log ] ],
+        "dump dir"       => [ "users" => [ $expected_user ],             "candidates" => [ $dump_dir ] ],
+        "elog.txt"       => [ "users" => [ $expected_user, $web_user ],  "candidates" => [ dirname( $elog_file ), $elog_file ] ],
+        "elog2.txt"      => [ "users" => [ $expected_user, $web_user ],  "candidates" => [ dirname( $elog2_file ), $elog2_file ] ],
     ];
-    foreach ( $paths as $label => $path ) {
-        $info = path_owner_writable( $path, $expected_user );
-        if ( !$info[ "exists" ] ) {
-            echo "  [$label] $path : DOES NOT EXIST\n";
-            continue;
+    foreach ( $paths as $label => $spec ) {
+        foreach ( $spec[ "candidates" ] as $path ) {
+            $kind = is_dir( $path ) ? "dir " : "file";
+            foreach ( $spec[ "users" ] as $for_user ) {
+                $info = path_owner_writable( $path, $for_user );
+                if ( !$info[ "exists" ] ) {
+                    echo "  [$label] $kind $path : DOES NOT EXIST\n";
+                    continue 2; # no point checking a 2nd user against a nonexistent path
+                }
+                echo "  [$label] $kind $path : owner={$info['owner']} group={$info['group']} perms={$info['perms']} writable-by-$for_user=" .
+                     ( $info[ "effective_writable" ] ? "yes" : "** NO **" ) .
+                     " (" . $info[ "reason" ] . ")\n";
+            }
         }
-        echo "  [$label] $path : owner={$info['owner']} perms={$info['perms']} writable=" .
-             ( $info[ "writable" ] ? "yes" : "NO" ) .
-             ( $info[ "owner_matches" ] ? "" : "  ** owner mismatch, expected $expected_user **" ) . "\n";
     }
 
     echo "\nStale autoflowAnalysis rows (status not FINISHED/FAILED, updateTime > 1 hour old):\n";
@@ -529,7 +590,7 @@ function restart_submitctl_with_path( $gridctl_dir, $prepend_path ) {
 switch ( $mode ) {
 
     case "check": {
-        run_check( $db, $expected_user, $lock_dir, $home, $submit_log, $udp_log, $dump_dir, $elog_file, $elog2_file, $us3bin );
+        run_check( $db, $expected_user, $web_user, $lock_dir, $home, $submit_log, $udp_log, $dump_dir, $elog_file, $elog2_file, $us3bin );
         exit;
     }
 
