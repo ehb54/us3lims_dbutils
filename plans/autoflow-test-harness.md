@@ -209,8 +209,16 @@ argv-parsing + `utility.php` convention.
   `analysisprofile` rows orphaned. Fixed by having `watch_request()` capture
   `autoflowID`/`aprofileGUID` from the last row it actually polled (kept even if
   the row later disappears) and passing those straight into `cleanup_request()`,
-  which now also deletes from `autoflowAnalysisHistory`. Not yet re-verified
-  live after this fix.
+  which now also deletes from `autoflowAnalysisHistory`.
+- 2026-06-24: fix re-verified live. Re-ran `--fake-sbatch fail-once` (still
+  PASS, no regression - job recognized immediately on attempt 2, no
+  duplicates) and `--fake-sbatch fail-always` again: all 4 attempts failed as
+  injected, row was archived into `autoflowAnalysisHistory` exactly as before,
+  but `--cleanup` now reports `removing test data for requestID=2480 (autoflow
+  ID=2482, analysisprofile aprofileGUID=...)` using the IDs captured during
+  the watch, instead of the earlier "not found" - `RESULT: PASS`, no orphaned
+  rows. Both fault-injection modes (`fail-once`, `fail-always`) and the
+  cleanup fix are now fully validated live.
 - Not yet validated live: non-2dsa scenarios (`pcsa`, `pcsa-onechannel`,
   `mc-cluster`, `cg`).
 
