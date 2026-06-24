@@ -116,6 +116,13 @@ argv-parsing + `utility.php` convention.
   human to act in the desktop client, so a `2dsa`-scenario run will always end at
   `WAIT` there. `--expect-status` (default `FINISHED`) accepts `WAIT`/`FAILED`
   as valid pass conditions for scenarios that are expected to land there.
+  On a successful finish, `submitctl.php` sets `status='FINISHED'` and archives
+  the row into `autoflowAnalysisHistory` (deleting it from `autoflowAnalysis`)
+  in the very same poll tick (submitctl.php:349-409) - there is no stable window
+  for a poller to observe `FINISHED` live. So when the row disappears from
+  `autoflowAnalysis`, `watch_request()` checks `autoflowAnalysisHistory` before
+  concluding the request failed/hung, and uses that archived row as the final
+  result if found.
 - `--cleanup` (opt-in, `--run` only): after the watch ends regardless of outcome,
   deletes the `autoflow`/`analysisprofile`/`autoflowAnalysis`/
   `autoflowAnalysisHistory` rows that `--run` itself created. Never applies to
@@ -219,8 +226,23 @@ argv-parsing + `utility.php` convention.
   the watch, instead of the earlier "not found" - `RESULT: PASS`, no orphaned
   rows. Both fault-injection modes (`fail-once`, `fail-always`) and the
   cleanup fix are now fully validated live.
-- Not yet validated live: non-2dsa scenarios (`pcsa`, `pcsa-onechannel`,
-  `mc-cluster`, `cg`).
+- 2026-06-24: `--scenario pcsa` and `--scenario pcsa-onechannel`
+  (`--expect-status FINISHED`) both ran PCSA for real on the cluster (jobs
+  295/296) and genuinely finished, but the harness reported `RESULT:
+  requestID ... disappeared mid-watch - FAIL` for both. Root-caused to
+  `submitctl.php` setting `status='FINISHED'` and archiving the row into
+  `autoflowAnalysisHistory` (deleting it from `autoflowAnalysis`) within the
+  same poll tick (submitctl.php:349-409) - unlike `FAILED` (written
+  asynchronously by `submitone.php`'s `fail_job()` well before submitctl's next
+  archiving pass), there's no window where `FINISHED` is observable live. This
+  hadn't surfaced before because `2dsa` always stops at `WAIT` (never
+  archived); `pcsa`/`pcsa-onechannel` are the first scenarios that actually
+  reach a real `FINISHED`. Fixed by having `watch_request()` check
+  `autoflowAnalysisHistory` for the row when it disappears from
+  `autoflowAnalysis`, before concluding FAIL - cleanup (already ID-capture
+  based, see above) is unaffected. Not yet re-verified live after this fix.
+- Not yet validated live: `mc-cluster`, `cg` scenarios; re-verification of the
+  `pcsa`/`pcsa-onechannel` FINISHED-detection fix above.
 
 ## Verification
 - Run harness against a real GMP host for a normal `makeafrequest.php` 2DSA-chain

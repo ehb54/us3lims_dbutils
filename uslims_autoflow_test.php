@@ -537,6 +537,22 @@ function fetch_autoflow_row( $h, $db, $reqid ) {
     return mysqli_fetch_assoc( $res );
 }
 
+# On a successful finish, submitctl.php sets autoflowAnalysis.status='FINISHED'
+# and archives the row into autoflowAnalysisHistory (deleting it from
+# autoflowAnalysis) in the very same poll tick (submitctl.php:349-409) - there is
+# no stable window where a poller can observe status=FINISHED in autoflowAnalysis
+# itself. (FAILED differs: submitone.php's fail_job() writes FAILED
+# asynchronously, well before submitctl.php's next poll cycle archives it, so
+# there IS a window there.) So when a row vanishes from autoflowAnalysis,
+# check autoflowAnalysisHistory before assuming it failed/hung.
+function fetch_autoflow_history_row( $h, $db, $reqid ) {
+    $res = mysqli_query( $h, "SELECT requestID, status, statusMsg, statusJson, updateTime, autoflowID, aprofileGUID FROM ${db}.autoflowAnalysisHistory WHERE requestID=$reqid" );
+    if ( !$res || !$res->num_rows ) {
+        return false;
+    }
+    return mysqli_fetch_assoc( $res );
+}
+
 # Removes the autoflow/analysisprofile/autoflowAnalysis(History) rows created
 # by a --run invocation, regardless of how the watch ended (FINISHED/FAILED/
 # WAIT/timeout) - they're synthetic test data either way. Opt-in only: a WAIT
@@ -599,7 +615,14 @@ function watch_request( $db, $reqid, $timeout, $poll_interval, $log_files ) {
     while ( true ) {
         $row = fetch_autoflow_row( $h, $db, $reqid );
         if ( !$row ) {
-            echo timestamp() . "[watch] requestID $reqid no longer found\n";
+            $history_row = fetch_autoflow_history_row( $h, $db, $reqid );
+            if ( $history_row ) {
+                echo timestamp() . "[watch] requestID $reqid no longer in autoflowAnalysis - found archived in autoflowAnalysisHistory with status={$history_row['status']} (this is the normal outcome of a successful finish, not a hang)\n";
+                $final = $history_row;
+                $last_known = $history_row;
+            } else {
+                echo timestamp() . "[watch] requestID $reqid no longer found (not in autoflowAnalysis or autoflowAnalysisHistory)\n";
+            }
             break;
         }
         $last_known = $row;
