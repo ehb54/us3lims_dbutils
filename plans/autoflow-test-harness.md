@@ -86,6 +86,40 @@ ssh) — but ssh-connected remote clusters are a near-future target, so the
 fault-injection design stays extensible to "fake ssh" later even though v1 only
 fakes local `sbatch`.
 
+## Known gap: remote-cluster result retrieval not implemented (`mc-cluster` scenario)
+
+`makeafrequest2DSA_MC_cluster.php` (`--scenario mc-cluster`) sets up a single-stage
+(`to_process:["2DSA_MC"]`) request tagged with a caller-supplied `cluster` name,
+specifically to exercise submitting to a *named* cluster rather than always
+`us3iab-node0` — including genuinely remote clusters (`anvil`, `expanse`,
+`lonestar6`, etc.).
+
+Investigated 2026-06-24 (prompted by a user recollection that remote-cluster
+result retrieval was never finished):
+- `us3lims_common/class/submit_local.php` **does** support remote submission over
+  `ssh`/`scp` for clusters with a `login` config (`submit_local.php:56-86`).
+- `us3lims_gridctl/jobmonitor/gridctl.php`'s `get_local_status()` **does** support
+  remote status polling via `ssh ... squeue -t all -j $gfacID`
+  (`gridctl.php:838-845`), so a remote job's RUNNING/COMPLETE state can be
+  detected.
+- `us3lims_gridctl/jobmonitor/cleanup_gfac.php` — the code that processes a
+  finished job's actual output and writes results back into `autoflowAnalysis`/
+  `HPCAnalysisResult` — has **no `ssh`/`scp` anywhere in it**. It only knows how
+  to read result files that are already sitting in the local work directory.
+
+Net effect: remote *submission* and remote *status polling* exist, but remote
+*result retrieval* (copying the output tarball back from the remote cluster
+before cleanup processes it) was never built. A real run against a genuinely
+remote `cluster` value would likely submit fine and even report COMPLETE via the
+ssh-based status check, then hang or fail at result processing with nothing to
+read locally.
+
+Decision: `--scenario mc-cluster` is **disabled** in the harness (hard
+`error_exit()` in the `--run` case, pointing back to this section) until that
+retrieval code is written in `us3lims_gridctl`/`us3lims_common`. This is a
+real-system gap, not a harness bug — re-enable the scenario once remote result
+retrieval exists.
+
 ## Implementation: `uslims_autoflow_test.php`
 
 Lives at the repo root, following the `uslims_autoflow.php`/`uslims_jobs.php`
@@ -256,8 +290,15 @@ argv-parsing + `utility.php` convention.
   clear message if it's missing rather than failing inside
   `makeafrequest2DSA-CG.php`. Not yet re-tested live with a real
   `--customgrid` value.
-- Not yet validated live: `mc-cluster` scenario; `cg` scenario with a real
-  `--customgrid` value.
+- 2026-06-24: investigated `mc-cluster` (remote-cluster submission) at the user's
+  request and confirmed a real-system gap - `jobmonitor/cleanup_gfac.php` has no
+  ssh/scp result-retrieval path for non-local clusters, even though remote
+  submission (`submit_local.php`) and remote status polling (`gridctl.php`'s
+  `get_local_status()`) both exist. See the new "Known gap: remote-cluster result
+  retrieval not implemented" section above. `--scenario mc-cluster` is now disabled
+  in the harness (hard `error_exit()`) until that retrieval code is written -
+  intentionally disabled, not "not yet validated."
+- Not yet validated live: `cg` scenario with a real `--customgrid` value.
 
 ## Verification
 - Run harness against a real GMP host for a normal `makeafrequest.php` 2DSA-chain

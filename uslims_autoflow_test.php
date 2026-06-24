@@ -62,7 +62,8 @@ Common options
                                  use: 2dsa (default, makeafrequest.php), pcsa
                                  (makeafrequestPCSA.php), pcsa-onechannel
                                  (makeafrequestPCSAonechannel.php), mc-cluster
-                                 (makeafrequest2DSA_MC_cluster.php), cg
+                                 (makeafrequest2DSA_MC_cluster.php - currently
+                                 DISABLED, see plans/autoflow-test-harness.md), cg
                                  (makeafrequest2DSA-CG.php, requires --customgrid)
 --customgrid          name    : required for --scenario cg. Must match an
                                  existing description in <db>.model - i.e. a
@@ -749,6 +750,12 @@ switch ( $mode ) {
     case "run": {
         if ( !is_dir( $gridctl_dir ) ) {
             error_exit( "ERROR: --gridctl-dir '$gridctl_dir' is not a directory" );
+        }
+        if ( $scenario === "mc-cluster" ) {
+            error_exit( "ERROR: --scenario mc-cluster is disabled - jobmonitor/cleanup_gfac.php has no" .
+                " ssh/scp result-retrieval path for non-local clusters, so a real remote-cluster run would" .
+                " submit fine but then hang/fail at result processing. See plans/autoflow-test-harness.md" .
+                " for details; re-enable this scenario once that retrieval code exists." );
         }
         $script = $gridctl_dir . "/autoflow_util/" . $scenario_scripts[ $scenario ];
         if ( !file_exists( $script ) ) {
