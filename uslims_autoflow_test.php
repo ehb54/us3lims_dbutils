@@ -530,39 +530,47 @@ function run_check( $db, $expected_user, $web_user, $lock_dir, $home, $submit_lo
 ####################################################################
 
 function fetch_autoflow_row( $h, $db, $reqid ) {
-    $res = mysqli_query( $h, "SELECT requestID, status, statusMsg, statusJson, updateTime FROM ${db}.autoflowAnalysis WHERE requestID=$reqid" );
+    $res = mysqli_query( $h, "SELECT requestID, status, statusMsg, statusJson, updateTime, autoflowID, aprofileGUID FROM ${db}.autoflowAnalysis WHERE requestID=$reqid" );
     if ( !$res || !$res->num_rows ) {
         return false;
     }
     return mysqli_fetch_assoc( $res );
 }
 
-# Removes the autoflow/analysisprofile/autoflowAnalysis rows created by a
-# --run invocation, regardless of how the watch ended (FINISHED/FAILED/WAIT/
-# timeout) - they're synthetic test data either way. Opt-in only: a WAIT row
-# in particular can be a legitimate request a human still wants to finish by
-# hand, so this is never run unless --cleanup was explicitly given. Without
+# Removes the autoflow/analysisprofile/autoflowAnalysis(History) rows created
+# by a --run invocation, regardless of how the watch ended (FINISHED/FAILED/
+# WAIT/timeout) - they're synthetic test data either way. Opt-in only: a WAIT
+# row in particular can be a legitimate request a human still wants to finish
+# by hand, so this is never run unless --cleanup was explicitly given. Without
 # --cleanup, prints the equivalent DELETE statements so cleanup is still a
 # one-line copy-paste away.
-function cleanup_request( $db, $reqid, $do_cleanup ) {
+#
+# $autoflowid/$aprofileguid must come from the last row watch_request() saw
+# while polling, not a fresh lookup here: submitctl.php archives FINISHED/
+# FAILED rows into autoflowAnalysisHistory and deletes them from
+# autoflowAnalysis on its very next poll tick (submitctl.php:380-409), so by
+# the time cleanup runs the row may already be gone from autoflowAnalysis -
+# re-querying it here would silently fail to find autoflowID/aprofileGUID and
+# leave the related autoflow/analysisprofile rows orphaned.
+function cleanup_request( $db, $reqid, $autoflowid, $aprofileguid, $do_cleanup ) {
     $h = db_connect_lims();
-    $res = mysqli_query( $h, "SELECT autoflowID, aprofileGUID FROM ${db}.autoflowAnalysis WHERE requestID=$reqid" );
-    $row = $res ? mysqli_fetch_assoc( $res ) : false;
-    if ( !$row ) {
-        echo "[cleanup] requestID $reqid not found (already removed?) - nothing to do\n";
+
+    if ( !$autoflowid && !$aprofileguid ) {
+        echo "[cleanup] no autoflowID/aprofileGUID known for requestID $reqid - nothing to do\n";
         return;
     }
 
-    $aprofileguid_esc = mysqli_real_escape_string( $h, $row[ "aprofileGUID" ] );
-    $autoflowid        = (int) $row[ "autoflowID" ];
+    $aprofileguid_esc = mysqli_real_escape_string( $h, $aprofileguid );
+    $autoflowid        = (int) $autoflowid;
     $deletes = [
         "DELETE FROM ${db}.autoflowAnalysis WHERE requestID=$reqid",
+        "DELETE FROM ${db}.autoflowAnalysisHistory WHERE requestID=$reqid",
         "DELETE FROM ${db}.analysisprofile WHERE aprofileGUID='$aprofileguid_esc'",
         "DELETE FROM ${db}.autoflow WHERE ID=$autoflowid",
     ];
 
     if ( $do_cleanup ) {
-        echo "[cleanup] --cleanup given: removing test data for requestID=$reqid (autoflow ID=$autoflowid, analysisprofile aprofileGUID={$row['aprofileGUID']})\n";
+        echo "[cleanup] --cleanup given: removing test data for requestID=$reqid (autoflow ID=$autoflowid, analysisprofile aprofileGUID=$aprofileguid)\n";
         foreach ( $deletes as $sql ) {
             if ( !mysqli_query( $h, $sql ) ) {
                 echo "[cleanup] ERROR running '$sql': " . mysqli_error( $h ) . "\n";
@@ -584,6 +592,9 @@ function watch_request( $db, $reqid, $timeout, $poll_interval, $log_files ) {
     $last_status_json = null;
     $start = time();
     $final = false;
+    $last_known = false; # last row seen while polling, kept even after the
+                          # row is archived/deleted by submitctl.php, so
+                          # cleanup_request() always has autoflowID/aprofileGUID
 
     while ( true ) {
         $row = fetch_autoflow_row( $h, $db, $reqid );
@@ -591,6 +602,7 @@ function watch_request( $db, $reqid, $timeout, $poll_interval, $log_files ) {
             echo timestamp() . "[watch] requestID $reqid no longer found\n";
             break;
         }
+        $last_known = $row;
         if ( $row[ "statusJson" ] !== $last_status_json ) {
             echo timestamp() . "[watch] status={$row['status']} statusMsg={$row['statusMsg']} statusJson={$row['statusJson']}\n";
             $last_status_json = $row[ "statusJson" ];
@@ -621,7 +633,7 @@ function watch_request( $db, $reqid, $timeout, $poll_interval, $log_files ) {
 
     # final drain in case anything landed between the last poll and exit
     tail_state_poll( $tail_state );
-    return $final;
+    return [ "final" => $final, "last_known" => $last_known ];
 }
 
 ####################################################################
@@ -737,16 +749,21 @@ switch ( $mode ) {
             "dump"       => "$dump_dir/$db-$found_reqid.txt",
         ];
 
-        $final = watch_request( $db, $found_reqid, $timeout, $poll_interval, $log_files );
+        $watched = watch_request( $db, $found_reqid, $timeout, $poll_interval, $log_files );
+        $final = $watched[ "final" ];
+        $last_known = $watched[ "last_known" ];
 
         if ( $fake_sbatch != "succeed" ) {
             echo "*** restoring submitctl.php to its normal PATH ***\n";
             restart_submitctl_with_path( $gridctl_dir, false, $expected_user );
         }
 
+        $autoflowid    = $last_known ? $last_known[ "autoflowID" ] : false;
+        $aprofileguid  = $last_known ? $last_known[ "aprofileGUID" ] : false;
+
         if ( !$final ) {
             echo "RESULT: requestID $found_reqid disappeared mid-watch - FAIL\n";
-            cleanup_request( $db, $found_reqid, $cleanup );
+            cleanup_request( $db, $found_reqid, $autoflowid, $aprofileguid, $cleanup );
             exit( 1 );
         }
 
@@ -759,7 +776,7 @@ switch ( $mode ) {
             ? "RESULT: PASS (status matches expected '$expect_status')\n"
             : "RESULT: FAIL (status '{$final['status']}' != expected '$expect_status')\n";
 
-        cleanup_request( $db, $found_reqid, $cleanup );
+        cleanup_request( $db, $found_reqid, $autoflowid, $aprofileguid, $cleanup );
         exit( $passed ? 0 : 1 );
     }
 
@@ -771,7 +788,8 @@ switch ( $mode ) {
             "elog2.txt"  => $elog2_file,
             "dump"       => "$dump_dir/$db-$reqid.txt",
         ];
-        $final = watch_request( $db, $reqid, $timeout, $poll_interval, $log_files );
+        $watched = watch_request( $db, $reqid, $timeout, $poll_interval, $log_files );
+        $final = $watched[ "final" ];
         if ( !$final ) {
             exit( 1 );
         }

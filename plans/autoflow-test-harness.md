@@ -117,11 +117,17 @@ argv-parsing + `utility.php` convention.
   `WAIT` there. `--expect-status` (default `FINISHED`) accepts `WAIT`/`FAILED`
   as valid pass conditions for scenarios that are expected to land there.
 - `--cleanup` (opt-in, `--run` only): after the watch ends regardless of outcome,
-  deletes the `autoflow`/`analysisprofile`/`autoflowAnalysis` rows that `--run`
-  itself created. Never applies to `--watch` (which targets a row it didn't
-  create) and never fires automatically on `WAIT`, since a waiting request can be
-  a real one someone still wants to finish by hand. Without `--cleanup`, prints
-  the equivalent `DELETE` statements instead.
+  deletes the `autoflow`/`analysisprofile`/`autoflowAnalysis`/
+  `autoflowAnalysisHistory` rows that `--run` itself created. Never applies to
+  `--watch` (which targets a row it didn't create) and never fires automatically
+  on `WAIT`, since a waiting request can be a real one someone still wants to
+  finish by hand. Without `--cleanup`, prints the equivalent `DELETE` statements
+  instead. `autoflowID`/`aprofileGUID` are captured by `watch_request()` from the
+  last row it actually saw while polling, not re-looked-up at cleanup time -
+  `submitctl.php` archives `FINISHED`/`FAILED` rows into
+  `autoflowAnalysisHistory` and deletes them from `autoflowAnalysis` on its very
+  next poll tick (submitctl.php:380-409), so a fresh lookup after the watch ends
+  can already be too late.
 - `--fake-sbatch fail-always|fail-once` (opt-in, gated behind
   `--yes-i-know-this-restarts-submitctl`): writes a fake `sbatch` into `test_bin/`,
   restarts `submitctl.php` via the existing `services.php restart` with that dir
@@ -192,8 +198,21 @@ argv-parsing + `utility.php` convention.
   `2DSA_FM` both completed normally, request correctly stopped at `WAIT` on
   `FITMEN`, `RESULT: PASS`, `--cleanup` removed the test rows. PR #22 confirmed
   fixing the bug as designed.
-- Not yet validated live: `--fake-sbatch fail-always`, non-2dsa scenarios
-  (`pcsa`, `pcsa-onechannel`, `mc-cluster`, `cg`).
+- 2026-06-24: `--fake-sbatch fail-always --expect-status FAILED` validated live:
+  all 4 attempts (initial + 3 retries) failed as injected, no real job was ever
+  submitted, `submitctl.php`'s `ERROR:`-detection correctly set `FAILED`,
+  `RESULT: PASS`. Surfaced a real cleanup gap: `--cleanup` reported
+  `requestID ... not found (already removed?)` because `submitctl.php` had
+  already archived the `FAILED` row into `autoflowAnalysisHistory` and deleted
+  it from `autoflowAnalysis` (its normal behavior, submitctl.php:380-409) before
+  `cleanup_request()`'s fresh lookup ran - leaving the matching `autoflow`/
+  `analysisprofile` rows orphaned. Fixed by having `watch_request()` capture
+  `autoflowID`/`aprofileGUID` from the last row it actually polled (kept even if
+  the row later disappears) and passing those straight into `cleanup_request()`,
+  which now also deletes from `autoflowAnalysisHistory`. Not yet re-verified
+  live after this fix.
+- Not yet validated live: non-2dsa scenarios (`pcsa`, `pcsa-onechannel`,
+  `mc-cluster`, `cg`).
 
 ## Verification
 - Run harness against a real GMP host for a normal `makeafrequest.php` 2DSA-chain
