@@ -240,9 +240,14 @@ argv-parsing + `utility.php` convention.
   reach a real `FINISHED`. Fixed by having `watch_request()` check
   `autoflowAnalysisHistory` for the row when it disappears from
   `autoflowAnalysis`, before concluding FAIL - cleanup (already ID-capture
-  based, see above) is unaffected. Not yet re-verified live after this fix.
-- Not yet validated live: `mc-cluster`, `cg` scenarios; re-verification of the
-  `pcsa`/`pcsa-onechannel` FINISHED-detection fix above.
+  based, see above) is unaffected.
+- 2026-06-24: fix verified live for both `pcsa` and `pcsa-onechannel`: each
+  correctly logged `[watch] requestID ... found archived in
+  autoflowAnalysisHistory with status=FINISHED ...` and `RESULT: PASS (status
+  matches expected 'FINISHED')`, with `--cleanup` removing the test rows. Both
+  PCSA scenarios are now fully validated live, success-path and
+  FINISHED-detection alike.
+- Not yet validated live: `mc-cluster`, `cg` scenarios.
 
 ## Verification
 - Run harness against a real GMP host for a normal `makeafrequest.php` 2DSA-chain
