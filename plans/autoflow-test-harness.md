@@ -174,9 +174,26 @@ argv-parsing + `utility.php` convention.
   after the `su`-restart fix above — the privilege fix surfaced a pre-existing
   ownership mismatch that used to be masked. Fixed by `chown`ing `test_bin/` and
   `test_bin/state/` to `--expected-user` whenever `write_fake_sbatch()` runs.
-- Not yet validated live: `--fake-sbatch fail-always`/`fail-once` (retry pending
-  after the chown fix), non-2dsa scenarios (`pcsa`, `pcsa-onechannel`,
-  `mc-cluster`, `cg`).
+- 2026-06-24: root-caused and fixed a real, previously-undiscovered production bug
+  surfaced by `--fake-sbatch fail-once` (after the chown fix above): `sbatch`
+  attempt 1 failed as injected, but attempts 2-4 all genuinely succeeded on the
+  real cluster (three separate, real, duplicate jobs: 285/286/287) and were still
+  misjudged as failures, ending the whole submission in `FAILED`. Root cause:
+  `us3lims_common/class/submit_local.php`'s `attemptSubmit()` calls `exec($cmd,
+  $output, $status)` repeatedly using the same `$output` array; PHP's `exec()`
+  appends to `$output` rather than replacing it, so `parseSubmitResult()`'s check
+  of `$output[0]` stayed permanently stuck on attempt 1's failure text. Filed as
+  ehb54/ultrascan-tickets#931, fixed on branch `ehb54-issue-931` (PR
+  ehb54/us3lims_common#22) by resetting `$output = array();` at the top of each
+  retry iteration.
+- 2026-06-24: fix validated live on uslimstest via `--fake-sbatch fail-once`:
+  attempt 1 failed as injected, attempt 2 succeeded for real (job 288) and was
+  recognized immediately — no attempts 3/4, no duplicate jobs. `2DSA` then
+  `2DSA_FM` both completed normally, request correctly stopped at `WAIT` on
+  `FITMEN`, `RESULT: PASS`, `--cleanup` removed the test rows. PR #22 confirmed
+  fixing the bug as designed.
+- Not yet validated live: `--fake-sbatch fail-always`, non-2dsa scenarios
+  (`pcsa`, `pcsa-onechannel`, `mc-cluster`, `cg`).
 
 ## Verification
 - Run harness against a real GMP host for a normal `makeafrequest.php` 2DSA-chain
