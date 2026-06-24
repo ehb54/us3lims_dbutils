@@ -63,7 +63,13 @@ Common options
                                  (makeafrequestPCSA.php), pcsa-onechannel
                                  (makeafrequestPCSAonechannel.php), mc-cluster
                                  (makeafrequest2DSA_MC_cluster.php), cg
-                                 (makeafrequest2DSA-CG.php)
+                                 (makeafrequest2DSA-CG.php, requires --customgrid)
+--customgrid          name    : required for --scenario cg. Must match an
+                                 existing description in <db>.model - i.e. a
+                                 custom 2DSA grid already saved on the target
+                                 system via the 'Setup 2DSA Custom Grid' UI.
+                                 The harness cannot invent one; it has to be a
+                                 real model already in the database.
 --expect-status       status  : if given, harness exits 0 only if the request
                                  ends at this status instead of the default
                                  FINISHED (e.g. --expect-status FAILED for a
@@ -121,6 +127,7 @@ $fake_sbatch      = "succeed";
 $confirm_restart  = false;
 $cleanup          = false;
 $web_user_explicit = false;
+$customgrid       = false;
 
 $scenario_scripts = [
     "2dsa"             => "makeafrequest.php",
@@ -208,6 +215,12 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             if ( !array_key_exists( $scenario, $scenario_scripts ) ) {
                 error_exit( "ERROR: unknown --scenario '$scenario'. Known scenarios: " . implode( ", ", array_keys( $scenario_scripts ) ) );
             }
+            break;
+        }
+        case "--customgrid": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) { error_exit( "ERROR: option '$arg' requires an argument\n$notes" ); }
+            $customgrid = array_shift( $u_argv );
             break;
         }
         case "--expect-status": {
@@ -741,6 +754,9 @@ switch ( $mode ) {
         if ( !file_exists( $script ) ) {
             error_exit( "ERROR: scenario script not found: $script" );
         }
+        if ( $scenario === "cg" && !$customgrid ) {
+            error_exit( "ERROR: --scenario cg requires --customgrid <name>, matching a description in ${db}.model (an existing custom 2DSA grid saved via the 'Setup 2DSA Custom Grid' UI)" );
+        }
 
         if ( $fake_sbatch != "succeed" ) {
             echo "*** --fake-sbatch=$fake_sbatch enabled: restarting submitctl.php with a PATH override (this affects ANY in-flight jobs on this system) ***\n";
@@ -748,8 +764,17 @@ switch ( $mode ) {
             restart_submitctl_with_path( $gridctl_dir, $test_bin_dir, $expected_user );
         }
 
-        echo "Creating request via " . basename( $script ) . " $db $invid $rawid ...\n";
-        $output = run_cmd( "cd " . escapeshellarg( $gridctl_dir . "/autoflow_util" ) . " && php " . escapeshellarg( basename( $script ) ) . " " . escapeshellarg( $db ) . " " . escapeshellarg( $invid ) . " " . escapeshellarg( $rawid ) . " 2>&1", false, true );
+        $script_args = [ $db, $invid, $rawid ];
+        if ( $scenario === "cg" ) {
+            $script_args[] = $customgrid;
+        }
+        echo "Creating request via " . basename( $script ) . " " . implode( " ", $script_args ) . " ...\n";
+        $cmd = "cd " . escapeshellarg( $gridctl_dir . "/autoflow_util" ) . " && php " . escapeshellarg( basename( $script ) );
+        foreach ( $script_args as $script_arg ) {
+            $cmd .= " " . escapeshellarg( $script_arg );
+        }
+        $cmd .= " 2>&1";
+        $output = run_cmd( $cmd, false, true );
         foreach ( $output as $line ) {
             echo "[makeafrequest] $line\n";
         }

@@ -247,7 +247,17 @@ argv-parsing + `utility.php` convention.
   matches expected 'FINISHED')`, with `--cleanup` removing the test rows. Both
   PCSA scenarios are now fully validated live, success-path and
   FINISHED-detection alike.
-- Not yet validated live: `mc-cluster`, `cg` scenarios.
+- 2026-06-24: `--scenario cg` failed immediately - `makeafrequest2DSA-CG.php`
+  takes a required 4th positional arg, `customgridname`, looked up against
+  `<db>.model.description` (an existing custom 2DSA grid previously saved via
+  the "Setup 2DSA Custom Grid" UI) - something the harness has no way to
+  invent on its own. Fixed by adding a `--customgrid <name>` flag, required
+  (and only used) for `--scenario cg`; the harness errors out up front with a
+  clear message if it's missing rather than failing inside
+  `makeafrequest2DSA-CG.php`. Not yet re-tested live with a real
+  `--customgrid` value.
+- Not yet validated live: `mc-cluster` scenario; `cg` scenario with a real
+  `--customgrid` value.
 
 ## Verification
 - Run harness against a real GMP host for a normal `makeafrequest.php` 2DSA-chain
