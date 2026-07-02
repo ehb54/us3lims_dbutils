@@ -84,6 +84,9 @@ $ignore_repos_add =
     ];
 
 ## git branches
+## values are branch names by default; prefix a value with "tag:" to pin the repo to a tag,
+## e.g. "tag:release-2025-Q2". --update-pull will then fetch tags and re-checkout the pinned tag
+## instead of pulling.
 
 $repo_branches =
     [

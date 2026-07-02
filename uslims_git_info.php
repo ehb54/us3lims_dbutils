@@ -142,7 +142,7 @@ Options
 --diff-report         : shows git diff details for local changes
 --quiet               : suppress some info messages
 --skip-unknown        : suppress reporting of discovered Use:unknown repos
---update-branch       : update branch to default branch (when changing to a new branch might require --update-pull first)
+--update-branch       : update checkout to the branch or tag configured in \$repo_branches (when changing to a new branch might require --update-pull first)
 --update-pull use     : update repos by use, currently $known_use_list or all
 --update-pull-build   : recompile buildible repos. requires --update-pull also be specified
 --cores #             : use core count instead of discoverd count for --update-pull-build if supported
@@ -320,6 +320,15 @@ if ( !is_array( $repo_branches ) ) {
 
 # utility routines
 
+## $repo_branches values are branch names by default; a "tag:" prefix pins the repo to a tag
+function ref_is_tag( $ref ) {
+    return substr( $ref, 0, 4 ) == "tag:";
+}
+
+function ref_name( $ref ) {
+    return ref_is_tag( $ref ) ? substr( $ref, 4 ) : $ref;
+}
+
 function svn_repo( $path ) {
     global $known_repos;
     $svn_repo_use_trunk = [ "master", "main" ];
@@ -355,7 +364,7 @@ function get_rev( $url ) {
     if ( !isset( $repo_branches[ $url ] ) ) {
         error_exit( "$url not defined in \$repo_branches" );
     }
-    $branch = $repo_branches[ $url ];
+    $branch = ref_name( $repo_branches[ $url ] );
     run_cmd( "cd $tdir && git clone -b $branch --single-branch $url repo" );
     $hash = trim( run_cmd( "cd $tdir/repo && git log -1 --oneline .| cut -d' ' -f1" ) );
     $rev  = trim( run_cmd( "cd $tdir/repo && git log --oneline | sed -n '/$hash/,99999p' | wc -l" ) );
@@ -442,13 +451,30 @@ foreach ( $repodirs as $v ) {
        error_exit( "remote for repo in $v does not end in .git\nreset with:\ncd $v && git remote set-url origin " .  $repos->{ $v }->{ 'remote' } . ".git" );
     }
     $repos->{ $v }->{ 'branch' }                 = trim( run_cmd( "cd $v && git branch --show-current" ) );
+    $repos->{ $v }->{ 'tags' }                   = [];
+    if ( !strlen( $repos->{ $v }->{ 'branch' } ) ) {
+        ## detached HEAD, likely a tag checkout
+        $repos->{ $v }->{ 'tags' } = array_filter( explode( "\n", trim( run_cmd( "cd $v && git tag --points-at HEAD" ) ) ) );
+        if ( count( $repos->{ $v }->{ 'tags' } ) ) {
+            $repos->{ $v }->{ 'branch' } = "tag:" . reset( $repos->{ $v }->{ 'tags' } );
+        }
+    }
     $repos->{ $v }->{ 'branchdiffers' }          = false;
     $repos->{ $v }->{ 'urldiffers' }             = false;
     $repos->{ $v }->{ 'revdiffers' }             = false;
     $repos->{ $v }->{ 'revision' }->{ 'remote' } = NULL;
     if ( isset( $known_repos[ $v ] ) ) {
         $repos->{ $v }->{ 'use' } = $known_repos[ $v ][ 'use' ];
-        $repos->{ $v }->{ 'branchdiffers' }          = $repos->{ $v }->{ 'branch' } != $known_repos[ $v ][ 'git' ][ 'branch' ];
+        $expected_ref = $known_repos[ $v ][ 'git' ][ 'branch' ];
+        if ( ref_is_tag( $expected_ref ) ) {
+            ## match any tag pointing at HEAD, HEAD commits can carry multiple tags
+            $repos->{ $v }->{ 'branchdiffers' }      = !in_array( ref_name( $expected_ref ), $repos->{ $v }->{ 'tags' } );
+            if ( !$repos->{ $v }->{ 'branchdiffers' } ) {
+                $repos->{ $v }->{ 'branch' }         = $expected_ref;
+            }
+        } else {
+            $repos->{ $v }->{ 'branchdiffers' }      = $repos->{ $v }->{ 'branch' } != $expected_ref;
+        }
         $repos->{ $v }->{ 'urldiffers' }             = $repos->{ $v }->{ 'remote' } != $known_repos[ $v ][ 'git' ][ 'url' ];
         $repos->{ $v }->{ 'revision' }->{ 'remote' } = get_rev( $known_repos[ $v ][ 'git' ][ 'url' ] );
         $repos->{ $v }->{ 'revdiffers' }             = $repos->{ $v }->{ 'revision' }->{ 'remote' } != $repos->{ $v }->{ 'revision' }->{ 'number' };
@@ -588,8 +614,13 @@ if ( $update_branch ) {
             if ( $v->{'local_changes'} ) {
                 $warnings .= "WARNING: repo in $k branch not updated, local changes exist. Clear them manually\n";
             } else {
-                $newbranch = $known_repos[ $k ][ 'git' ][ 'branch' ];                
-                run_cmd( "cd $k && git checkout $newbranch" );
+                $newbranch = $known_repos[ $k ][ 'git' ][ 'branch' ];
+                if ( ref_is_tag( $newbranch ) ) {
+                    ## the tag may postdate the clone, fetch before checkout
+                    run_cmd( "cd $k && git fetch --tags --force && git checkout " . ref_name( $newbranch ) );
+                } else {
+                    run_cmd( "cd $k && git checkout $newbranch" );
+                }
                 echo "UPDATED: $k branch from $v->branch to $newbranch \n";
                 $updated++;
             }
@@ -640,9 +671,15 @@ if ( $update_pull ) {
     foreach ( $repos_to_update as $k ) {
         $v = $repos->{ $k };
         echoline();
-        echo "Updating: pull in $k\n";
-        $branch = $repos->{$k}->{'branch'};
-        run_cmd( "cd $k && git pull" );
+        if ( isset( $known_repos[ $k ] ) && ref_is_tag( $known_repos[ $k ][ 'git' ][ 'branch' ] ) ) {
+            ## git pull fails on the detached HEAD of a tag checkout, fetch & re-checkout the pinned tag instead
+            $tag = ref_name( $known_repos[ $k ][ 'git' ][ 'branch' ] );
+            echo "Updating: fetch tags & checkout tag $tag in $k\n";
+            run_cmd( "cd $k && git fetch --tags --force && git checkout $tag" );
+        } else {
+            echo "Updating: pull in $k\n";
+            run_cmd( "cd $k && git pull" );
+        }
         if ( $update_pull_build &&
              isset( $known_repos[ $k ][ 'buildable' ] ) ) {
             echo "Updating: build in $k, this may take a while\n";
