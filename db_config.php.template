@@ -20,6 +20,9 @@ $backup_rdiff_temp    = "/srv/data/temp";      # path for temporary storage for 
 
 # $backup_file_mode     = "400";                 # if not defined, set as "400" (read only)
 
+# $compresswith         = "pigz -f";             # compressor for the sql dumps; default is "pigz -f", use "gzip -f" if pigz is unavailable
+# $compressext          = "gz";                  # file extension the compressor produces (match to $compresswith)
+
 $backup_df_pct_warn   = 80;                    # the warning threshold
 $backup_df_check      = [];                    # array of mounts to check for free space, leave empty for no checks
 
