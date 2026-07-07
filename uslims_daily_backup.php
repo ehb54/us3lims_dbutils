@@ -3,7 +3,7 @@
 $self                 = __FILE__;
 $hdir                 = __DIR__;
 
-$compresswith         = "gzip -f";
+$compresswith         = "pigz -f";            # default compressor; override in db_config.php ($compresswith / $compressext)
 $compressext          = "gz";
 $rdiff_bin            = "/bin/rdiff";
 
