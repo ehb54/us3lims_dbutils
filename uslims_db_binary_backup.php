@@ -112,42 +112,75 @@ run_cmd( "cp -rp $datadir/* $newfile_dir" );
 $debug = 0;
 
 # (#1) verify the backup matches the datadir while the db is still stopped.
-# re-measure the source here (not the pre-stop numbers used for the space
-# estimate above): a clean shutdown flushes/truncates InnoDB files, so the
-# datadir as actually copied is what we must compare against.
-# Sum regular-file sizes (find -printf %s), NOT du: du counts directory inode
-# sizes, and a live datadir's directories keep an inflated st_size that a fresh
-# cp recreates compact -- that metadata delta is irrelevant to backup integrity
-# and would trip a false mismatch. cp -rp preserves each file's bytes exactly,
-# so the file-size sum and file count must match.
+# Per-file comparison: build a sorted "<relative-path>\t<size>" manifest for
+# each tree (metadata only -- a stat per file, no content read) and require the
+# two to be identical. This catches any renamed, missing, extra, or wrong-size
+# file by name. Sizes come from find -printf, not du: cp -rp preserves each
+# file's bytes exactly but not directory inode sizes, so du would false-mismatch.
+# The manifest is generated now, before FILE_MANIFEST.txt/BACKUP_MANIFEST.txt are
+# written into the backup, so those artifacts don't appear as spurious extras.
 echoline( "=" );
-echo "verifying backup matches datadir\n";
-$sum_files = "-type f -printf '%s\\n' | awk '{s+=\$1} END{printf \"%d\", s+0}'";
-$src_bytes = (int) run_cmd( "find $realdatadir $sum_files" );
-$src_files = (int) run_cmd( "find $realdatadir -type f | wc -l" );
-$dst_bytes = (int) run_cmd( "find $newfile_dir $sum_files" );
-$dst_files = (int) run_cmd( "find $newfile_dir -type f | wc -l" );
-echo "  datadir : $src_bytes bytes, $src_files files\n";
-echo "  backup  : $dst_bytes bytes, $dst_files files\n";
-if ( $src_bytes !== $dst_bytes ) {
-    error_exit( "SIZE MISMATCH: datadir $src_bytes bytes vs backup $dst_bytes bytes (diff " . ( $src_bytes - $dst_bytes ) . ")" );
-}
-if ( $src_files !== $dst_files ) {
-    error_exit( "FILE COUNT MISMATCH: datadir $src_files files vs backup $dst_files files" );
-}
-echo "OK: backup byte count and file count match datadir\n";
+echo "verifying backup matches datadir (per-file name + size)\n";
+$find_manifest = "-type f -printf '%P\\t%s\\n' | LC_ALL=C sort";
+$src_list = run_cmd( "find $realdatadir $find_manifest" );
+$dst_list = run_cmd( "find $newfile_dir $find_manifest" );
 
-# (#4) write a manifest into the backup for later restore-time verification
+$src_lines = array_values( array_filter( explode( "\n", trim( $src_list ) ), 'strlen' ) );
+$dst_lines = array_values( array_filter( explode( "\n", trim( $dst_list ) ), 'strlen' ) );
+
+$src_files = count( $src_lines );
+$src_bytes = 0;
+foreach ( $src_lines as $l ) { $c = explode( "\t", $l ); $src_bytes += (int) end( $c ); }
+
+if ( $src_list !== $dst_list ) {
+    $only_src = array_values( array_diff( $src_lines, $dst_lines ) );
+    $only_dst = array_values( array_diff( $dst_lines, $src_lines ) );
+    $show = 40;
+    echoline( "!" );
+    echo "BACKUP VERIFICATION: FAILED -- datadir and backup differ\n";
+    if ( count( $only_src ) ) {
+        echo "  in datadir but not matching (name+size) in backup (" . count( $only_src ) . "):\n";
+        echo "    " . implode( "\n    ", array_slice( $only_src, 0, $show ) ) . "\n";
+        if ( count( $only_src ) > $show ) { echo "    ... and " . ( count( $only_src ) - $show ) . " more\n"; }
+    }
+    if ( count( $only_dst ) ) {
+        echo "  in backup but not matching (name+size) in datadir (" . count( $only_dst ) . "):\n";
+        echo "    " . implode( "\n    ", array_slice( $only_dst, 0, $show ) ) . "\n";
+        if ( count( $only_dst ) > $show ) { echo "    ... and " . ( count( $only_dst ) - $show ) . " more\n"; }
+    }
+    echoline( "!" );
+    error_exit( "backup verification FAILED: datadir and backup differ (see above); the backup in '$newfile_dir' is NOT trustworthy" );
+}
+
+$verified_at = date( "Y-m-d H:i:s" );
+echoline( "=" );
+echo "BACKUP VERIFICATION: PASSED\n";
+echo "  all $src_files files matched between datadir and backup by relative path AND byte size\n";
+echo "  datadir  : $realdatadir\n";
+echo "  backup   : $newfile_dir\n";
+echo "  files    : $src_files\n";
+echo "  bytes    : $src_bytes\n";
+echo "  verified : $verified_at\n";
+echoline( "=" );
+
+# (#4) write manifests into the backup for later restore-time / audit verification.
+# FILE_MANIFEST.txt is the exact per-file list that was verified above; a future
+# audit can regenerate the same command over a restored datadir and diff.
+if ( file_put_contents( "$newfile_dir/FILE_MANIFEST.txt", $src_list ) === false ) {
+    error_exit( "failed to write manifest to $newfile_dir/FILE_MANIFEST.txt" );
+}
 $manifest =
     "backup_timestamp: " . date( "Y-m-d H:i:s" ) . "\n"
     . "datadir: $datadir\n"
     . "mariadb_version: $db_version\n"
     . "bytes: $src_bytes\n"
-    . "files: $src_files\n";
+    . "files: $src_files\n"
+    . "verification: per-file name+size match PASSED at $verified_at\n"
+    . "file_manifest: FILE_MANIFEST.txt (sorted <relative-path>\\t<size>)\n";
 if ( file_put_contents( "$newfile_dir/BACKUP_MANIFEST.txt", $manifest ) === false ) {
     error_exit( "failed to write manifest to $newfile_dir/BACKUP_MANIFEST.txt" );
 }
-echo "wrote $newfile_dir/BACKUP_MANIFEST.txt\n";
+echo "wrote $newfile_dir/BACKUP_MANIFEST.txt and $newfile_dir/FILE_MANIFEST.txt\n";
 
 # qyn service mariadb start
 if ( get_yn_answer( "Restart mariadb services? (processes might further update the db)" ) ) {
