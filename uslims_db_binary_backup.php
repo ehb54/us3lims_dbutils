@@ -20,10 +20,10 @@ $positional = array();
 foreach ( array_slice( $argv, 1 ) as $arg ) {
     if ( $arg === "--no-checksum" ) {
         $checksum = false;
-    } else if ( $arg === "-h" || $arg === "--help" ) {
+    } elseif ( $arg === "-h" || $arg === "--help" ) {
         echo $notes;
         exit;
-    } else if ( substr( $arg, 0, 1 ) === "-" ) {
+    } elseif ( substr( $arg, 0, 1 ) === "-" ) {
         fwrite( STDERR, "unknown option: $arg\n\n$notes" );
         exit( -1 );
     } else {
