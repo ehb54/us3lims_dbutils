@@ -53,12 +53,20 @@ $datadir = rtrim( sprintf( "%s", $res->{'Value'} ), "/" );
 echoline( "=" );
 echo "datadir is $datadir\n";
 
-# (#4) guard: datadir must exist and be non-empty before we take the db down
+# (#4) guard: datadir must exist and be non-empty before we take the db down.
+# datadir is often a symlink (e.g. /var/lib/mysql -> /data/mysql); resolve it
+# so du/find descend into the real tree instead of stopping at the link (a bare
+# symlink path reports 0 bytes / 0 files). The copy below uses $datadir/*, whose
+# glob already resolves through the symlink.
 if ( $datadir === "" || !is_dir( $datadir ) ) {
     error_exit( "datadir '$datadir' is empty or not a directory - refusing to back up" );
 }
-$src_bytes = (int) run_cmd( "du -sb $datadir | cut -f1" );
-$src_files = (int) run_cmd( "find $datadir -type f | wc -l" );
+$realdatadir = realpath( $datadir );
+if ( $realdatadir === false ) {
+    error_exit( "could not resolve datadir '$datadir' - refusing to back up" );
+}
+$src_bytes = (int) run_cmd( "du -sb $realdatadir | cut -f1" );
+$src_files = (int) run_cmd( "find $realdatadir -type f | wc -l" );
 if ( $src_bytes <= 0 || $src_files <= 0 ) {
     error_exit( "datadir '$datadir' appears empty ($src_bytes bytes, $src_files files) - refusing to back up" );
 }
@@ -116,8 +124,8 @@ $debug = 0;
 # datadir as actually copied is what we must compare against.
 echoline( "=" );
 echo "verifying backup matches datadir\n";
-$src_bytes = (int) run_cmd( "du -sb $datadir | cut -f1" );
-$src_files = (int) run_cmd( "find $datadir -type f | wc -l" );
+$src_bytes = (int) run_cmd( "du -sb $realdatadir | cut -f1" );
+$src_files = (int) run_cmd( "find $realdatadir -type f | wc -l" );
 $dst_bytes = (int) run_cmd( "du -sb $newfile_dir | cut -f1" );
 $dst_files = (int) run_cmd( "find $newfile_dir -type f | wc -l" );
 echo "  datadir : $src_bytes bytes, $src_files files\n";
