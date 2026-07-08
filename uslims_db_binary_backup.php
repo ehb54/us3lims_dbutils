@@ -104,13 +104,6 @@ if ( $db_handle ) {
 
 echo "OK: db appears to be stopped as I can not connect\n";
 
-# (#3) harden the stopped check: make sure no server process is still running
-$procs = run_cmd( "pgrep -x mariadbd; pgrep -x mysqld", false );
-if ( trim( $procs ) !== "" ) {
-    error_exit( "mariadb/mysqld process still running (pids: " . trim( $procs ) . ") - refusing to copy" );
-}
-echo "OK: no mariadbd/mysqld process running\n";
-
 # deep copy of datadir to newfile-/
 echoline( "=" );
 echo "making copy of database datadir $datadir\n";
