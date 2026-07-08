@@ -3,24 +3,40 @@
 $self = __FILE__;
     
 $notes = <<<__EOD
-usage: $self {remote_config_file}
+usage: $self [--no-checksum] {remote_config_file}
 
 creates a binary backup of the database
 must be run as root
 
+by default every file is verified by sha256 content hash (paranoid): this reads
+the entire datadir and the backup. pass --no-checksum to verify by name+size
+only (much faster, no content read).
+
 __EOD;
 
-if ( count( $argv ) < 1 || count( $argv ) > 2 ) {
+# parse flags (may appear anywhere) and the optional positional config file
+$checksum   = true;
+$positional = array();
+foreach ( array_slice( $argv, 1 ) as $arg ) {
+    if ( $arg === "--no-checksum" ) {
+        $checksum = false;
+    } else if ( $arg === "-h" || $arg === "--help" ) {
+        echo $notes;
+        exit;
+    } else if ( substr( $arg, 0, 1 ) === "-" ) {
+        fwrite( STDERR, "unknown option: $arg\n\n$notes" );
+        exit( -1 );
+    } else {
+        $positional[] = $arg;
+    }
+}
+if ( count( $positional ) > 1 ) {
     echo $notes;
     exit;
 }
 
-$config_file = "db_config.php";
-if ( count( $argv ) == 2 ) {
-    $use_config_file = $argv[ 1 ];
-} else {
-    $use_config_file = $config_file;
-}
+$config_file     = "db_config.php";
+$use_config_file = count( $positional ) ? $positional[ 0 ] : $config_file;
 
 if ( !file_exists( $use_config_file ) ) {
     fwrite( STDERR, "$self: 
@@ -112,39 +128,57 @@ run_cmd( "cp -rp $datadir/* $newfile_dir" );
 $debug = 0;
 
 # (#1) verify the backup matches the datadir while the db is still stopped.
-# Per-file comparison: build a sorted "<relative-path>\t<size>" manifest for
-# each tree (metadata only -- a stat per file, no content read) and require the
-# two to be identical. This catches any renamed, missing, extra, or wrong-size
-# file by name. Sizes come from find -printf, not du: cp -rp preserves each
-# file's bytes exactly but not directory inode sizes, so du would false-mismatch.
-# The manifest is generated now, before FILE_MANIFEST.txt/BACKUP_MANIFEST.txt are
-# written into the backup, so those artifacts don't appear as spurious extras.
+# Per-file comparison: build a sorted manifest for each tree and require the two
+# to be identical. This catches any renamed, missing, extra, or (checksum mode)
+# corrupted file, and reports exactly which differ.
+#
+#   default (paranoid): "<sha256>  ./<relative-path>" -- content hash, reads
+#                       every byte of the datadir AND the backup.
+#   --no-checksum:      "<relative-path>\t<size>"     -- metadata only, fast.
+#
+# Sizes come from find -printf, not du: cp -rp preserves each file's bytes exactly
+# but not directory inode sizes, so du would false-mismatch. Manifests are built
+# now, before FILE_MANIFEST/SHA256SUMS/BACKUP_MANIFEST are written into the backup,
+# so those artifacts don't appear as spurious extras.
 echoline( "=" );
-echo "verifying backup matches datadir (per-file name + size)\n";
-$find_manifest = "-type f -printf '%P\\t%s\\n' | LC_ALL=C sort";
-$src_list = run_cmd( "find $realdatadir $find_manifest" );
-$dst_list = run_cmd( "find $newfile_dir $find_manifest" );
 
+# stats + audit file list are always metadata-only (cheap), regardless of mode
+$src_list  = run_cmd( "find $realdatadir -type f -printf '%P\\t%s\\n' | LC_ALL=C sort" );
 $src_lines = array_values( array_filter( explode( "\n", trim( $src_list ) ), 'strlen' ) );
-$dst_lines = array_values( array_filter( explode( "\n", trim( $dst_list ) ), 'strlen' ) );
-
 $src_files = count( $src_lines );
 $src_bytes = 0;
 foreach ( $src_lines as $l ) { $c = explode( "\t", $l ); $src_bytes += (int) end( $c ); }
 
-if ( $src_list !== $dst_list ) {
-    $only_src = array_values( array_diff( $src_lines, $dst_lines ) );
-    $only_dst = array_values( array_diff( $dst_lines, $src_lines ) );
+if ( $checksum ) {
+    $vlabel  = "name + sha256 content";
+    echo "verifying backup matches datadir (per-file $vlabel)\n";
+    echo "  hashing $src_files files (" . number_format( $src_bytes ) . " bytes) in datadir and backup -- this reads every byte, be patient\n";
+    # cd into each tree so the paths (and thus sha256sum -c later) are relative
+    $ck      = "-type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum";
+    $src_ver = run_cmd( "cd $realdatadir && find . $ck" );
+    $dst_ver = run_cmd( "cd $newfile_dir && find . $ck" );
+} else {
+    $vlabel  = "name + byte size";
+    echo "verifying backup matches datadir (per-file $vlabel)\n";
+    $src_ver = $src_list;
+    $dst_ver = run_cmd( "find $newfile_dir -type f -printf '%P\\t%s\\n' | LC_ALL=C sort" );
+}
+
+if ( $src_ver !== $dst_ver ) {
+    $sv = array_values( array_filter( explode( "\n", trim( $src_ver ) ), 'strlen' ) );
+    $dv = array_values( array_filter( explode( "\n", trim( $dst_ver ) ), 'strlen' ) );
+    $only_src = array_values( array_diff( $sv, $dv ) );
+    $only_dst = array_values( array_diff( $dv, $sv ) );
     $show = 40;
     echoline( "!" );
     echo "BACKUP VERIFICATION: FAILED -- datadir and backup differ\n";
     if ( count( $only_src ) ) {
-        echo "  in datadir but not matching (name+size) in backup (" . count( $only_src ) . "):\n";
+        echo "  in datadir but not matching ($vlabel) in backup (" . count( $only_src ) . "):\n";
         echo "    " . implode( "\n    ", array_slice( $only_src, 0, $show ) ) . "\n";
         if ( count( $only_src ) > $show ) { echo "    ... and " . ( count( $only_src ) - $show ) . " more\n"; }
     }
     if ( count( $only_dst ) ) {
-        echo "  in backup but not matching (name+size) in datadir (" . count( $only_dst ) . "):\n";
+        echo "  in backup but not matching ($vlabel) in datadir (" . count( $only_dst ) . "):\n";
         echo "    " . implode( "\n    ", array_slice( $only_dst, 0, $show ) ) . "\n";
         if ( count( $only_dst ) > $show ) { echo "    ... and " . ( count( $only_dst ) - $show ) . " more\n"; }
     }
@@ -155,28 +189,38 @@ if ( $src_list !== $dst_list ) {
 $verified_at = date( "Y-m-d H:i:s" );
 echoline( "=" );
 echo "BACKUP VERIFICATION: PASSED\n";
-echo "  all $src_files files matched between datadir and backup by relative path AND byte size\n";
+echo "  all $src_files files matched between datadir and backup by relative path AND " . ( $checksum ? "sha256 content hash" : "byte size" ) . "\n";
 echo "  datadir  : $realdatadir\n";
 echo "  backup   : $newfile_dir\n";
 echo "  files    : $src_files\n";
-echo "  bytes    : $src_bytes\n";
+echo "  bytes    : " . number_format( $src_bytes ) . "\n";
+echo "  method   : per-file $vlabel" . ( $checksum ? "" : " (--no-checksum: content NOT hashed)" ) . "\n";
 echo "  verified : $verified_at\n";
 echoline( "=" );
 
 # (#4) write manifests into the backup for later restore-time / audit verification.
-# FILE_MANIFEST.txt is the exact per-file list that was verified above; a future
-# audit can regenerate the same command over a restored datadir and diff.
+# FILE_MANIFEST.txt is the per-file name+size list; in checksum mode SHA256SUMS.txt
+# is the verified hash list, re-checkable with: cd <restored datadir> && sha256sum -c SHA256SUMS.txt
 if ( file_put_contents( "$newfile_dir/FILE_MANIFEST.txt", $src_list ) === false ) {
     error_exit( "failed to write manifest to $newfile_dir/FILE_MANIFEST.txt" );
 }
+$verification_line = $checksum
+    ? "per-file name+sha256 content match PASSED at $verified_at"
+    : "per-file name+size match PASSED at $verified_at (--no-checksum: content NOT hashed)";
 $manifest =
     "backup_timestamp: " . date( "Y-m-d H:i:s" ) . "\n"
     . "datadir: $datadir\n"
     . "mariadb_version: $db_version\n"
     . "bytes: $src_bytes\n"
     . "files: $src_files\n"
-    . "verification: per-file name+size match PASSED at $verified_at\n"
+    . "verification: $verification_line\n"
     . "file_manifest: FILE_MANIFEST.txt (sorted <relative-path>\\t<size>)\n";
+if ( $checksum ) {
+    if ( file_put_contents( "$newfile_dir/SHA256SUMS.txt", $src_ver ) === false ) {
+        error_exit( "failed to write checksums to $newfile_dir/SHA256SUMS.txt" );
+    }
+    $manifest .= "sha256sums: SHA256SUMS.txt (re-check: cd <restored datadir> && sha256sum -c SHA256SUMS.txt)\n";
+}
 if ( file_put_contents( "$newfile_dir/BACKUP_MANIFEST.txt", $manifest ) === false ) {
     error_exit( "failed to write manifest to $newfile_dir/BACKUP_MANIFEST.txt" );
 }
