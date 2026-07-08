@@ -115,11 +115,17 @@ $debug = 0;
 # re-measure the source here (not the pre-stop numbers used for the space
 # estimate above): a clean shutdown flushes/truncates InnoDB files, so the
 # datadir as actually copied is what we must compare against.
+# Sum regular-file sizes (find -printf %s), NOT du: du counts directory inode
+# sizes, and a live datadir's directories keep an inflated st_size that a fresh
+# cp recreates compact -- that metadata delta is irrelevant to backup integrity
+# and would trip a false mismatch. cp -rp preserves each file's bytes exactly,
+# so the file-size sum and file count must match.
 echoline( "=" );
 echo "verifying backup matches datadir\n";
-$src_bytes = (int) run_cmd( "du -sb $realdatadir | cut -f1" );
+$sum_files = "-type f -printf '%s\\n' | awk '{s+=\$1} END{printf \"%d\", s+0}'";
+$src_bytes = (int) run_cmd( "find $realdatadir $sum_files" );
 $src_files = (int) run_cmd( "find $realdatadir -type f | wc -l" );
-$dst_bytes = (int) run_cmd( "du -sb $newfile_dir | cut -f1" );
+$dst_bytes = (int) run_cmd( "find $newfile_dir $sum_files" );
 $dst_files = (int) run_cmd( "find $newfile_dir -type f | wc -l" );
 echo "  datadir : $src_bytes bytes, $src_files files\n";
 echo "  backup  : $dst_bytes bytes, $dst_files files\n";
