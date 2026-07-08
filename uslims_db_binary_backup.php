@@ -224,7 +224,9 @@ if ( $checksum ) {
 if ( file_put_contents( "$newfile_dir/BACKUP_MANIFEST.txt", $manifest ) === false ) {
     error_exit( "failed to write manifest to $newfile_dir/BACKUP_MANIFEST.txt" );
 }
-echo "wrote $newfile_dir/BACKUP_MANIFEST.txt and $newfile_dir/FILE_MANIFEST.txt\n";
+$written = array( "BACKUP_MANIFEST.txt", "FILE_MANIFEST.txt" );
+if ( $checksum ) { $written[] = "SHA256SUMS.txt"; }
+echo "wrote into $newfile_dir/: " . implode( ", ", $written ) . "\n";
 
 # qyn service mariadb start
 if ( get_yn_answer( "Restart mariadb services? (processes might further update the db)" ) ) {
