@@ -11,7 +11,7 @@ $getrunbdir   = "$cwd/getrun";
 
 include "$us3bin/listen-config.php";
 
-$global_config_file = $class_dir_p . "../global_config.php";
+$global_config_file = $class_dir . "../global_config.php";
 
 include $global_config_file;
 
