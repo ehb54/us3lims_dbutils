@@ -117,12 +117,14 @@ $backup_extra_dbs =
 ## Every value below has a built-in default, so an existing db_config.php works
 ## unchanged.  The monitor auto-detects the rsync transport (rsync-over-ssh, or a
 ## local cifs/nfs/nfs4/other mount) and runs only the probes valid for it -- it
-## never assumes ssh / port 22.
+## never assumes ssh / port 22.  In ssh mode the probes mimic the backup: ssh runs
+## as $backup_user, logging in as $rsync_user (StrictHostKeyChecking=no), so run the
+## monitor as root or as $backup_user and no key config is normally needed.
 
 $monitor_mode          = "auto";       # auto | ssh | mount | custom  (auto: infer from rsync destination)
 $monitor_host          = "";           # host/ip to ping/probe; default: $rsync_host (ssh) or the mount's server
 $monitor_ssh_port      = 22;           # probed ONLY in ssh mode (ssh-rsync implies it is reachable)
-$monitor_ssh_opts      = "";           # extra ssh options, e.g. "-i /home/usadmin/.ssh/id_rsa"
+$monitor_ssh_opts      = "";           # extra ssh options if the backup needs them, e.g. "-i /home/usadmin/.ssh/id_rsa"
 $monitor_mount         = "";           # local mountpoint to health-check (mount mode), e.g. "/backup"
 $monitor_tcp_ports     = [];           # extra/override host:port checks, e.g. [ "nas:139", "nas:2049" ]
 $monitor_ports_off     = false;        # true = ping/mount checks only, skip all TCP probes

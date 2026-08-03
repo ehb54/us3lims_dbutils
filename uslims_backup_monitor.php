@@ -50,6 +50,10 @@ options:
   --no-alert       disable alerts
   --help           this text
 
+ssh-mode probes mimic the backup: ssh runs as \$backup_user, logging in as
+\$rsync_user with StrictHostKeyChecking=no (via runuser/sudo when needed). Run
+this tool as root or as \$backup_user so that identity's key is available.
+
 With no command, prints this help and exits (no action taken).
 
 __EOD;
@@ -468,6 +472,7 @@ function mon_resolve_transport( $M ) {
         'ssh_user'    => '',
         'ssh_port'    => $M[ 'ssh_port' ],
         'ssh_opts'    => $M[ 'ssh_opts' ],
+        'run_as'      => (string) mon_cfg( 'backup_user', '' ), # ssh probes run as this user, like the backup
         'server'      => '',
     ];
 
@@ -596,15 +601,47 @@ function mon_tcp( $host, $port, $timeout = 5 ) {
     return [ 'ok' => true, 'ms' => round( $ms, 2 ), 'err' => '' ];
 }
 
+# run $cmd as $user, exactly as the backup drops privilege: no-op if we already are
+# that user; 'runuser -l' when root; 'sudo -H -u' otherwise. Returns $cmd unchanged
+# when $user is empty. escapeshellarg nesting unwinds cleanly through the extra shell.
+function mon_as_user( $user, $cmd ) {
+    if ( !strlen( $user ) ) {
+        return $cmd;
+    }
+    $cur = '';
+    if ( function_exists( 'posix_geteuid' ) && function_exists( 'posix_getpwuid' ) ) {
+        $pw  = posix_getpwuid( posix_geteuid() );
+        $cur = isset( $pw[ 'name' ] ) ? $pw[ 'name' ] : '';
+    }
+    if ( $cur === $user ) {
+        return $cmd;
+    }
+    if ( $cur === 'root' ) {
+        return 'runuser -l ' . escapeshellarg( $user ) . ' -c ' . escapeshellarg( $cmd );
+    }
+    return 'sudo -H -u ' . escapeshellarg( $user ) . ' ' . $cmd;
+}
+
+# build the ssh command exactly as the backup does: run as $backup_user, log in as
+# $rsync_user, StrictHostKeyChecking=no. BatchMode/ConnectTimeout are the only additions
+# (so a probe fails fast instead of hanging); they do not change key-auth behavior.
+function mon_ssh_cmd( $t, $timeout, $remote_cmd = 'true' ) {
+    $target = strlen( $t[ 'ssh_user' ] ) ? "{$t[ 'ssh_user' ]}@{$t[ 'host' ]}" : $t[ 'host' ];
+    $opts   = "-o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=$timeout -p {$t[ 'ssh_port' ]}";
+    if ( strlen( $t[ 'ssh_opts' ] ) ) {
+        $opts .= " {$t[ 'ssh_opts' ]}";
+    }
+    $ssh = "ssh $opts " . escapeshellarg( $target ) . ' ' . escapeshellarg( $remote_cmd );
+    return mon_as_user( $t[ 'run_as' ], $ssh );
+}
+
 function mon_ssh_rtt( $t, $timeout = 10 ) {
     if ( !mon_have_cmd( 'ssh' ) ) {
         return [ 'ok' => false, 'ms' => null, 'err' => 'ssh not found' ];
     }
-    $target = strlen( $t[ 'ssh_user' ] ) ? "{$t[ 'ssh_user' ]}@{$t[ 'host' ]}" : $t[ 'host' ];
-    $opts   = "-o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=$timeout -p {$t[ 'ssh_port' ]} {$t[ 'ssh_opts' ]}";
-    $start  = microtime( true );
-    $out    = mon_sh( "ssh $opts " . escapeshellarg( $target ) . " true", $code );
-    $ms     = ( microtime( true ) - $start ) * 1000.0;
+    $start = microtime( true );
+    $out   = mon_sh( mon_ssh_cmd( $t, $timeout, 'true' ), $code );
+    $ms    = ( microtime( true ) - $start ) * 1000.0;
     return [ 'ok' => ( $code === 0 ), 'ms' => round( $ms, 2 ), 'err' => ( $code === 0 ? '' : trim( $out ) ) ];
 }
 
@@ -615,8 +652,6 @@ function mon_remote_fs( $t ) {
         $r[ 'err' ] = 'no ssh/remote_path';
         return $r;
     }
-    $target = strlen( $t[ 'ssh_user' ] ) ? "{$t[ 'ssh_user' ]}@{$t[ 'host' ]}" : $t[ 'host' ];
-    $opts   = "-o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p {$t[ 'ssh_port' ]} {$t[ 'ssh_opts' ]}";
     $rp     = escapeshellarg( $t[ 'remote_path' ] );
     $remote =
           'p=' . $rp . '; '
@@ -624,7 +659,7 @@ function mon_remote_fs( $t ) {
         . 'rc=$(grep -i reconnect /proc/fs/cifs/Stats 2>/dev/null | grep -oE "[0-9]+" | head -1); echo "RC=$rc"; '
         . 't0=$(date +%s.%N); a=$(df -Pk "$p" 2>/dev/null | awk "NR==2{print \\$4}"); t1=$(date +%s.%N); '
         . 'echo "DFMS=$(awk "BEGIN{printf \\"%.1f\\",($t1-$t0)*1000}")"; echo "AVAIL=$a"';
-    $out = mon_sh( "ssh $opts " . escapeshellarg( $target ) . ' ' . escapeshellarg( $remote ), $code );
+    $out = mon_sh( mon_ssh_cmd( $t, 10, $remote ), $code );
     if ( $code !== 0 ) {
         $r[ 'err' ] = trim( $out );
         return $r;
@@ -699,6 +734,7 @@ function mon_throughput( $M, $t ) {
     $blob = $M[ 'logdir' ] . "/.throughput_blob";
     if ( !file_exists( $blob ) || filesize( $blob ) != $mb * 1024 * 1024 ) {
         mon_sh( "dd if=/dev/urandom of=" . escapeshellarg( $blob ) . " bs=1M count=$mb" );
+        @chmod( $blob, 0644 ); # readable when the rsync drops to $backup_user
     }
     $tag = "/.uslims_mon_thr_" . getmypid();
 
@@ -706,12 +742,13 @@ function mon_throughput( $M, $t ) {
         if ( !mon_have_cmd( 'rsync' ) ) {
             return $res;
         }
+        # mirror the backup: rsync as $backup_user over 'ssh -l $rsync_user'
         $target = strlen( $t[ 'ssh_user' ] ) ? "{$t[ 'ssh_user' ]}@{$t[ 'host' ]}" : $t[ 'host' ];
         $opts   = "-o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p {$t[ 'ssh_port' ]} {$t[ 'ssh_opts' ]}";
-        $dest   = "$target:/tmp$tag";
+        $rsync  = "rsync -e " . escapeshellarg( "ssh $opts" ) . " --whole-file --inplace "
+                . escapeshellarg( $blob ) . " " . escapeshellarg( "$target:/tmp$tag" );
         $t0     = microtime( true );
-        mon_sh( "rsync -e " . escapeshellarg( "ssh $opts" ) . " --whole-file --inplace "
-                . escapeshellarg( $blob ) . " " . escapeshellarg( $dest ), $code );
+        mon_sh( mon_as_user( $t[ 'run_as' ], $rsync ), $code );
         $dt = microtime( true ) - $t0;
         if ( $code === 0 && $dt > 0 ) {
             $res[ 'mbps' ] = round( $mb / $dt, 2 );
@@ -719,7 +756,7 @@ function mon_throughput( $M, $t ) {
         } else {
             $res[ 'ok' ] = false;
         }
-        mon_sh( "ssh $opts " . escapeshellarg( $target ) . " rm -f /tmp$tag" );
+        mon_sh( mon_ssh_cmd( $t, 10, "rm -f /tmp$tag" ) );
     } else if ( $t[ 'mode' ] === 'mount' && strlen( $t[ 'mount' ] ) ) {
         $dest = rtrim( $t[ 'mount' ], '/' ) . $tag;
         $t0   = microtime( true );
