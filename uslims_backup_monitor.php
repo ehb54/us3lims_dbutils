@@ -337,9 +337,10 @@ function mon_do_start( $M, $config_file ) {
     $child    = escapeshellarg( $php ) . ' ' . escapeshellarg( $M[ 'self' ] )
               . ' foreground ' . mon_build_fg_args( $M, $config_file );
 
-    # detach so the monitor survives an ssh logout
+    # detach so the monitor survives an ssh logout; the worker's stdout (its sample
+    # echo) goes to /dev/null while stderr (real startup errors) is kept in the boot log
     $launcher = mon_have_cmd( 'setsid' ) ? 'setsid ' : ( mon_have_cmd( 'nohup' ) ? 'nohup ' : '' );
-    $full     = $launcher . $child . ' < /dev/null >> ' . escapeshellarg( $bootlog ) . ' 2>&1 &';
+    $full     = $launcher . $child . ' < /dev/null > /dev/null 2>> ' . escapeshellarg( $bootlog ) . ' &';
     exec( $full );
 
     # the worker writes its own pidfile on startup; poll up to 5s to confirm
@@ -399,13 +400,13 @@ function mon_do_foreground( $M ) {
         }
     } );
 
-    mon_log_line( $M, "monitor started (pid " . getmypid() . ", interval {$M[ 'interval' ]}s, mode {$M[ 'mode' ]})" );
+    mon_emit( $M, "monitor started (pid " . getmypid() . ", interval {$M[ 'interval' ]}s, mode {$M[ 'mode' ]})" );
 
     $cycle = 0;
     while ( empty( $GLOBALS[ 'mon_stop' ] ) ) {
         $sample = mon_run_probes( $M );
         mon_write_csv( $M, $sample );
-        mon_log_line( $M, mon_format_sample( $sample ) );
+        mon_emit( $M, mon_format_sample( $sample ) );
         mon_maybe_alert( $M, $sample );
         mon_prune_old_logs( $M );
 
@@ -416,7 +417,7 @@ function mon_do_foreground( $M ) {
         mon_interruptible_sleep( $M[ 'interval' ] );
     }
 
-    mon_log_line( $M, "monitor stopping (pid " . getmypid() . ", cycles $cycle)" );
+    mon_emit( $M, "monitor stopping (pid " . getmypid() . ", cycles $cycle)" );
     if ( mon_read_pidfile( $M[ 'pidfile' ] ) === getmypid() ) {
         @unlink( $M[ 'pidfile' ] );
     }
@@ -952,8 +953,15 @@ function mon_write_csv( $M, $s ) {
     fclose( $fp );
 }
 
-function mon_log_line( $M, $msg ) {
-    @file_put_contents( mon_current_log_path( $M ), '[' . gmdate( 'Y-m-d H:i:s' ) . '] ' . $msg . "\n", FILE_APPEND );
+# write a timestamped line to the daily log and echo it to stdout, so interactive
+# 'foreground' runs show progress and a future systemd unit records samples in the
+# journal. When detached via 'start', the worker's stdout goes to /dev/null (see
+# mon_do_start), so this echo never bloats the boot log.
+function mon_emit( $M, $msg ) {
+    $line = '[' . gmdate( 'Y-m-d H:i:s' ) . '] ' . $msg;
+    @file_put_contents( mon_current_log_path( $M ), $line . "\n", FILE_APPEND );
+    fwrite( STDOUT, $line . "\n" );
+    fflush( STDOUT );
 }
 
 function mon_format_sample( $s ) {
