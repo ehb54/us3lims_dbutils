@@ -111,4 +111,34 @@ $backup_extra_dbs =
     [
     ];
 
+## ---------------------------------------------------------------------------
+## backup-link health monitor  (uslims_backup_monitor.php)  -- all optional
+## ---------------------------------------------------------------------------
+## Every value below has a built-in default, so an existing db_config.php works
+## unchanged.  The monitor auto-detects the rsync transport (rsync-over-ssh, or a
+## local cifs/nfs/nfs4/other mount) and runs only the probes valid for it -- it
+## never assumes ssh / port 22.
+
+$monitor_mode          = "auto";       # auto | ssh | mount | custom  (auto: infer from rsync destination)
+$monitor_host          = "";           # host/ip to ping/probe; default: $rsync_host (ssh) or the mount's server
+$monitor_ssh_port      = 22;           # probed ONLY in ssh mode (ssh-rsync implies it is reachable)
+$monitor_ssh_opts      = "";           # extra ssh options, e.g. "-i /home/usadmin/.ssh/id_rsa"
+$monitor_mount         = "";           # local mountpoint to health-check (mount mode), e.g. "/backup"
+$monitor_tcp_ports     = [];           # extra/override host:port checks, e.g. [ "nas:139", "nas:2049" ]
+$monitor_ports_off     = false;        # true = ping/mount checks only, skip all TCP probes
+$monitor_rpcinfo       = "auto";       # auto|off : verify NFSv3 mountd/nlockmgr/status registration
+$monitor_checks        = [];           # override probe set; empty = auto by mode
+                                       #   names: ping tcp ssh_rtt remote_fs mount_local rpcinfo throughput
+$monitor_throughput_mb = 0;            # >0 enables a fixed-size throughput probe (MB); off by default
+$monitor_interval      = 300;          # seconds between samples
+$monitor_logdir        = $rsync_logs;  # where log + csv + pidfile are written
+$monitor_alert         = false;        # email on threshold breach (reuses $backup_email_*)
+$monitor_keep          = 30;           # daily log/csv files to retain
+
+## Built-in per-fs default TCP port sets (auto-selected; override via $monitor_tcp_ports):
+##   cifs  => 445        (139 NetBIOS is legacy: add explicitly)
+##   nfs4  => 2049       (no rpcbind/mountd)
+##   nfs   => 111, 2049  (+ rpcinfo for mountd/nlockmgr/status, which use dynamic ports)
+##   iscsi => 3260
+
 
