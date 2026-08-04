@@ -898,11 +898,15 @@ function mon_remote_fs( $t ) {
         return $r;
     }
     $rp     = escapeshellarg( $t[ 'remote_path' ] );
+    # df first: times the endpoint AND triggers any autofs automount, so the
+    # following fs lookup sees the real backing fs (nfs/cifs) rather than "autofs"
     $remote =
           'p=' . $rp . '; '
-        . 'fs=$(findmnt -nro FSTYPE --target "$p" 2>/dev/null || stat -f -c %T "$p" 2>/dev/null); echo "FS=$fs"; '
-        . 'rc=$(grep -i reconnect /proc/fs/cifs/Stats 2>/dev/null | grep -oE "[0-9]+" | head -1); echo "RC=$rc"; '
         . 't0=$(date +%s.%N); a=$(df -Pk "$p" 2>/dev/null | awk "NR==2{print \\$4}"); t1=$(date +%s.%N); '
+        . 'fs=$(stat -f -c %T "$p" 2>/dev/null); '
+        . 'case "$fs" in ""|autofs|*utomount*) fs=$(findmnt -nro FSTYPE --target "$p" 2>/dev/null);; esac; '
+        . 'echo "FS=$fs"; '
+        . 'rc=$(grep -i reconnect /proc/fs/cifs/Stats 2>/dev/null | grep -oE "[0-9]+" | head -1); echo "RC=$rc"; '
         . 'echo "DFMS=$(awk "BEGIN{printf \\"%.1f\\",($t1-$t0)*1000}")"; echo "AVAIL=$a"';
     $out = mon_sh( mon_ssh_cmd( $t, 10, $remote ), $code );
     if ( $code !== 0 ) {
