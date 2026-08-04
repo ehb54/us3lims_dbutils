@@ -36,6 +36,7 @@ commands:
   restart      stop then start
   status       report running/stopped, pid, uptime, last sample, csv path
   foreground   run the loop attached (testing today; ExecStart for a future systemd unit)
+  recommend    inspect cron + recent backup logs and print a suggested window/interval
 
 options:
   --interval S     seconds between samples           (default: \$monitor_interval or 300)
@@ -43,6 +44,9 @@ options:
   --mode M         auto|ssh|mount|custom             (default: \$monitor_mode or auto)
   --host H         host/ip to ping/probe             (default: derived from config)
   --throughput MB  enable throughput probe, MB blob   (default: \$monitor_throughput_mb or 0=off)
+  --window W       backup window "HH:MM-HH:MM"|auto|off (default: \$monitor_window or off)
+  --window-interval S  fine sample interval in-window  (default: \$monitor_window_interval or 15)
+  --window-margin M    minutes padded around the window (default: \$monitor_window_margin or 10)
   --logdir DIR     dir for log + csv + pidfile        (default: \$monitor_logdir or \$rsync_logs)
   --pidfile FILE   pidfile path                       (default: <logdir>/$prog.pid)
   --grace S        stop grace before SIGKILL          (default: 10)
@@ -53,6 +57,11 @@ options:
 ssh-mode probes mimic the backup: ssh runs as \$backup_user, logging in as
 \$rsync_user with StrictHostKeyChecking=no (via runuser/sudo when needed). Run
 this tool as root or as \$backup_user so that identity's key is available.
+
+During the backup window the sampler switches to the finer --window-interval, so the
+endpoint is measured densely while the backup runs; outside it, --interval is used.
+"--window auto" derives the window from recent remote-*.log rsync start/finish times
+(falling back to the backup's cron start). "recommend" prints what it would pick.
 
 With no command, prints this help and exits (no action taken).
 
@@ -73,7 +82,7 @@ if ( !count( $u_argv ) || $u_argv[ 0 ] === '--help' || $u_argv[ 0 ] === '-h' ) {
 }
 
 $command       = array_shift( $u_argv );
-$valid_command = [ 'start', 'stop', 'restart', 'status', 'foreground' ];
+$valid_command = [ 'start', 'stop', 'restart', 'status', 'foreground', 'recommend' ];
 if ( !in_array( $command, $valid_command, true ) ) {
     error_exit( "unknown command '$command'\n\n$notes" );
 }
@@ -85,6 +94,9 @@ $opt = [
     'mode'       => null,
     'host'       => null,
     'throughput' => null,
+    'window'          => null,
+    'window_interval' => null,
+    'window_margin'   => null,
     'logdir'     => null,
     'pidfile'    => null,
     'grace'      => null,
@@ -98,6 +110,9 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) === '-' ) {
         case '--mode':       $opt[ 'mode' ]       = mon_req_val( $u_argv, $arg, $notes ); break;
         case '--host':       $opt[ 'host' ]       = mon_req_val( $u_argv, $arg, $notes ); break;
         case '--throughput': $opt[ 'throughput' ] = mon_req_val( $u_argv, $arg, $notes ); break;
+        case '--window':          $opt[ 'window' ]          = mon_req_val( $u_argv, $arg, $notes ); break;
+        case '--window-interval': $opt[ 'window_interval' ] = mon_req_val( $u_argv, $arg, $notes ); break;
+        case '--window-margin':   $opt[ 'window_margin' ]   = mon_req_val( $u_argv, $arg, $notes ); break;
         case '--logdir':     $opt[ 'logdir' ]     = mon_req_val( $u_argv, $arg, $notes ); break;
         case '--pidfile':    $opt[ 'pidfile' ]    = mon_req_val( $u_argv, $arg, $notes ); break;
         case '--grace':      $opt[ 'grace' ]      = mon_req_val( $u_argv, $arg, $notes ); break;
@@ -133,6 +148,9 @@ $M[ 'count' ]      = (int)(       $opt[ 'count' ]      !== null ? $opt[ 'count' 
 $M[ 'mode' ]       =              $opt[ 'mode' ]       !== null ? $opt[ 'mode' ]       : mon_cfg( 'monitor_mode', 'auto' );
 $M[ 'host' ]       =              $opt[ 'host' ]       !== null ? $opt[ 'host' ]       : mon_cfg( 'monitor_host', '' );
 $M[ 'throughput' ] = (int)(       $opt[ 'throughput' ] !== null ? $opt[ 'throughput' ] : mon_cfg( 'monitor_throughput_mb', 0 ) );
+$M[ 'window' ]          =          $opt[ 'window' ]          !== null ? $opt[ 'window' ]          : mon_cfg( 'monitor_window', '' );
+$M[ 'window_interval' ] = max( 1, (int)( $opt[ 'window_interval' ] !== null ? $opt[ 'window_interval' ] : mon_cfg( 'monitor_window_interval', 15 ) ) );
+$M[ 'window_margin' ]   = max( 0, (int)( $opt[ 'window_margin' ]   !== null ? $opt[ 'window_margin' ]   : mon_cfg( 'monitor_window_margin', 10 ) ) );
 $M[ 'grace' ]      = max( 1, (int)( $opt[ 'grace' ]     !== null ? $opt[ 'grace' ]      : 10 ) );
 $M[ 'alert' ]      = (bool)(      $opt[ 'alert' ]      !== null ? $opt[ 'alert' ]      : mon_cfg( 'monitor_alert', false ) );
 $M[ 'logdir' ]     =              $opt[ 'logdir' ]     !== null ? $opt[ 'logdir' ]     : mon_cfg( 'monitor_logdir', mon_cfg( 'rsync_logs', "$hdir/log" ) );
@@ -157,6 +175,7 @@ switch ( $command ) {
     case 'start':      exit( mon_do_start( $M, $config_file ) );
     case 'restart':    mon_do_stop( $M ); usleep( 300000 ); exit( mon_do_start( $M, $config_file ) );
     case 'foreground': exit( mon_do_foreground( $M ) );
+    case 'recommend':  exit( mon_do_recommend( $M ) );
 }
 exit( 0 );
 
@@ -373,6 +392,9 @@ function mon_build_fg_args( $M, $config_file ) {
         $a[] = '--host '   . escapeshellarg( $M[ 'host' ] );
     }
     $a[] = '--throughput ' . escapeshellarg( $M[ 'throughput' ] );
+    $a[] = '--window '          . escapeshellarg( $M[ 'window' ] );
+    $a[] = '--window-interval ' . escapeshellarg( $M[ 'window_interval' ] );
+    $a[] = '--window-margin '   . escapeshellarg( $M[ 'window_margin' ] );
     $a[] = '--logdir '     . escapeshellarg( $M[ 'logdir' ] );
     $a[] = '--pidfile '    . escapeshellarg( $M[ 'pidfile' ] );
     $a[] = '--grace '      . escapeshellarg( $M[ 'grace' ] );
@@ -404,13 +426,22 @@ function mon_do_foreground( $M ) {
         }
     } );
 
-    mon_emit( $M, "monitor started (pid " . getmypid() . ", interval {$M[ 'interval' ]}s, mode {$M[ 'mode' ]})" );
+    $window     = mon_resolve_window( $M );
+    $win_at     = time();
+    mon_emit( $M, "monitor started (pid " . getmypid() . ", interval {$M[ 'interval' ]}s, mode {$M[ 'mode' ]}, window " . mon_window_desc( $M, $window ) . ")" );
 
     $cycle = 0;
     while ( empty( $GLOBALS[ 'mon_stop' ] ) ) {
+        # re-derive an auto window hourly, so it tracks new backup logs
+        if ( $M[ 'window' ] === 'auto' && time() - $win_at >= 3600 ) {
+            $window = mon_resolve_window( $M );
+            $win_at = time();
+        }
+        list( $sleep, $tier ) = mon_effective_interval( $M, $window );
+
         $sample = mon_run_probes( $M );
         mon_write_csv( $M, $sample );
-        mon_emit( $M, mon_format_sample( $sample ) );
+        mon_emit( $M, mon_format_sample( $sample ) . ( $window ? " win=$tier" : "" ) );
         mon_maybe_alert( $M, $sample );
         mon_prune_old_logs( $M );
 
@@ -418,7 +449,7 @@ function mon_do_foreground( $M ) {
         if ( $M[ 'count' ] > 0 && $cycle >= $M[ 'count' ] ) {
             break;
         }
-        mon_interruptible_sleep( $M[ 'interval' ] );
+        mon_interruptible_sleep( $sleep );
     }
 
     mon_emit( $M, "monitor stopping (pid " . getmypid() . ", cycles $cycle)" );
@@ -440,6 +471,220 @@ function mon_interruptible_sleep( $secs ) {
         }
         sleep( 1 );
     }
+}
+
+# ===========================================================================
+# backup window: sample finely while the backup is expected to hit the endpoint
+# ===========================================================================
+
+# current local time as seconds-since-midnight (via `date`, which honors the
+# server timezone -- cron and the rsync logs are in local wall-clock time)
+function mon_now_sod() {
+    $hms = trim( mon_sh( 'date +%H:%M:%S' ) );
+    if ( preg_match( '/^(\d{1,2}):(\d{2}):(\d{2})/', $hms, $m ) ) {
+        return (int) $m[ 1 ] * 3600 + (int) $m[ 2 ] * 60 + (int) $m[ 3 ];
+    }
+    return (int) ( time() % 86400 );
+}
+
+function mon_fmt_sod( $sod ) {
+    $sod = ( (int) $sod % 86400 + 86400 ) % 86400;
+    return sprintf( '%02d:%02d', intdiv( $sod, 3600 ), intdiv( $sod % 3600, 60 ) );
+}
+
+# find the scheduled backup start from cron (returns ['raw'=>'HH:MM','sod'=>int,'line'=>..] or null)
+function mon_detect_cron( $M ) {
+    $srcs = [];
+    if ( is_readable( '/etc/crontab' ) ) {
+        $srcs[] = (string) @file_get_contents( '/etc/crontab' );
+    }
+    foreach ( (array) glob( '/etc/cron.d/*' ) as $f ) {
+        if ( is_readable( $f ) ) {
+            $srcs[] = (string) @file_get_contents( $f );
+        }
+    }
+    foreach ( [ 'root', (string) mon_cfg( 'backup_user', '' ) ] as $u ) {
+        if ( strlen( $u ) ) {
+            $out = mon_sh( "crontab -l -u " . escapeshellarg( $u ) );
+            if ( strlen( trim( $out ) ) ) {
+                $srcs[] = $out;
+            }
+        }
+    }
+    foreach ( $srcs as $src ) {
+        foreach ( explode( "\n", $src ) as $line ) {
+            $line = trim( $line );
+            if ( $line === '' || $line[ 0 ] === '#' ) {
+                continue;
+            }
+            if ( strpos( $line, 'uslims_daily_backup.php' ) === false && strpos( $line, 'uslims_daily_rsync.php' ) === false ) {
+                continue;
+            }
+            $f = preg_split( '/\s+/', $line );
+            if ( count( $f ) < 6 ) {
+                continue;
+            }
+            $min = $f[ 0 ];
+            $hour = $f[ 1 ];
+            if ( ctype_digit( (string) $min ) && ctype_digit( (string) $hour ) ) {
+                return [ 'raw' => sprintf( '%02d:%02d', $hour, $min ), 'sod' => (int) $hour * 3600 + (int) $min * 60, 'line' => $line ];
+            }
+            return [ 'raw' => "$min $hour", 'sod' => null, 'line' => $line ];
+        }
+    }
+    return null;
+}
+
+# derive when the rsync actually loads the endpoint, from recent remote-*.log files
+function mon_recent_backup_window( $M, $n = 7 ) {
+    $r = [ 'start_sod' => null, 'end_sod' => null, 'durations' => [], 'count' => 0 ];
+    $logdir = (string) mon_cfg( 'rsync_logs', $M[ 'logdir' ] );
+    $host   = (string) mon_cfg( 'backup_host', '' );
+    $files  = glob( $logdir . '/remote-' . ( strlen( $host ) ? $host . '-' : '' ) . '*.log' );
+    if ( !is_array( $files ) || !count( $files ) ) {
+        $files = glob( $logdir . '/remote-*.log' );
+    }
+    if ( !is_array( $files ) || !count( $files ) ) {
+        return $r;
+    }
+    sort( $files );
+    $files   = array_slice( $files, -$n );
+    $starts  = [];
+    $ends    = [];
+    $durs    = [];
+    foreach ( $files as $f ) {
+        $txt = (string) @file_get_contents( $f );
+        if ( preg_match( '/rsync started:.*?(\d{2}):(\d{2}):(\d{2})/', $txt, $ms ) ) {
+            $ss       = (int) $ms[ 1 ] * 3600 + (int) $ms[ 2 ] * 60 + (int) $ms[ 3 ];
+            $starts[] = $ss;
+            if ( preg_match( '/rsync finished:.*?(\d{2}):(\d{2}):(\d{2})/', $txt, $me ) ) {
+                $es      = (int) $me[ 1 ] * 3600 + (int) $me[ 2 ] * 60 + (int) $me[ 3 ];
+                $ends[]  = $es;
+                $dur     = $es - $ss;
+                if ( $dur < 0 ) {
+                    $dur += 86400; # finished after midnight
+                }
+                $durs[] = $dur;
+            }
+        }
+    }
+    if ( !count( $starts ) ) {
+        return $r;
+    }
+    $r[ 'durations' ] = $durs;
+    $r[ 'count' ]     = count( $starts );
+    $r[ 'start_sod' ] = min( $starts );
+    $r[ 'end_sod' ]   = count( $ends ) ? max( $ends ) : ( min( $starts ) + 7200 ); # +2h if none finished
+    return $r;
+}
+
+# resolve the active window: null (off), or ['start'=>sod,'end'=>sod,'src'=>...]
+function mon_resolve_window( $M ) {
+    $w = trim( (string) $M[ 'window' ] );
+    if ( $w === '' || $w === 'off' ) {
+        return null;
+    }
+    $margin = $M[ 'window_margin' ] * 60;
+    if ( preg_match( '/^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/', $w, $m ) ) {
+        $s = ( (int) $m[ 1 ] * 3600 + (int) $m[ 2 ] * 60 );
+        $e = ( (int) $m[ 3 ] * 3600 + (int) $m[ 4 ] * 60 );
+        return [ 'start' => ( $s - $margin + 86400 ) % 86400, 'end' => ( $e + $margin ) % 86400, 'src' => 'explicit' ];
+    }
+    if ( $w === 'auto' ) {
+        $rw = mon_recent_backup_window( $M );
+        if ( $rw[ 'start_sod' ] !== null ) {
+            return [ 'start' => ( $rw[ 'start_sod' ] - $margin + 86400 ) % 86400, 'end' => ( $rw[ 'end_sod' ] + $margin ) % 86400, 'src' => 'logs' ];
+        }
+        $cron = mon_detect_cron( $M );
+        if ( $cron && $cron[ 'sod' ] !== null ) {
+            $s = $cron[ 'sod' ];
+            return [ 'start' => ( $s - $margin + 86400 ) % 86400, 'end' => ( $s + 7200 + $margin ) % 86400, 'src' => 'cron' ];
+        }
+    }
+    return null;
+}
+
+function mon_in_window( $window, $sod ) {
+    if ( !$window ) {
+        return false;
+    }
+    $s = $window[ 'start' ];
+    $e = $window[ 'end' ];
+    if ( $s === $e ) {
+        return false;
+    }
+    return ( $s < $e ) ? ( $sod >= $s && $sod < $e ) : ( $sod >= $s || $sod < $e );
+}
+
+function mon_secs_until_window( $window, $sod ) {
+    $d = $window[ 'start' ] - $sod;
+    if ( $d <= 0 ) {
+        $d += 86400;
+    }
+    return $d;
+}
+
+# choose this cycle's sleep: fine interval in-window; coarse otherwise, but never
+# sleeping past the next window start so we don't miss its beginning
+function mon_effective_interval( $M, $window ) {
+    if ( !$window ) {
+        return [ $M[ 'interval' ], 'coarse' ];
+    }
+    $sod = mon_now_sod();
+    if ( mon_in_window( $window, $sod ) ) {
+        return [ max( 1, $M[ 'window_interval' ] ), 'fine' ];
+    }
+    return [ max( 1, min( $M[ 'interval' ], mon_secs_until_window( $window, $sod ) ) ), 'coarse' ];
+}
+
+function mon_window_desc( $M, $window ) {
+    if ( !$window ) {
+        return ( trim( (string) $M[ 'window' ] ) === 'auto' ) ? 'auto(undetected) off' : 'off';
+    }
+    return mon_fmt_sod( $window[ 'start' ] ) . '-' . mon_fmt_sod( $window[ 'end' ] )
+        . " src={$window[ 'src' ]} fine={$M[ 'window_interval' ]}s coarse={$M[ 'interval' ]}s";
+}
+
+function mon_do_recommend( $M ) {
+    echo "Backup-window detection\n" . str_repeat( '-', 64 ) . "\n";
+
+    $cron = mon_detect_cron( $M );
+    if ( $cron ) {
+        echo "cron backup start : {$cron[ 'raw' ]}" . ( $cron[ 'sod' ] === null ? "  (non-numeric schedule)" : "" ) . "\n";
+        echo "  from            : {$cron[ 'line' ]}\n";
+    } else {
+        echo "cron backup start : not found (searched /etc/crontab, /etc/cron.d, crontabs)\n";
+    }
+
+    $rw = mon_recent_backup_window( $M );
+    if ( $rw[ 'count' ] ) {
+        echo "recent rsync runs : {$rw[ 'count' ]} (from remote-*.log)\n";
+        echo "  earliest start  : " . mon_fmt_sod( $rw[ 'start_sod' ] ) . "\n";
+        echo "  latest finish   : " . mon_fmt_sod( $rw[ 'end_sod' ] ) . ( count( $rw[ 'durations' ] ) ? "" : "  (no finish lines; +2h assumed)" ) . "\n";
+        if ( count( $rw[ 'durations' ] ) ) {
+            $d = $rw[ 'durations' ];
+            sort( $d );
+            echo sprintf( "  rsync duration  : min %.0f / median %.0f / max %.0f min\n",
+                $d[ 0 ] / 60, $d[ intdiv( count( $d ), 2 ) ] / 60, end( $d ) / 60 );
+        }
+        $ws = ( $rw[ 'start_sod' ] - $M[ 'window_margin' ] * 60 + 86400 ) % 86400;
+        $we = ( $rw[ 'end_sod' ] + $M[ 'window_margin' ] * 60 ) % 86400;
+        echo "\nRecommended db_config.php settings (margin {$M[ 'window_margin' ]} min):\n";
+        echo "  \$monitor_window          = \"" . mon_fmt_sod( $ws ) . "-" . mon_fmt_sod( $we ) . "\";   # or \"auto\" to track logs\n";
+        echo "  \$monitor_window_interval = {$M[ 'window_interval' ]};    # seconds during the window\n";
+        echo "  \$monitor_interval        = {$M[ 'interval' ]};   # seconds outside it\n";
+    } else {
+        echo "recent rsync runs : none found in " . (string) mon_cfg( 'rsync_logs', $M[ 'logdir' ] ) . "/remote-*.log\n";
+        if ( $cron && $cron[ 'sod' ] !== null ) {
+            $ws = ( $cron[ 'sod' ] - $M[ 'window_margin' ] * 60 + 86400 ) % 86400;
+            $we = ( $cron[ 'sod' ] + 7200 + $M[ 'window_margin' ] * 60 ) % 86400;
+            echo "\nFallback recommendation (cron start + 2h, margin {$M[ 'window_margin' ]} min):\n";
+            echo "  \$monitor_window = \"" . mon_fmt_sod( $ws ) . "-" . mon_fmt_sod( $we ) . "\";\n";
+        } else {
+            echo "\nNo data to recommend from. Set an explicit \$monitor_window = \"HH:MM-HH:MM\".\n";
+        }
+    }
+    return 0;
 }
 
 # ===========================================================================

@@ -132,7 +132,12 @@ $monitor_rpcinfo       = "auto";       # auto|off : verify NFSv3 mountd/nlockmgr
 $monitor_checks        = [];           # override probe set; empty = auto by mode
                                        #   names: ping tcp ssh_rtt remote_fs mount_local rpcinfo throughput
 $monitor_throughput_mb = 0;            # >0 enables a fixed-size throughput probe (MB); off by default
-$monitor_interval      = 300;          # seconds between samples
+$monitor_interval      = 300;          # seconds between samples (outside the backup window)
+$monitor_window          = "";         # backup window: "HH:MM-HH:MM" | "auto" | "" (off)
+                                       #   auto: derive from recent remote-*.log rsync start/finish (else cron)
+                                       #   run 'php uslims_backup_monitor.php recommend' to see a suggestion
+$monitor_window_interval = 15;         # finer sample interval (s) DURING the backup window
+$monitor_window_margin   = 10;         # minutes padded around the detected/declared window
 $monitor_logdir        = $rsync_logs;  # where log + csv + pidfile are written
 $monitor_alert         = false;        # email on threshold breach (reuses $backup_email_*)
 $monitor_keep          = 30;           # daily log/csv files to retain
