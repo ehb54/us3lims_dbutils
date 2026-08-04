@@ -47,6 +47,8 @@ options:
   --window W       backup window "HH:MM-HH:MM"|auto|off (default: \$monitor_window or off)
   --window-interval S  fine sample interval in-window  (default: \$monitor_window_interval or 15)
   --window-margin M    minutes padded around the window (default: \$monitor_window_margin or 10)
+  --maintenance W  known-downtime window (repeatable): "YYYY-MM-DD HH:MM +36h"
+                   or "YYYY-MM-DD HH:MM / YYYY-MM-DD HH:MM" (default: \$monitor_maintenance)
   --logdir DIR     dir for log + csv + pidfile        (default: \$monitor_logdir or \$rsync_logs)
   --pidfile FILE   pidfile path                       (default: <logdir>/$prog.pid)
   --grace S        stop grace before SIGKILL          (default: 10)
@@ -62,6 +64,10 @@ During the backup window the sampler switches to the finer --window-interval, so
 endpoint is measured densely while the backup runs; outside it, --interval is used.
 "--window auto" derives the window from recent remote-*.log rsync start/finish times
 (falling back to the backup's cron start). "recommend" prints what it would pick.
+
+During a --maintenance window samples are still taken and logged, but their status is
+recorded as "maint" (not "fail") and alerts are suppressed, so planned downtime is
+easy to separate from real outages. Datetimes are parsed in the server's timezone.
 
 With no command, prints this help and exits (no action taken).
 
@@ -97,6 +103,7 @@ $opt = [
     'window'          => null,
     'window_interval' => null,
     'window_margin'   => null,
+    'maintenance'     => null,
     'logdir'     => null,
     'pidfile'    => null,
     'grace'      => null,
@@ -113,6 +120,10 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) === '-' ) {
         case '--window':          $opt[ 'window' ]          = mon_req_val( $u_argv, $arg, $notes ); break;
         case '--window-interval': $opt[ 'window_interval' ] = mon_req_val( $u_argv, $arg, $notes ); break;
         case '--window-margin':   $opt[ 'window_margin' ]   = mon_req_val( $u_argv, $arg, $notes ); break;
+        case '--maintenance':
+            if ( $opt[ 'maintenance' ] === null ) { $opt[ 'maintenance' ] = []; }
+            $opt[ 'maintenance' ][] = mon_req_val( $u_argv, $arg, $notes );
+            break;
         case '--logdir':     $opt[ 'logdir' ]     = mon_req_val( $u_argv, $arg, $notes ); break;
         case '--pidfile':    $opt[ 'pidfile' ]    = mon_req_val( $u_argv, $arg, $notes ); break;
         case '--grace':      $opt[ 'grace' ]      = mon_req_val( $u_argv, $arg, $notes ); break;
@@ -151,6 +162,7 @@ $M[ 'throughput' ] = (int)(       $opt[ 'throughput' ] !== null ? $opt[ 'through
 $M[ 'window' ]          =          $opt[ 'window' ]          !== null ? $opt[ 'window' ]          : mon_cfg( 'monitor_window', '' );
 $M[ 'window_interval' ] = max( 1, (int)( $opt[ 'window_interval' ] !== null ? $opt[ 'window_interval' ] : mon_cfg( 'monitor_window_interval', 15 ) ) );
 $M[ 'window_margin' ]   = max( 0, (int)( $opt[ 'window_margin' ]   !== null ? $opt[ 'window_margin' ]   : mon_cfg( 'monitor_window_margin', 10 ) ) );
+$M[ 'maintenance' ]     = $opt[ 'maintenance' ] !== null ? $opt[ 'maintenance' ] : mon_maint_normalize( mon_cfg( 'monitor_maintenance', [] ) );
 $M[ 'grace' ]      = max( 1, (int)( $opt[ 'grace' ]     !== null ? $opt[ 'grace' ]      : 10 ) );
 $M[ 'alert' ]      = (bool)(      $opt[ 'alert' ]      !== null ? $opt[ 'alert' ]      : mon_cfg( 'monitor_alert', false ) );
 $M[ 'logdir' ]     =              $opt[ 'logdir' ]     !== null ? $opt[ 'logdir' ]     : mon_cfg( 'monitor_logdir', mon_cfg( 'rsync_logs', "$hdir/log" ) );
@@ -395,6 +407,9 @@ function mon_build_fg_args( $M, $config_file ) {
     $a[] = '--window '          . escapeshellarg( $M[ 'window' ] );
     $a[] = '--window-interval ' . escapeshellarg( $M[ 'window_interval' ] );
     $a[] = '--window-margin '   . escapeshellarg( $M[ 'window_margin' ] );
+    foreach ( (array) $M[ 'maintenance' ] as $mw ) {
+        $a[] = '--maintenance ' . escapeshellarg( $mw );
+    }
     $a[] = '--logdir '     . escapeshellarg( $M[ 'logdir' ] );
     $a[] = '--pidfile '    . escapeshellarg( $M[ 'pidfile' ] );
     $a[] = '--grace '      . escapeshellarg( $M[ 'grace' ] );
@@ -428,7 +443,8 @@ function mon_do_foreground( $M ) {
 
     $window     = mon_resolve_window( $M );
     $win_at     = time();
-    mon_emit( $M, "monitor started (pid " . getmypid() . ", interval {$M[ 'interval' ]}s, mode {$M[ 'mode' ]}, window " . mon_window_desc( $M, $window ) . ")" );
+    $maint      = mon_parse_maintenance( $M );
+    mon_emit( $M, "monitor started (pid " . getmypid() . ", interval {$M[ 'interval' ]}s, mode {$M[ 'mode' ]}, window " . mon_window_desc( $M, $window ) . ", maintenance " . count( $maint ) . ")" );
 
     $cycle = 0;
     while ( empty( $GLOBALS[ 'mon_stop' ] ) ) {
@@ -440,6 +456,11 @@ function mon_do_foreground( $M ) {
         list( $sleep, $tier ) = mon_effective_interval( $M, $window );
 
         $sample = mon_run_probes( $M );
+        if ( mon_in_maintenance( $maint, $sample[ 'epoch' ] ) ) {
+            # planned downtime: keep the probe values + real outcome, but flag it
+            $sample[ 'notes' ]  = trim( 'maint ' . $sample[ 'notes' ] );
+            $sample[ 'status' ] = 'maint';
+        }
         mon_write_csv( $M, $sample );
         mon_emit( $M, mon_format_sample( $sample ) . ( $window ? " win=$tier" : "" ) );
         mon_maybe_alert( $M, $sample );
@@ -645,6 +666,73 @@ function mon_window_desc( $M, $window ) {
         . " src={$window[ 'src' ]} fine={$M[ 'window_interval' ]}s coarse={$M[ 'interval' ]}s";
 }
 
+# ---- maintenance windows: known downtime, tagged (not failed) and alert-suppressed ----
+
+function mon_maint_normalize( $spec ) {
+    if ( is_array( $spec ) ) {
+        return array_values( array_filter( array_map( 'strval', $spec ), 'strlen' ) );
+    }
+    $spec = trim( (string) $spec );
+    return strlen( $spec ) ? [ $spec ] : [];
+}
+
+# parse a datetime string to an epoch via `date -d` (honors the server timezone)
+function mon_parse_epoch( $s ) {
+    $s = trim( $s );
+    if ( $s === '' ) {
+        return null;
+    }
+    $out = trim( mon_sh( "date -d " . escapeshellarg( $s ) . " +%s" ) );
+    return ctype_digit( $out ) ? (int) $out : null;
+}
+
+function mon_parse_duration_secs( $s ) {
+    if ( preg_match( '/^\+?\s*(\d+)\s*([smhd])$/i', trim( $s ), $m ) ) {
+        $mult = [ 's' => 1, 'm' => 60, 'h' => 3600, 'd' => 86400 ];
+        return (int) $m[ 1 ] * $mult[ strtolower( $m[ 2 ] ) ];
+    }
+    return null;
+}
+
+# turn the maintenance specs into a list of [start_epoch, end_epoch]
+function mon_parse_maintenance( $M ) {
+    $windows = [];
+    foreach ( (array) $M[ 'maintenance' ] as $w ) {
+        $w = trim( (string) $w );
+        if ( $w === '' ) {
+            continue;
+        }
+        $start = null;
+        $end   = null;
+        if ( strpos( $w, '/' ) !== false ) {
+            list( $a, $b ) = array_map( 'trim', explode( '/', $w, 2 ) );
+            $start = mon_parse_epoch( $a );
+            $end   = mon_parse_epoch( $b );
+        } else if ( preg_match( '/^(.*?)\s*\+\s*(\d+\s*[smhd])$/i', $w, $m ) ) {
+            $start = mon_parse_epoch( $m[ 1 ] );
+            $dur   = mon_parse_duration_secs( $m[ 2 ] );
+            if ( $start !== null && $dur !== null ) {
+                $end = $start + $dur;
+            }
+        }
+        if ( $start !== null && $end !== null && $end > $start ) {
+            $windows[] = [ 'start' => $start, 'end' => $end ];
+        } else {
+            mon_emit( $M, "WARNING: could not parse maintenance window '$w' (need \"... +36h\" or \"... / ...\")" );
+        }
+    }
+    return $windows;
+}
+
+function mon_in_maintenance( $windows, $epoch ) {
+    foreach ( (array) $windows as $w ) {
+        if ( $epoch >= $w[ 'start' ] && $epoch < $w[ 'end' ] ) {
+            return true;
+        }
+    }
+    return false;
+}
+
 function mon_do_recommend( $M ) {
     echo "Backup-window detection\n" . str_repeat( '-', 64 ) . "\n";
 
@@ -846,9 +934,10 @@ function mon_tcp( $host, $port, $timeout = 5 ) {
     return [ 'ok' => true, 'ms' => round( $ms, 2 ), 'err' => '' ];
 }
 
-# run $cmd as $user, exactly as the backup drops privilege: no-op if we already are
-# that user; 'runuser -l' when root; 'sudo -H -u' otherwise. Returns $cmd unchanged
-# when $user is empty. escapeshellarg nesting unwinds cleanly through the extra shell.
+# run $cmd as $user: no-op if we already are that user. Prefer 'sudo -H -u' -- no
+# login shell (so ssh_rtt reflects the real handshake, not profile sourcing), -H
+# points HOME at the account so its key is found, and it matches the backup's own
+# 'sudo -u $backup_user' rsync path. Fall back to 'runuser -l' only if sudo is absent.
 function mon_as_user( $user, $cmd ) {
     if ( !strlen( $user ) ) {
         return $cmd;
@@ -861,10 +950,13 @@ function mon_as_user( $user, $cmd ) {
     if ( $cur === $user ) {
         return $cmd;
     }
+    if ( mon_have_cmd( 'sudo' ) ) {
+        return 'sudo -H -u ' . escapeshellarg( $user ) . ' ' . $cmd;
+    }
     if ( $cur === 'root' ) {
         return 'runuser -l ' . escapeshellarg( $user ) . ' -c ' . escapeshellarg( $cmd );
     }
-    return 'sudo -H -u ' . escapeshellarg( $user ) . ' ' . $cmd;
+    return $cmd;
 }
 
 # build the ssh command exactly as the backup does: run as $backup_user, log in as
@@ -1270,7 +1362,7 @@ function mon_format_sample( $s ) {
 }
 
 function mon_maybe_alert( $M, $s ) {
-    if ( !$M[ 'alert' ] || $s[ 'status' ] === 'ok' ) {
+    if ( !$M[ 'alert' ] || $s[ 'status' ] === 'ok' || $s[ 'status' ] === 'maint' ) {
         return;
     }
     $last = (int) mon_state_get( $M, 'last_alert' );

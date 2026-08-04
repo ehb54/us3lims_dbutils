@@ -138,6 +138,9 @@ $monitor_window          = "";         # backup window: "HH:MM-HH:MM" | "auto" |
                                        #   run 'php uslims_backup_monitor.php recommend' to see a suggestion
 $monitor_window_interval = 15;         # finer sample interval (s) DURING the backup window
 $monitor_window_margin   = 10;         # minutes padded around the detected/declared window
+$monitor_maintenance     = [];         # known downtime -> rows tagged status=maint, alerts suppressed
+                                       #   e.g. [ "2026-08-04 12:00 +36h" ] or
+                                       #        [ "2026-08-04 12:00 / 2026-08-06 00:00" ]  (server timezone)
 $monitor_logdir        = $rsync_logs;  # where log + csv + pidfile are written
 $monitor_alert         = false;        # email on threshold breach (reuses $backup_email_*)
 $monitor_keep          = 30;           # daily log/csv files to retain
