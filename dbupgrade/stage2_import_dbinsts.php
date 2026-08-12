@@ -23,6 +23,13 @@ $cwd = getcwd();
 
 require "../utility.php";
 
+# these runs take hours over more than a hundred databases, so every phase says
+# where it is and when it got there
+
+function progress_label( $pos, $end ) {
+    return "($pos/$end " . trim( timestamp() ) . ")";
+}
+
 $notes = <<<__EOD
 usage: $self {options} dbhost {config_file}
 
@@ -279,13 +286,16 @@ get_yn_answer( "Are you really sure the binary backup is good?", true );
 
 if ( get_yn_answer( "drop existing dbinstance from the database (THIS CAN NOT BE UNDONE!)?" ) ) {
     # checked on database rename to backup old, but was reported dangerous!
+    $phase_pos = 0;
+    $phase_end = count( $dbnames_used );
     foreach ( $dbnames_used as $db => $v ) {
         echoline();
+        $phase_pos++;
         if ( !array_key_exists( $db, $server_dbs ) ) {
-            echo "Not in the server, nothing to drop: $db\n";
+            echo "Not in the server, nothing to drop " . progress_label( $phase_pos, $phase_end ) . ": $db\n";
             continue;
         }
-        echo "Dropping dbinstance: $db\n";
+        echo "Dropping dbinstance " . progress_label( $phase_pos, $phase_end ) . ": $db\n";
         $query = "drop database $db";
         check_db();
         db_obj_result( $db_handle, $query );
@@ -340,9 +350,12 @@ $cfgs   = parse_ini_file( $us3ini, true );
 
 
 if ( get_yn_answer( "create dbinstances?" ) ) {
+    $phase_pos = 0;
+    $phase_end = count( $dbnames_used );
     foreach ( $dbnames_used as $db => $val ) {
         echoline();
-        echo "Creating dbinstance: $db\n";
+        $phase_pos++;
+        echo "Creating dbinstance " . progress_label( $phase_pos, $phase_end ) . ": $db\n";
         $sqldata = "export-$use_dbhost-$db.sql.$compressext";
         if ( !file_exists( $sqldata ) ) {
             error_exit( "File '$sqldata' missing." );
@@ -503,9 +516,12 @@ $server_dbs_after = array_fill_keys( existing_dbs(), 1 );
 echoline();
 echo "Verifying record counts for " . count( $verify_dbs ) . " databases";
 echo $verify_run_only ? " imported by this run\n" : " in the export package\n";
+$phase_pos = 0;
+$phase_end = count( $verify_dbs );
 foreach ( $verify_dbs as $db => $val ) {
     echoline();
-    echo "Verifying record counts for $db\n";
+    $phase_pos++;
+    echo "Verifying record counts " . progress_label( $phase_pos, $phase_end ) . " for $db\n";
     if ( !array_key_exists( $db, $server_dbs_after ) ) {
         echo "ERROR: $db is not present in the server, not verified\n";
         $verified_absent[] = $db;
