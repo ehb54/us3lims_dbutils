@@ -45,6 +45,8 @@ Options
 --only-missing         : limit to dbs in the package not currently in the server
 --workdir              : reuse an already extracted package directory instead of
                          extracting the tarfile again
+--verify-run-only      : verify record counts only for the dbs this run imported
+                         instead of every db in the package
 
 __EOD;
 
@@ -54,6 +56,7 @@ array_shift( $u_argv ); # first element is program name
 $use_dbs             = [];
 $only_missing        = false;
 $use_workdir         = "";
+$verify_run_only     = false;
 
 while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     switch( $arg = $u_argv[ 0 ] ) {
@@ -80,6 +83,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                 error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
             }
             $use_workdir = array_shift( $u_argv );
+            break;
+        }
+        case "--verify-run-only": {
+            array_shift( $u_argv );
+            $verify_run_only = true;
             break;
         }
       default:
@@ -450,22 +458,85 @@ if ( count( $dups_removed ) ) {
 }
 
 # verify table record counts
+# every database in the package is verified, whether or not this run imported it,
+# so the summary is a complete record of the server state.  --verify-run-only
+# narrows it to what this run actually did.
+
+$verify_dbs = $verify_run_only ? $dbnames_used : $package_dbs;
+
+$verified_ok       = [];
+$verified_newonly  = [];
+$verified_differed = [];
+$verified_absent   = [];
+
+# the export snapshot predates any table the schema has gained since, so those show
+# up in every diff as empty additions.  telling them apart from a real row count
+# change is the difference between a summary that means something and one that
+# flags all 126 databases
+
+function classify_reccount_diff( $diff ) {
+    $new_tables = false;
+    foreach ( explode( "\n", $diff ) as $line ) {
+        if ( !strlen( $line ) || ( $line[ 0 ] != '<' && $line[ 0 ] != '>' ) ) {
+            continue;
+        }
+        if ( $line[ 0 ] == '<' ) {
+            return "differ";
+        }
+        if ( !preg_match( '/^> \S+ 0$/', $line ) ) {
+            return "differ";
+        }
+        $new_tables = true;
+    }
+    return $new_tables ? "newonly" : "same";
+}
+
+function report_verify_group( $label, $dbs ) {
+    echo sprintf( "%-32s : %d\n", $label, count( $dbs ) );
+    if ( count( $dbs ) ) {
+        echo implode( ' ', $dbs ) . "\n";
+    }
+}
+
+$server_dbs_after = array_fill_keys( existing_dbs(), 1 );
 
 echoline();
-echo "Verifying record counts\n";
-foreach ( $dbnames_used as $db => $val ) {
+echo "Verifying record counts for " . count( $verify_dbs ) . " databases";
+echo $verify_run_only ? " imported by this run\n" : " in the export package\n";
+foreach ( $verify_dbs as $db => $val ) {
     echoline();
     echo "Verifying record counts for $db\n";
+    if ( !array_key_exists( $db, $server_dbs_after ) ) {
+        echo "ERROR: $db is not present in the server, not verified\n";
+        $verified_absent[] = $db;
+        continue;
+    }
     $e_reccount = "export-$use_dbhost-$db-record-counts.txt";
     $i_reccount = "import-$use_dbhost-$db-record-counts.txt";
     $cmd = "php ../../table_record_counts.php $db ../../db_config.php > $i_reccount";
-    run_cmd( $cmd );
-    if ( !file_exists( $i_reccount ) ) {
+    run_cmd( $cmd, false );
+    clearstatcache( true, $i_reccount );
+    if ( !file_exists( $i_reccount ) || !filesize( $i_reccount ) ) {
         echo  "ERROR: could not create '$i_reccount'\n";
+        $verified_absent[] = $db;
     } else {
         echoline();
         $cmd = "diff $e_reccount $i_reccount";
         echo "$cmd :\n";
-        echo run_cmd( $cmd, false );
+        $diff = run_cmd( $cmd, false );
+        echo $diff;
+        switch ( classify_reccount_diff( $diff ) ) {
+            case "differ"  : $verified_differed[] = $db; break;
+            case "newonly" : $verified_newonly[]  = $db; break;
+            default        : $verified_ok[]       = $db; break;
+        }
     }
 }
+
+echoline( '=' );
+echo "record count verification summary\n";
+echoline();
+report_verify_group( "identical to export",            $verified_ok );
+report_verify_group( "empty new schema tables only",   $verified_newonly );
+report_verify_group( "RECORD COUNTS DIFFER",           $verified_differed );
+report_verify_group( "not verified",                   $verified_absent );
