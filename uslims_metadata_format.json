@@ -1,6 +1,6 @@
 # comments supported
 {
-    "version"          : "1.0"
+    "version"          : "2.0"
 
     ,"output_dir"      : "/tmp/training"
 
@@ -79,6 +79,12 @@
             ,"job.jobParameters.curves_points.@attributes.value"
             ,"job.jobParameters.tikreg_option.@attributes.value"
             ,"job.jobParameters.tikreg_alpha.@attributes.value"
+            ,"job.jobParameters.fit_mb_select.@attributes.value"
+            ,"job.datasetCount.@attributes.value"
+            ,"job.global_fit.@attributes.value"
+            ,"has_cg_model"
+            ,"has_dc_model"
+            ,"bucket_count"
         ]
         ,"target" : [
             "wallTime"

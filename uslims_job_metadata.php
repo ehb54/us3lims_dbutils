@@ -388,6 +388,13 @@ if ( $metadata ) {
         $input_format[] = "edited_scans.$i";
         $input_format[] = "edited_radial_points.$i";
         $input_format[] = "simpoints.$i";
+        $input_format[] = "radial_grid.$i";
+        $input_format[] = "time_grid.$i";
+        $input_format[] = "meniscus.$i";
+        $input_format[] = "bottom.$i";
+        $input_format[] = "rotorspeed.$i";
+        $input_format[] = "duration_hrs.$i";
+        $input_format[] = "duration_mins.$i";
     }
 
     sort( $input_format, SORT_NATURAL );
@@ -452,6 +459,7 @@ $counts_template->missing_raw_data             = 0;
 $counts_template->auc_decoding_error           = 0;
 $counts_template->missing_dataset_parameters   = 0;
 $counts_template->missing_edited_data          = 0;
+$counts_template->missing_speedstep_data       = 0;
 $counts_template->error_decoding_xml           = 0;
 
 $global_counts = json_decode( json_encode( $counts_template ) );
@@ -490,6 +498,63 @@ foreach ( $use_dbs as $db ) {
 
     $hpcareqs = db_obj_result( $db_handle, $query , true, true );
 
+    ## Pre-pass: decode every job's XML (not cached -- see memory note below) and collect
+    ## every dataset's speedstep expID -- lets us fetch speedstep data in ONE batched query
+    ## per database instead of one query per dataset. speedstep is 1:many per experiment
+    ## (multiple speed steps), so it can't be safely JOINed into the per-dataset
+    ## editedData/rawData queries below without duplicating rows.
+    ## $hpcareqs is a buffered mysqli result (mysqli_query defaults to MYSQLI_STORE_RESULT),
+    ## so mysqli_data_seek can rewind it for the main loop without a second DB round trip.
+    ##
+    ## Memory note (found 2026-07-13 via a real --limit 2000 run against uslims3_CCH, which
+    ## exhausted PHP's 2GB memory_limit here): an earlier version of this pre-pass also cached
+    ## every job's decoded XML object (to avoid re-decoding in the main loop below), keyed by
+    ## request ID. That doesn't scale -- holding every job's full decoded XML tree in memory
+    ## simultaneously for the whole batch blew the memory limit on just 2,000 jobs, nowhere
+    ## near a full ~137K-job production run. Deliberately NOT caching here; the main loop
+    ## re-decodes each job's XML itself (a small, bounded, per-job CPU cost) instead of
+    ## holding the whole batch's decoded trees in RAM at once.
+    $speedstep_by_expid = [];
+
+    if ( $hpcareqs ) {
+        $needed_exp_ids = [];
+        while( $hpcareq_pre = mysqli_fetch_array( $hpcareqs ) ) {
+            if ( false === ( $xml_decoded_pre = @simplexml_load_string( $hpcareq_pre['requestXMLFile'] ) ) ) {
+                continue;
+            }
+            $xmlj_pre = json_decode( json_encode( $xml_decoded_pre ) );
+
+            if ( !is_object( $xmlj_pre ) || !isset( $xmlj_pre->dataset ) ) {
+                continue;
+            }
+            $datasets_pre = is_array( $xmlj_pre->dataset ) ? $xmlj_pre->dataset : [ $xmlj_pre->dataset ];
+            foreach ( $datasets_pre as $dataset_pre ) {
+                ## <speedstep> decodes to a single object for one speed step, or an array
+                ## for multiple (nstep > 1) -- expID is the same across all steps of a
+                ## dataset, so the first element's value is sufficient either way.
+                @$speedstep_pre = $dataset_pre->parameters->speedstep;
+                @$expid_pre     = is_array( $speedstep_pre )
+                    ? $speedstep_pre[0]->{'@attributes'}->expID
+                    : $speedstep_pre->{'@attributes'}->expID;
+                if ( isset( $expid_pre ) ) {
+                    $needed_exp_ids[ $expid_pre ] = true;
+                }
+            }
+        }
+        mysqli_data_seek( $hpcareqs, 0 );
+
+        if ( count( $needed_exp_ids ) ) {
+            $exp_id_list = implode( ',', array_map( 'intval', array_keys( $needed_exp_ids ) ) );
+            $query       = "select experimentID, rotorspeed, durationhrs, durationmins from ${db}.speedstep where experimentID in ($exp_id_list)";
+            $ssresult    = db_obj_result( $db_handle, $query, true, true );
+            if ( $ssresult ) {
+                while ( $ssrow = mysqli_fetch_array( $ssresult ) ) {
+                    $speedstep_by_expid[ $ssrow['experimentID'] ][] = $ssrow;
+                }
+            }
+        }
+    }
+
     if ( $hpcareqs ) {
         while( $hpcareq = mysqli_fetch_array($hpcareqs) ) {
             $thisreqid = $hpcareq['HPCAnalysisRequestID'];
@@ -500,19 +565,49 @@ foreach ( $use_dbs as $db ) {
             $meta->analType     = $hpcareq['analType'];
             $meta->experimentID = $hpcareq['experimentID'];
             $meta->xml          = explode( "\n", $hpcareq['requestXMLFile'] );
+
+            ## Not reused from the pre-pass above -- see the memory note there. Re-decoding
+            ## here is a small, bounded per-job cost; caching the whole batch's decoded XML
+            ## in memory is not (confirmed: exhausted 2GB on a 2,000-job run).
             if ( false === ( $xml_decoded = @simplexml_load_string( $hpcareq['requestXMLFile'] ) ) ) {
                 $counts->error_decoding_xml++;
                 continue;
             }
-            
-            $meta->xmlj         = json_decode( json_encode( $xml_decoded ) );
+            $meta->xmlj = json_decode( json_encode( $xml_decoded ) );
+
             $meta->xmls         = (object)squash( $meta->xmlj );
-            
+
             if ( !is_object( $meta->xmlj ) ) {
                 echo_json( "metadata non object", $meta );
                 echo_json( "HPCAnalysisRequest : $thisreqid", $hpcareq );
                 error_exit( "non-object xmlj");
             }
+
+            ## analType is a DB column (HPCAnalysisRequest.analType), not part of the XML --
+            ## kept here for debug/QA output (--json, --list-analysis-type) only. NOT added
+            ## to fields->input: it's a free-text string (e.g. "2DSA-MC", "2DSA_CG-FM") and
+            ## --metadata-csv requires every fields->input value to be strictly numeric
+            ## (confirmed 2026-07-13 -- error_exit("non float data...") otherwise). The
+            ## custom-grid distinction this was meant to support is better served by the
+            ## has_cg_model/has_dc_model numeric flags below anyway.
+            $meta->xmls->analType = $meta->analType;
+
+            ## bucket_count: number of <bucket> elements under <job><jobParameters> -- a count,
+            ## not a stored attribute, so squash() alone can't capture it.
+            if ( isset( $meta->xmlj->job->jobParameters->bucket ) ) {
+                $meta->xmls->bucket_count = is_array( $meta->xmlj->job->jobParameters->bucket )
+                    ? count( $meta->xmlj->job->jobParameters->bucket )
+                    : 1;
+            } else {
+                $meta->xmls->bucket_count = 0;
+            }
+
+            ## has_cg_model/has_dc_model: numeric presence flags, not the filename itself --
+            ## the filename is free text (same --metadata-csv numeric requirement as above),
+            ## and a boolean flag is what the custom-grid complexity gap (see
+            ## algorithm-complexity-reference.md sec 6) actually needs.
+            $meta->xmls->has_cg_model = isset( $meta->xmlj->job->jobParameters->CG_model ) ? 1 : 0;
+            $meta->xmls->has_dc_model = isset( $meta->xmlj->job->jobParameters->DC_model ) ? 1 : 0;
 
             if ( $datasetcount > 0
                  && $meta->xmlj->job->datasetCount->{'@attributes'}->value != $datasetcount ) {
@@ -606,6 +701,13 @@ foreach ( $use_dbs as $db ) {
             $meta->datasets->edited_radial_points = [];
             $meta->datasets->edited_data_points   = [];
             $meta->datasets->simpoints            = [];
+            $meta->datasets->radial_grid          = [];
+            $meta->datasets->time_grid            = [];
+            $meta->datasets->meniscus             = [];
+            $meta->datasets->bottom               = [];
+            $meta->datasets->rotorspeed           = [];
+            $meta->datasets->duration_hrs         = [];
+            $meta->datasets->duration_mins        = [];
 
             # echo "HPCAnalysisRequestID $thisreqid checking dataset\n";
             # echo_json( "--> xmlj", $meta->xmlj );
@@ -619,8 +721,54 @@ foreach ( $use_dbs as $db ) {
                 # echo_json( "dataset", $dataset );
                 @$file      = $dataset->files->auc->{'@attributes'}->filename;
                 @$edit      = $dataset->files->edit->{'@attributes'}->filename;
-                @$expID     = $dataset->parameters->speedstep->{'@attributes'}->expID;
-                @$simpoints = intVal( $dataset->parameters->simpoints->{'@attributes'}->value );
+
+                ## <speedstep> decodes to a single object for one speed step, or an array
+                ## for multiple (nstep > 1) -- expID is the same across all steps of a
+                ## dataset, so the first element's value is sufficient either way. Without
+                ## this check, multi-step datasets silently failed isset($expID) below and
+                ## the whole job was dropped via missing_dataset_parameters.
+                @$speedstep = $dataset->parameters->speedstep;
+                @$expID     = is_array( $speedstep )
+                    ? $speedstep[0]->{'@attributes'}->expID
+                    : $speedstep->{'@attributes'}->expID;
+
+                ## rotorspeed/duration: looked up from the pre-pass's batched speedstep
+                ## query (in-memory, no per-dataset DB call). Aggregated the same way
+                ## checkGridSize() (utils/us_solve_sim.cpp) does: rpm_max = max(rotorspeed),
+                ## time_max = max(single-step duration) across every speed step for this
+                ## experiment -- not a sum, matching the C++ per-step qMax() logic.
+                ##
+                ## -1 sentinel (not 0) when no speedstep row matches this expID -- confirmed
+                ## 2026-07-13 against real uslims3_CCH data that this really happens (e.g.
+                ## experimentID 2517/2533 have zero speedstep rows despite being referenced by
+                ## real jobs, same "referenced record later became unavailable" pattern as the
+                ## missing_edited_data case). Unlike missing_edited_data, this does NOT skip the
+                ## whole job -- rotorspeed/duration are new, additive fields with no dependency
+                ## from the pre-existing core features (edited_scans/edited_radial_points etc.),
+                ## so excluding an otherwise-valid job over an optional field would lose more
+                ## than it protects. 0 would be silently indistinguishable from this case (and
+                ## physically meaningless as a real rotor speed) -- -1 matches the script's own
+                ## existing "n/a" sentinel convention used elsewhere.
+                $rotorspeed    = -1;
+                $duration_hrs  = -1;
+                $duration_mins = -1.0;
+                if ( isset( $expID ) && isset( $speedstep_by_expid[ $expID ] ) ) {
+                    $max_step_mins = 0.0;
+                    $rotorspeed    = 0;
+                    foreach ( $speedstep_by_expid[ $expID ] as $ssrow ) {
+                        $rotorspeed    = max( $rotorspeed, intVal( $ssrow['rotorspeed'] ) );
+                        $step_mins     = intVal( $ssrow['durationhrs'] ) * 60.0 + floatval( $ssrow['durationmins'] );
+                        $max_step_mins = max( $max_step_mins, $step_mins );
+                    }
+                    $duration_hrs  = intVal( $max_step_mins / 60 );
+                    $duration_mins = $max_step_mins - ( $duration_hrs * 60 );
+                } else if ( isset( $expID ) ) {
+                    $counts->missing_speedstep_data++;
+                }
+
+                @$simpoints   = intVal( $dataset->parameters->simpoints->{'@attributes'}->value );
+                @$radial_grid = intVal( $dataset->parameters->radial_grid->{'@attributes'}->value );
+                @$time_grid   = intVal( $dataset->parameters->time_grid->{'@attributes'}->value );
                 # echo "file $file expID $expID edit $edit (HPCAnalysisRequest experimentID $meta->experimentID)\n";
                 if ( !isset( $file ) || !isset($expID) || !isset($edit) ) {
                     ## error_exit( "HPCAnalysisRequestID $thisreqid missing expected dataset file & expID & edit" );
@@ -646,6 +794,13 @@ foreach ( $use_dbs as $db ) {
 
                 $editeddata->xmlj = json_decode( json_encode( $xml_decoded ) );
                 $editeddata->xmls = (object)squash( $editeddata->xmlj );
+
+                ## meniscus/bottom: physical run positions (radius, cm), distinct from the
+                ## meniscus_points/bottom_points position-*search* counts in jobParameters.
+                ## Live in the edit file's <run><parameters>, sibling to data_range above,
+                ## using a "radius" attribute rather than the usual "value".
+                @$meniscus = floatval( $editeddata->xmlj->run->parameters->meniscus->{'@attributes'}->radius );
+                @$bottom   = floatval( $editeddata->xmlj->run->parameters->bottom->{'@attributes'}->radius );
 
                 # echo_json( "edit xmlj", $editeddata->xmlj );
                 # echo_json( "edit xmls", $editeddata->xmls );
@@ -709,6 +864,13 @@ foreach ( $use_dbs as $db ) {
                 $meta->datasets->edited_radial_points[] = $datastats->edited_radial_points;
                 $meta->datasets->edited_scans[]         = $datastats->edited_scans;
                 $meta->datasets->simpoints[]            = $simpoints;
+                $meta->datasets->radial_grid[]           = $radial_grid;
+                $meta->datasets->time_grid[]             = $time_grid;
+                $meta->datasets->meniscus[]              = $meniscus;
+                $meta->datasets->bottom[]                = $bottom;
+                $meta->datasets->rotorspeed[]             = $rotorspeed;
+                $meta->datasets->duration_hrs[]           = $duration_hrs;
+                $meta->datasets->duration_mins[]          = $duration_mins;
 
                 # echo_json( "auc2obj", $datastats );
 
@@ -725,6 +887,13 @@ foreach ( $use_dbs as $db ) {
                 $meta->datasets->edited_radial_points[] = 0;
                 $meta->datasets->edited_scans[]         = 0;
                 $meta->datasets->simpoints[]            = 0;
+                $meta->datasets->radial_grid[]           = 0;
+                $meta->datasets->time_grid[]             = 0;
+                $meta->datasets->meniscus[]              = 0;
+                $meta->datasets->bottom[]                = 0;
+                $meta->datasets->rotorspeed[]             = 0;
+                $meta->datasets->duration_hrs[]           = 0;
+                $meta->datasets->duration_mins[]          = 0;
             }
 
             if ( $skip ) {
