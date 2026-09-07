@@ -2,9 +2,9 @@
 
 {};
 
-$self = __FILE__;
+$self = $argv[0];
 ini_set('memory_limit','2G');
-$metadata_format_file = "uslims_metadata_format.json";
+$metadata_format_file = __DIR__ . "/uslims_metadata_format.json";
 
 $notes = <<<__EOD
 usage: $self {options} {db_config_file}
@@ -40,8 +40,8 @@ Options
 __EOD;
 
 
-require "utility.php";
-require "auc2obj.php";
+require __DIR__ . "/utility.php";
+require __DIR__ . "/auc2obj.php";
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
@@ -278,7 +278,7 @@ $use_config_file does not exist
 
 to fix:
 
-cp ${config_file}.template $use_config_file
+cp {$config_file}.template $use_config_file
 and edit with appropriate values
 "
         );
@@ -293,6 +293,8 @@ if ( !file_exists( $metadata_format_file ) ) {
 
 ## remove comment lines
 $metadata_format = json_decode( implode( "\n",preg_grep( '/^\s*#/', explode( "\n", file_get_contents( $metadata_format_file ) ), PREG_GREP_INVERT ) ) );
+
+if (!is_object($metadata_format)) error_exit("Invalid metadata formatter JSON: " . json_last_error_msg());
 
 if ( !empty( $metadataoutputdirectory ) ) {
     $metadata_format->output_dir = $metadataoutputdirectory;
@@ -355,793 +357,461 @@ if ( $pythonppcode && !$metadata ) {
     error_exit( "--python-pp-code requires --metadata" );
 }
 
+function usmd_attr( $node, $name ) {
+    if ( $node === null ) return null;
+    $attrs = $node->attributes();
+    return isset( $attrs[$name] ) ? trim( (string)$attrs[$name] ) : null;
+}
+
+function usmd_param( $job_parameters, $name, $type = "string" ) {
+    if ( $job_parameters === null || !isset( $job_parameters->{$name} ) ) return null;
+    $raw = usmd_attr( $job_parameters->{$name}, "value" );
+    if ( $raw === null || $raw === "" ) return null;
+    if ( $type === "int" ) return filter_var( $raw, FILTER_VALIDATE_INT ) !== false ? intval( $raw ) : null;
+    if ( $type === "float" ) return is_numeric( $raw ) && is_finite( floatval( $raw ) ) ? floatval( $raw ) : null;
+    return $raw;
+}
+
+function usmd_dataset_nodes( $xml ) {
+    if ( !isset( $xml->dataset ) ) return [];
+    $out = [];
+    foreach ( $xml->dataset as $dataset ) $out[] = $dataset;
+    return $out;
+}
+
+function usmd_bucket_rows( $jp ) {
+    $rows = [];
+    if ( $jp === null || !isset( $jp->bucket ) ) return $rows;
+    foreach ( $jp->bucket as $bucket ) {
+        $rows[] = [
+            "x_min" => is_numeric( usmd_attr( $bucket, "x_min" ) ) ? floatval( usmd_attr( $bucket, "x_min" ) ) : null,
+            "x_max" => is_numeric( usmd_attr( $bucket, "x_max" ) ) ? floatval( usmd_attr( $bucket, "x_max" ) ) : null,
+            "y_min" => is_numeric( usmd_attr( $bucket, "y_min" ) ) ? floatval( usmd_attr( $bucket, "y_min" ) ) : null,
+            "y_max" => is_numeric( usmd_attr( $bucket, "y_max" ) ) ? floatval( usmd_attr( $bucket, "y_max" ) ) : null
+        ];
+    }
+    return $rows;
+}
+
+function usmd_parse_model( $xml_text, $kind ) {
+    if ( $xml_text === null || trim( $xml_text ) === "" )
+        return [ "status" => "missing", "reason" => "model XML unavailable" ];
+    $xml = @simplexml_load_string( $xml_text );
+    if ( $xml === false || !isset( $xml->model ) )
+        return [ "status" => "invalid", "reason" => "model XML is not parseable ModelData" ];
+    $model = $xml->model;
+    $analytes = count( $model->analyte );
+    if ($analytes < 1) return ["status"=>"invalid","reason"=>"model has no components"];
+    $associations = count( $model->association );
+    if ( $kind === "cg" ) {
+        $subgrids = usmd_attr( $model, "subGrids" );
+        $subgrids = filter_var( $subgrids, FILTER_VALIDATE_INT ) !== false ? intval( $subgrids ) : null;
+        if ( $analytes < 1 || $subgrids === null || $subgrids < 1 )
+            return [ "status" => "invalid", "reason" => "CG model needs analytes and positive subGrids" ];
+        return [ "status" => "available", "component_count" => $analytes, "declared_subgrids" => $subgrids ];
+    }
+    /* Mirror US_dmGA_Constraints::constraints_from_model(). A 000V_ analyte is
+       one fixed base component; otherwise L/H records form one base component.
+       F counts the selected X/Y/Z/concentration values whose bounds differ.
+       Associations are always low/high pairs and may float K_d and/or k_off. */
+    $component_nodes=[]; foreach($model->analyte as $node)$component_nodes[]=$node;
+    $components=0;$floating=0;
+    for($i=0;$i<count($component_nodes);$i++){
+        $low=$component_nodes[$i];$name=usmd_attr($low,"name")??"";$flag=substr($name,0,5);
+        if(strpos($flag,"V")!==false){$components++;continue;}
+        if(strpos($flag,"L")===false||!isset($component_nodes[$i+1]))return ["status"=>"invalid","reason"=>"DMGA component constraint pair is malformed"];
+        $high=$component_nodes[++$i];$high_name=usmd_attr($high,"name")??"";
+        if(strpos(substr($high_name,0,5),"H")===false||substr($name,5)!==substr($high_name,5))return ["status"=>"invalid","reason"=>"DMGA component low/high names do not pair"];
+        $lv=usmd_dmga_component_values($low);$hv=usmd_dmga_component_values($high);
+        foreach(["x","y","z","concentration"] as $key)if($lv[$key]!=$hv[$key])$floating++;
+        $components++;
+    }
+    $association_nodes=[];foreach($model->association as $node)$association_nodes[]=$node;
+    if(count($association_nodes)%2)return ["status"=>"invalid","reason"=>"DMGA association constraint pair is malformed"];
+    $base_associations=intdiv(count($association_nodes),2);
+    for($i=0;$i<count($association_nodes);$i+=2)foreach(["K_d","k_off"] as $key)if(floatval(usmd_attr($association_nodes[$i],$key))!=floatval(usmd_attr($association_nodes[$i+1],$key)))$floating++;
+    return [
+        "status" => "available",
+        "floating_constraints" => $floating,
+        "base_components" => $components,
+        "base_associations" => $base_associations
+    ];
+}
+
+function usmd_dmga_component_values( $node ) {
+    $values=[];foreach(["s","f_f0","mw","D","f","vbar20"] as $name)$values[$name]=floatval(usmd_attr($node,$name));
+    $ordered=["s","f_f0","mw","D","f","vbar20"];$selected=[];
+    foreach($ordered as $name)if($values[$name]!=0.0)$selected[]=$values[$name];
+    return ["x"=>$selected[0]??0.0,"y"=>$selected[1]??0.0,"z"=>$selected[2]??0.0,"concentration"=>floatval(usmd_attr($node,"signal"))];
+}
+
+function usmd_parse_wall_seconds( $value ) {
+    if ( preg_match( '/^(\d+):(\d{1,2}):(\d{1,2})$/', trim( $value ), $m ) )
+        return intval( $m[1] ) * 3600 + intval( $m[2] ) * 60 + intval( $m[3] );
+    return null;
+}
+
+function usmd_parse_jobfile( $jobfile ) {
+    $out = [
+        "parser_version" => "jobfile-resources-1.0",
+        "parser_status" => "missing",
+        "scheduler_family" => null,
+        "requested_nodes" => null,
+        "requested_ranks" => null,
+        "requested_cores" => null,
+        "requested_memory_per_core" => null,
+        "requested_memory_total" => null,
+        "requested_wall_limit" => null,
+        "units" => [ "requested_memory_per_core"=>"bytes/core", "requested_memory_total"=>"bytes", "requested_wall_limit"=>"seconds" ],
+        "evidence" => []
+    ];
+    if ( $jobfile === null || trim( $jobfile ) === "" ) return $out;
+    $out["parser_status"] = "unsupported-format";
+    if ( preg_match( '/^#PBS\s+-l\s+[^\r\n]*nodes=(\d+):ppn=(\d+)/mi', $jobfile, $m ) ) {
+        $out["scheduler_family"] = "PBS";
+        $out["requested_nodes"] = intval( $m[1] );
+        /* ppn is placement capacity, not proof that ranks equal cores. */
+        $out["evidence"]["pbs_ppn"] = intval( $m[2] );
+        $out["parser_status"] = "partial";
+    }
+    if ( preg_match( '/^#PBS\s+-l\s+[^\r\n]*walltime=([0-9:]+)/mi', $jobfile, $m ) ) {
+        $out["requested_wall_limit"] = usmd_parse_wall_seconds( $m[1] );
+        $out["parser_status"] = "partial";
+    }
+    if ( preg_match( '/^#SBATCH\s+(?:--nodes(?:=|\s+)|-N\s*)(\d+)/m', $jobfile, $m ) ) {
+        $out["scheduler_family"] = "Slurm";
+        $out["requested_nodes"] = intval( $m[1] );
+        $out["parser_status"] = "partial";
+    }
+    if ( preg_match( '/^#SBATCH\s+(?:--ntasks(?:=|\s+)|-n\s*)(\d+)/m', $jobfile, $m ) ) {
+        $out["scheduler_family"] = "Slurm";
+        $out["requested_ranks"] = intval( $m[1] );
+        $out["parser_status"] = "partial";
+    }
+    if ( preg_match( '/\b(?:mpirun|mpiexec|ibrun)\b[^\r\n]*(?:\s-np\s+|\s-n\s+)(\d+)/i', $jobfile, $m ) ) {
+        $out["requested_ranks"] = intval( $m[1] );
+        $out["parser_status"] = "partial";
+    }
+    if ( preg_match( '/\bus_mpi_analysis\b[^\r\n]*\s-walltime\s+(\d+)/i', $jobfile, $m ) ) {
+        /* The application consumes this value as minutes (max_walltime). */
+        $out["evidence"]["application_wall_minutes"] = intval( $m[1] );
+        $application_seconds = intval( $m[1] ) * 60;
+        if ( $out["requested_wall_limit"] === null ) $out["requested_wall_limit"] = $application_seconds;
+        elseif ( $out["requested_wall_limit"] !== $application_seconds )
+            $out["evidence"]["wall_limit_conflict"] = [ "scheduler_seconds"=>$out["requested_wall_limit"], "application_seconds"=>$application_seconds ];
+        $out["parser_status"] = "partial";
+    }
+    // Preserve explicit Slurm allocation directives; do not infer cores from ranks.
+    if (preg_match('/^#SBATCH\s+(?:--cpus-per-task(?:=|\s+)|-c\s*)(\d+)/m', $jobfile, $m)) {
+        $out["evidence"]["cpus_per_task"] = intval($m[1]);
+        if ($out["requested_ranks"] !== null) $out["requested_cores"] = $out["requested_ranks"] * intval($m[1]);
+    }
+    foreach (["--mem-per-cpu"=>"requested_memory_per_core", "--mem"=>"requested_memory_total"] as $option=>$field) {
+        if (preg_match('/^#SBATCH\s+'.preg_quote($option,'/').'(?:=|\s+)(\d+)([KMGT]?)(?:\s|$)/mi', $jobfile, $m)) {
+            $unit = strtoupper($m[2] ?: 'M');
+            $factor = ['K'=>1024, 'M'=>1048576, 'G'=>1073741824, 'T'=>1099511627776][$unit];
+            // Slurm's zero means all available memory, not a zero-byte request.
+            if (intval($m[1]) > 0) $out[$field] = intval($m[1]) * $factor;
+            else $out["evidence"][$field] = 'all-available';
+            $out["scheduler_family"] = 'Slurm';
+        }
+    }
+    if (preg_match('/^#SBATCH\s+(?:--time(?:=|\s+)|-t\s*)([0-9:-]+)/m', $jobfile, $m)) {
+        $parts = explode('-', $m[1]); $days = count($parts)===2 ? intval(array_shift($parts)) : 0;
+        $clock = explode(':', $parts[0]);
+        if (strpos($m[1], '-') !== false) {
+            $seconds = $days*86400 + intval($clock[0])*3600 + intval($clock[1]??0)*60 + intval($clock[2]??0);
+        } elseif (count($clock)===3) {
+            $seconds = intval($clock[0])*3600 + intval($clock[1])*60 + intval($clock[2]);
+        } else {
+            $seconds = intval($clock[0])*60 + intval($clock[1]??0);
+        }
+        if ($out["requested_wall_limit"]!==null && $out["requested_wall_limit"]!==$seconds)
+            $out["evidence"]["wall_limit_conflict"] = ["scheduler_seconds"=>$seconds,"application_seconds"=>$out["requested_wall_limit"]];
+        $out["requested_wall_limit"] = $seconds > 0 ? $seconds : null;
+        $out["scheduler_family"] = 'Slurm';
+    }
+    if ( $out["requested_nodes"] !== null || $out["requested_ranks"] !== null || $out["requested_wall_limit"] !== null )
+        $out["parser_status"] = "parsed";
+    return $out;
+}
+
+function usmd_sql_string( $value ) { global $db_handle; return "'".mysqli_real_escape_string($db_handle,$value)."'"; }
+function usmd_request_xml( $text, &$normalization ) {
+    $normalization=null;
+    $xml=@simplexml_load_string($text);
+    if($xml!==false)return $xml;
+    // Newer archived rows contain a JSON-escaped XML string without the outer
+    // JSON quotes. Decode that representation only after ordinary XML fails.
+    if(is_string($text)&&0===strpos($text,'<?xml version=\\"')){
+        $decoded=json_decode('"'.$text.'"');
+        if(is_string($decoded)){
+            $xml=@simplexml_load_string($decoded);
+            if($xml!==false){$normalization="json-string-unescape";return $xml;}
+        }
+    }
+    return false;
+}
+function usmd_model_from_db( $db, $node, $kind, &$cache ) {
+    global $db_handle;
+    if($node===null)return ["status"=>"missing","reason"=>strtoupper($kind)." model reference missing"];
+    $id=usmd_attr($node,"id");$filename=usmd_attr($node,"filename");
+    if(filter_var($id,FILTER_VALIDATE_INT)===false)return ["status"=>"missing","model_id"=>$id,"filename"=>$filename,"reason"=>"model ID unavailable"];
+    $key="$db/$kind/".intval($id);if(isset($cache[$key]))return $cache[$key];
+    $row=db_obj_result($db_handle,"select modelID,description,xml from {$db}.model where modelID=".intval($id)." limit 1",false,true);
+    if(!$row)return $cache[$key]=["status"=>"missing","model_id"=>intval($id),"filename"=>$filename,"reason"=>"model row unavailable"];
+    $parsed=usmd_parse_model($row->xml??null,$kind);$parsed["model_id"]=intval($id);$parsed["filename"]=$filename;$parsed["description"]=$row->description??null;
+    return $cache[$key]=$parsed;
+}
+function usmd_speedsteps( $db ) {
+    global $db_handle;$map=[];
+    $rows=db_obj_result($db_handle,"select experimentID,rotorspeed,durationhrs,durationmins from {$db}.speedstep",true,true);
+    if($rows)while($row=mysqli_fetch_assoc($rows))$map[intval($row["experimentID"])][]=["rotor_speed_rpm"=>is_numeric($row["rotorspeed"])?intval($row["rotorspeed"]):null,"duration_seconds"=>is_numeric($row["durationhrs"])&&is_numeric($row["durationmins"])?intval(round((floatval($row["durationhrs"])*60+floatval($row["durationmins"]))*60)):null];
+    return $map;
+}
+function usmd_dataset_features( $db, $xml, $speedsteps, &$issues ) {
+    global $db_handle;
+    $out=["scan_count_by_dataset"=>[],"point_count_by_dataset"=>[],"simulation_points_by_dataset"=>[],"radial_grid_type_by_dataset"=>[],"time_grid_type_by_dataset"=>[],"meniscus_radius_cm_by_dataset"=>[],"bottom_radius_cm_by_dataset"=>[],"speed_profile_by_dataset"=>[]];
+    foreach(usmd_dataset_nodes($xml) as $index=>$dataset){
+
+        foreach(["simpoints"=>"simulation_points_by_dataset","radial_grid"=>"radial_grid_type_by_dataset","time_grid"=>"time_grid_type_by_dataset"] as $xmlname=>$outname){$v=isset($dataset->parameters->{$xmlname})?usmd_attr($dataset->parameters->{$xmlname},"value"):null;$out[$outname][]=filter_var($v,FILTER_VALIDATE_INT)!==false?intval($v):null;}
+        $expid=null;if(isset($dataset->parameters->speedstep))foreach($dataset->parameters->speedstep as $sn){$v=usmd_attr($sn,"expID");if(filter_var($v,FILTER_VALIDATE_INT)!==false){$expid=intval($v);break;}}
+        $out["speed_profile_by_dataset"][]=$expid!==null&&isset($speedsteps[$expid])?$speedsteps[$expid]:null;
+        $edit=isset($dataset->files->edit)?usmd_attr($dataset->files->edit,"filename"):null;
+        if($edit===null){$issues[]=["dataset_index"=>$index,"code"=>"missing-edit-filename"];$out["scan_count_by_dataset"][]=null;$out["point_count_by_dataset"][]=null;$out["meniscus_radius_cm_by_dataset"][]=null;$out["bottom_radius_cm_by_dataset"][]=null;continue;}
+        $edited=db_obj_result($db_handle,"select rawDataID,data from {$db}.editedData where filename=".usmd_sql_string($edit)." order by lastUpdated desc limit 1",false,true);
+        if(!$edited||($editxml=@simplexml_load_string($edited->data))===false){$issues[]=["dataset_index"=>$index,"code"=>"missing-or-invalid-edited-data"];$out["scan_count_by_dataset"][]=null;$out["point_count_by_dataset"][]=null;$out["meniscus_radius_cm_by_dataset"][]=null;$out["bottom_radius_cm_by_dataset"][]=null;continue;}
+        $men=isset($editxml->run->parameters->meniscus)?usmd_attr($editxml->run->parameters->meniscus,"radius"):null;$bot=isset($editxml->run->parameters->bottom)?usmd_attr($editxml->run->parameters->bottom,"radius"):null;
+        $out["meniscus_radius_cm_by_dataset"][]=is_numeric($men)?floatval($men):null;$out["bottom_radius_cm_by_dataset"][]=is_numeric($bot)?floatval($bot):null;
+        $rawrow=db_obj_result($db_handle,"select data from {$db}.rawData where rawDataID=".intval($edited->rawDataID),false,true);
+        if(!$rawrow){$issues[]=["dataset_index"=>$index,"code"=>"missing-raw-data"];$out["scan_count_by_dataset"][]=null;$out["point_count_by_dataset"][]=null;continue;}
+
+        $auc=auc2obj($rawrow->data);$excluded=0;if(isset($editxml->run->excludes->exclude))foreach($editxml->run->excludes->exclude as $_)$excluded++;
+        $left=isset($editxml->run->parameters->data_range)?usmd_attr($editxml->run->parameters->data_range,"left"):null;$right=isset($editxml->run->parameters->data_range)?usmd_attr($editxml->run->parameters->data_range,"right"):null;
+        $scans=isset($auc->scans)?$auc->scans-$excluded:null;$points=is_numeric($left)&&is_numeric($right)&&isset($auc->radius_delta)&&$auc->radius_delta>0?intval(floor((floatval($right)-floatval($left))/$auc->radius_delta)):null;
+        $out["scan_count_by_dataset"][]=$scans>0?$scans:null;$out["point_count_by_dataset"][]=$points>0?$points:null;
+    }
+    return $out;
+}
+// Family classification is shared by every method, before numeric formatting.
+function csv_method_family($label) {
+    $label = strtoupper(trim((string)$label));
+    $label = str_replace('2DSA_CG','2DSA-CG',$label);
+    if (preg_match('/^2DSA-CG(?:-(?:FB|FM|FMB|IT|MC|GL))*$/',$label)) return '2DSA-CG';
+    if (preg_match('/^2DSA(?:-(?:FB|FM|FMB|IT|MC|GL))*$/',$label)) return '2DSA';
+    if (preg_match('/^DMGA(?:-MC)*$/',$label)) return 'DMGA';
+    if (preg_match('/^GA(?:-(?:MC|GL))*$/',$label)) return 'GA';
+    if (preg_match('/^PCSA(?:-(?:SL|IS|DS|HL|2O|ALL|GL|TR|MC))*$/',$label)) return 'PCSA';
+    return null;
+}
+function csv_research_method($root, $db_label, $xml_label, $has_cg, $has_dc, $valid_xml) {
+    if (!$valid_xml) return [null,'invalid-request-xml'];
+    $families=[];
+    foreach ([$root,$db_label,$xml_label] as $label) {
+        if ($label===null || trim((string)$label)==='') continue;
+        $family=csv_method_family($label);
+        if ($family===null) return [null,'unrecognized-label'];
+        $families[]=$family;
+    }
+    if (!$families) return [null,'missing-label'];
+    $groups=array_unique(array_map(function($f) { return $f==='2DSA-CG'?'2DSA':$f; },$families));
+    if (count($groups)!==1) return [null,'conflicting-method-labels'];
+    $family=reset($groups);
+    if (($has_cg && $family!=='2DSA') || ($has_dc && $family!=='DMGA')) return [null,'conflicting-model-reference'];
+    if ($family==='2DSA') {
+        if ($has_cg || in_array('2DSA-CG',$families,true)) return ['2DSA-CG',$has_cg?'classified':'missing-cg-reference'];
+        return ['2DSA','classified'];
+    }
+    return [$family,($family==='DMGA' && !$has_dc)?'missing-dc-reference':'classified'];
+}
+
+function csv_number($value) {
+    if (is_string($value)) $value = str_replace(',', '.', trim($value));
+    return is_numeric($value) && is_finite((float)$value) ? (float)$value : null;
+}
+function csv_timestamp($value) {
+    if (!$value) return null;
+    $time = strtotime($value);
+    return $time === false ? null : $time;
+}
+function csv_write($path, $data) {
+    if (file_put_contents($path, $data) === false) throw new RuntimeException("Cannot write $path");
+}
+
+$input_format = $metadata_format->fields->input;
+$dataset_fields = $metadata_format->dataset_fields ?? ['edited_scans','edited_radial_points','simpoints'];
+foreach ($dataset_fields as $field) {
+    for ($i = 0; $i < $metadata_format->maximum_datasets; ++$i) $input_format[] = "$field.$i";
+}
+sort($input_format, SORT_NATURAL);
+$target_format = $metadata_format->fields->target;
+sort($target_format, SORT_NATURAL);
+$missing_value = $metadata_format->missing_value ?? -1;
+$columns = array_merge($input_format, $target_format);
+if (count($columns) !== count(array_unique($columns))) throw new RuntimeException('Duplicate CSV columns');
+$pppcolnames = "    '" . implode("',\n    '", array_merge($input_format,$target_format)) . "'\n";
+$csv_handle = null;
+if ($metadata) {
+    if (!is_dir($metadata_format->output_dir)) throw new RuntimeException('Create metadata output directory first');
+    $description = $metadata_format->output_dir . '/' . str_replace('__version__',$metadata_format->version,$metadata_format->filename_format->description);
+    csv_write($description.'.input',json_encode($input_format,JSON_PRETTY_PRINT)."\n");
+    csv_write($description.'.target',json_encode($target_format,JSON_PRETTY_PRINT)."\n");
+    csv_write($description.'_metadata_format.json',json_encode($metadata_format,JSON_PRETTY_PRINT)."\n");
+    if ($metadatacsv) {
+        $csv_handle = fopen($metadata_format->output_dir.'/'.$metadatacsv,'wb');
+        if (!$csv_handle || fwrite($csv_handle,implode(' ',$columns)."\n") === false) throw new RuntimeException('Cannot write CSV header');
+    }
+}
 open_db();
-
-$existing_dbs = existing_dbs();
-if ( !count( $use_dbs ) ) {
-    $use_dbs = $existing_dbs;
-} else {
-    $db_diff = array_diff( $use_dbs, $existing_dbs );
-    if ( count( $db_diff ) ) {
-        error_exit( "specified --db not found in database : " . implode( ' ', $db_diff ) );
-    }
-}
-
-$csv_data      = [];
-
-if ( $metadata ) {
-    if ( !is_dir( $metadata_format->output_dir ) ) {
-        error_exit( "metadata output dir $metadata_format->output_dir is not an existing directory\nPlease create this directory and rerun" );
-    }
-
-    ## create format templates
-
-    $template_base_description_filename =
-        $metadata_format->output_dir
-        . "/"
-        . str_replace( "__version__", $metadata_format->version, $metadata_format->filename_format->description )
-        ;
-
-    $input_format = $metadata_format->fields->input;
-    
-    for ( $i = 0; $i < $metadata_format->maximum_datasets; ++$i ) {
-        $input_format[] = "edited_scans.$i";
-        $input_format[] = "edited_radial_points.$i";
-        $input_format[] = "simpoints.$i";
-        $input_format[] = "radial_grid.$i";
-        $input_format[] = "time_grid.$i";
-        $input_format[] = "meniscus.$i";
-        $input_format[] = "bottom.$i";
-        $input_format[] = "rotorspeed.$i";
-        $input_format[] = "duration_hrs.$i";
-        $input_format[] = "duration_mins.$i";
-    }
-
-    sort( $input_format, SORT_NATURAL );
-
-    # echo_json( "$template_base_description_filename", $input_format );
-
-    $import_format_filename = $template_base_description_filename . "." . $metadata_format->filename_format->extension->input;
-
-    if ( false ===
-         file_put_contents(
-             $import_format_filename
-             , json_encode( $input_format, JSON_PRETTY_PRINT ) . "\n" )
-        ) {
-        error_exit( "error creating file $import_format_filename" );
-    }
-
-    $target_format = $metadata_format->fields->target;
-    
-    sort( $target_format, SORT_NATURAL );
-
-    $target_format_filename = $template_base_description_filename . "." . $metadata_format->filename_format->extension->target;
-
-    if ( false ===
-         file_put_contents(
-             $target_format_filename
-             , json_encode( $target_format, JSON_PRETTY_PRINT ) . "\n" )
-        ) {
-        error_exit( "error creating file $target_format_filename" );
-    }
-
-    $metadata_format_copy_filename = $template_base_description_filename . "_metadata_format.json";
-
-    if ( false ===
-         file_put_contents(
-             $metadata_format_copy_filename
-             , json_encode( $metadata_format, JSON_PRETTY_PRINT ) . "\n" )
-        ) {
-        error_exit( "error creating file $metadata_format_copy_filename" );
-    }
-
-    if ( $pythonppcode ) {
-        $pppcolnames = "    '" . implode( "',\n    '", array_merge( $input_format, $target_format ) ) . "'\n";
-        # echo "----\n" . $colnamespy . "\n----\n";
-    }
-    if ( $metadatacsv ) {
-        $csv_data[] = implode( ' ', array_merge( $input_format, $target_format ) );
-    }
-}
-    
-$string_variants = (object)[];
-foreach ( $metadata_format->string_mapping as $k => $v ) {
-    $string_variants->{$k} = (object)[];
-}
-
-$counts_template = (object)[];
-
-$counts_template->total                        = 0;
-$counts_template->ok                           = 0;
-$counts_template->analysis_failed              = 0;
-$counts_template->no_analysis_result           = 0;
-$counts_template->missing_raw_data             = 0;
-$counts_template->auc_decoding_error           = 0;
-$counts_template->missing_dataset_parameters   = 0;
-$counts_template->missing_edited_data          = 0;
-$counts_template->missing_speedstep_data       = 0;
-$counts_template->error_decoding_xml           = 0;
-
-$global_counts = json_decode( json_encode( $counts_template ) );
-
-function accum_global_counts() {
-    global $counts;
-    global $global_counts;
-
-    foreach ( $counts as $k => $v ) {
-        $global_counts->{$k} += $v;
-    }
-}
-
-foreach ( $use_dbs as $db ) {
-    if ( in_array( $db, $exclude_dbs ) ) {
-        continue;
-    }
-
-    headerline( "db $db" );
-
-    $query   = "select * from ${db}.HPCAnalysisRequest where requestXMLFile is not null";
-    if ( $reqid_used ) {
-        $query .= " and HPCAnalysisRequest.HPCAnalysisRequestID=$reqid";
-    }
-    if ( $reqid_range_used ) {
-        $query .= " and HPCAnalysisRequest.HPCAnalysisRequestID>=$reqid_start and HPCAnalysisRequest.HPCAnalysisRequestID<=$reqid_end";
-    }
-    if ( !empty($analysistype ) ) {
-        $query .= " and HPCAnalysisRequest.analType='$analysistype'";
-    }
-    if ( !empty($analysistyperlike ) ) {
-        $query .= " and HPCAnalysisRequest.analType rlike '$analysistyperlike'";
-    }
-
-    $counts = json_decode( json_encode( $counts_template ) );
-
-    $hpcareqs = db_obj_result( $db_handle, $query , true, true );
-
-    ## Pre-pass: decode every job's XML (not cached -- see memory note below) and collect
-    ## every dataset's speedstep expID -- lets us fetch speedstep data in ONE batched query
-    ## per database instead of one query per dataset. speedstep is 1:many per experiment
-    ## (multiple speed steps), so it can't be safely JOINed into the per-dataset
-    ## editedData/rawData queries below without duplicating rows.
-    ## $hpcareqs is a buffered mysqli result (mysqli_query defaults to MYSQLI_STORE_RESULT),
-    ## so mysqli_data_seek can rewind it for the main loop without a second DB round trip.
-    ##
-    ## Memory note (found 2026-07-13 via a real --limit 2000 run against uslims3_CCH, which
-    ## exhausted PHP's 2GB memory_limit here): an earlier version of this pre-pass also cached
-    ## every job's decoded XML object (to avoid re-decoding in the main loop below), keyed by
-    ## request ID. That doesn't scale -- holding every job's full decoded XML tree in memory
-    ## simultaneously for the whole batch blew the memory limit on just 2,000 jobs, nowhere
-    ## near a full ~137K-job production run. Deliberately NOT caching here; the main loop
-    ## re-decodes each job's XML itself (a small, bounded, per-job CPU cost) instead of
-    ## holding the whole batch's decoded trees in RAM at once.
-    $speedstep_by_expid = [];
-
-    if ( $hpcareqs ) {
-        $needed_exp_ids = [];
-        while( $hpcareq_pre = mysqli_fetch_array( $hpcareqs ) ) {
-            if ( false === ( $xml_decoded_pre = @simplexml_load_string( $hpcareq_pre['requestXMLFile'] ) ) ) {
-                continue;
-            }
-            $xmlj_pre = json_decode( json_encode( $xml_decoded_pre ) );
-
-            if ( !is_object( $xmlj_pre ) || !isset( $xmlj_pre->dataset ) ) {
-                continue;
-            }
-            $datasets_pre = is_array( $xmlj_pre->dataset ) ? $xmlj_pre->dataset : [ $xmlj_pre->dataset ];
-            foreach ( $datasets_pre as $dataset_pre ) {
-                ## <speedstep> decodes to a single object for one speed step, or an array
-                ## for multiple (nstep > 1) -- expID is the same across all steps of a
-                ## dataset, so the first element's value is sufficient either way.
-                @$speedstep_pre = $dataset_pre->parameters->speedstep;
-                @$expid_pre     = is_array( $speedstep_pre )
-                    ? $speedstep_pre[0]->{'@attributes'}->expID
-                    : $speedstep_pre->{'@attributes'}->expID;
-                if ( isset( $expid_pre ) ) {
-                    $needed_exp_ids[ $expid_pre ] = true;
-                }
-            }
+$existing = existing_dbs();
+if (!$use_dbs) $use_dbs = $existing;
+if (array_diff($use_dbs,$existing)) throw new RuntimeException('Requested database not found');
+$string_variants = [];
+$model_cache = [];
+$global_counts = ['requests'=>0,'records'=>0,'invalid_xml'=>0,'filtered_dataset_count'=>0,'missing_results'=>0,'incomplete_results'=>0];
+foreach ($use_dbs as $db) {
+    if (in_array($db,$exclude_dbs,true)) continue;
+    $query = "select * from {$db}.HPCAnalysisRequest where 1=1";
+    if ($reqid_used) $query .= ' and HPCAnalysisRequestID='.intval($reqid);
+    if ($reqid_range_used) $query .= ' and HPCAnalysisRequestID between '.intval($reqid_start).' and '.intval($reqid_end);
+    if ($analysistype !== '') $query .= ' and analType='.usmd_sql_string($analysistype);
+    if ($analysistyperlike !== '') $query .= ' and analType rlike '.usmd_sql_string($analysistyperlike);
+    $query .= ' order by HPCAnalysisRequestID';
+    if ($limit) $query .= ' limit '.intval($limit);
+    $requests = db_obj_result($db_handle,$query,true,true);
+    if (!$requests) continue;
+    $speedsteps = usmd_speedsteps($db);
+    while ($request = mysqli_fetch_assoc($requests)) {
+        ++$global_counts['requests'];
+        $thisreqid = intval($request['HPCAnalysisRequestID']);
+        $normalization = null;
+        $xml = usmd_request_xml((string)($request['requestXMLFile'] ?? ''),$normalization);
+        $valid_xml = $xml !== false;
+        if (!$valid_xml) { ++$global_counts['invalid_xml']; $xml = simplexml_load_string('<request/>'); }
+        $flat = (array)squash(json_decode(json_encode($xml)));
+        $declared = csv_number($flat['job.datasetCount.@attributes.value'] ?? null);
+        $serialized = count(usmd_dataset_nodes($xml));
+        // An unknown count remains auditable instead of disappearing from coverage.
+        if ($declared !== null && (($datasetcount && $declared != $datasetcount)
+            || ($datasetcount_start && $declared < $datasetcount_start)
+            || ($datasetcount_end && $declared > $datasetcount_end))) {
+            ++$global_counts['filtered_dataset_count']; continue;
         }
-        mysqli_data_seek( $hpcareqs, 0 );
-
-        if ( count( $needed_exp_ids ) ) {
-            $exp_id_list = implode( ',', array_map( 'intval', array_keys( $needed_exp_ids ) ) );
-            $query       = "select experimentID, rotorspeed, durationhrs, durationmins from ${db}.speedstep where experimentID in ($exp_id_list)";
-            $ssresult    = db_obj_result( $db_handle, $query, true, true );
-            if ( $ssresult ) {
-                while ( $ssrow = mysqli_fetch_array( $ssresult ) ) {
-                    $speedstep_by_expid[ $ssrow['experimentID'] ][] = $ssrow;
-                }
-            }
+        if ($serialized > $metadata_format->maximum_datasets) {
+            throw new RuntimeException("$db request $thisreqid has $serialized datasets: select the full formatter or increase maximum_datasets; refusing to truncate scientific fields");
         }
-    }
-
-    if ( $hpcareqs ) {
-        while( $hpcareq = mysqli_fetch_array($hpcareqs) ) {
-            $thisreqid = $hpcareq['HPCAnalysisRequestID'];
-
-            $meta = (object)[];
-            $meta->clusterName  = $hpcareq['clusterName'];
-            $meta->method       = $hpcareq['method'];
-            $meta->analType     = $hpcareq['analType'];
-            $meta->experimentID = $hpcareq['experimentID'];
-            $meta->xml          = explode( "\n", $hpcareq['requestXMLFile'] );
-
-            ## Not reused from the pre-pass above -- see the memory note there. Re-decoding
-            ## here is a small, bounded per-job cost; caching the whole batch's decoded XML
-            ## in memory is not (confirmed: exhausted 2GB on a 2,000-job run).
-            if ( false === ( $xml_decoded = @simplexml_load_string( $hpcareq['requestXMLFile'] ) ) ) {
-                $counts->error_decoding_xml++;
-                continue;
-            }
-            $meta->xmlj = json_decode( json_encode( $xml_decoded ) );
-
-            $meta->xmls         = (object)squash( $meta->xmlj );
-
-            if ( !is_object( $meta->xmlj ) ) {
-                echo_json( "metadata non object", $meta );
-                echo_json( "HPCAnalysisRequest : $thisreqid", $hpcareq );
-                error_exit( "non-object xmlj");
-            }
-
-            ## analType is a DB column (HPCAnalysisRequest.analType), not part of the XML --
-            ## kept here for debug/QA output (--json, --list-analysis-type) only. NOT added
-            ## to fields->input: it's a free-text string (e.g. "2DSA-MC", "2DSA_CG-FM") and
-            ## --metadata-csv requires every fields->input value to be strictly numeric
-            ## (confirmed 2026-07-13 -- error_exit("non float data...") otherwise). The
-            ## custom-grid distinction this was meant to support is better served by the
-            ## has_cg_model/has_dc_model numeric flags below anyway.
-            $meta->xmls->analType = $meta->analType;
-
-            ## bucket_count: number of <bucket> elements under <job><jobParameters> -- a count,
-            ## not a stored attribute, so squash() alone can't capture it.
-            if ( isset( $meta->xmlj->job->jobParameters->bucket ) ) {
-                $meta->xmls->bucket_count = is_array( $meta->xmlj->job->jobParameters->bucket )
-                    ? count( $meta->xmlj->job->jobParameters->bucket )
-                    : 1;
-            } else {
-                $meta->xmls->bucket_count = 0;
-            }
-
-            ## has_cg_model/has_dc_model: numeric presence flags, not the filename itself --
-            ## the filename is free text (same --metadata-csv numeric requirement as above),
-            ## and a boolean flag is what the custom-grid complexity gap (see
-            ## algorithm-complexity-reference.md sec 6) actually needs.
-            $meta->xmls->has_cg_model = isset( $meta->xmlj->job->jobParameters->CG_model ) ? 1 : 0;
-            $meta->xmls->has_dc_model = isset( $meta->xmlj->job->jobParameters->DC_model ) ? 1 : 0;
-
-            if ( $datasetcount > 0
-                 && $meta->xmlj->job->datasetCount->{'@attributes'}->value != $datasetcount ) {
-                continue;
-            }
-            if ( $datasetcount_start > 0
-                 && $datasetcount_end > 0
-                 && (
-                     $meta->xmlj->job->datasetCount->{'@attributes'}->value < $datasetcount_start                  
-                     || $meta->xmlj->job->datasetCount->{'@attributes'}->value > $datasetcount_end
-                 )
-                ) {
-                continue;
-            }
-
-            if ( $meta->xmlj->job->datasetCount->{'@attributes'}->value > $metadata_format->maximum_datasets ) {
-                error_exit(
-                    sprintf(
-                        "number of datasets (%d) exceeds $metadata_format_file's maximum_datasets attribute (%d)"
-                        ,$meta->xmlj->job->datasetCount->{'@attributes'}->value
-                        ,$metadata_format->maximum_datasets
-                    )
-                    );
-            }
-
-            ## do we have an analysis result?
-            $counts->total++;
-
-            $query = "select * from ${db}.HPCAnalysisResult where HPCAnalysisResult.HPCAnalysisRequestID=$thisreqid";
-            $hpcaress = db_obj_result( $db_handle, $query , true, true );
-
-            if ( !$hpcaress ) {
-                ## no analysis results, skipping
-                # echo "HPCAnalysisRequest $thisreqid has no HPCAnalysisResult\n";
-                $counts->no_analysis_result++;
-                continue;
-            }
-
-            $meta->jmd         = (object)[];
-            $meta->jmd->input  = (object)[];
-            $meta->jmd->target = (object)[];
-
-            $skip = false;
-            while( $hpcares = mysqli_fetch_array($hpcaress) ) {
-                $thisresid = $hpcares['HPCAnalysisResultID'];
-                if ( isset( $meta->jmd->CPUCount ) ) {
-                    echo "WARN: HPCAnalysisRequest $thisreqid has multiple HPCAnalysisResult records\n";
-                    $skip = true;
-                    break;
-                }
-
-                ## skip failed jobs
-                if (
-                    $hpcares['queueStatus'] != 'completed'
-                    || $hpcares['CPUCount'] == 0
-                    || $hpcares['wallTime'] == 0
-                    || $hpcares['CPUTime'] == 0
-                    || false !== strpos( $hpcares['lastMessage'], "FAILED" )
-                    ) {
-                    $skip = true;
-                    $counts->analysis_failed++;
-                    break;
-                }
-                # echo "HPCAnalysisRequest $thisreqid HPCAnalysisResult $thisresid queueStatus '" . $hpcares['queueStatus'] . "'\n";
-
-                ## additional inputs go to xmls
-                $meta->xmls->CPUCount = $hpcares['CPUCount'];
-
-                ## Add job timing fields from HPCAnalysisResult (convert to numeric timestamps)
-                $meta->xmls->startTime  = !empty($hpcares['startTime']) ? strtotime($hpcares['startTime']) : null;
-                $meta->xmls->endTime    = !empty($hpcares['endTime']) ? strtotime($hpcares['endTime']) : null;
-                $meta->xmls->updateTime = !empty($hpcares['updateTime']) ? strtotime($hpcares['updateTime']) : null;
-
-                ## Add job submission time from HPCAnalysisRequest (convert to numeric timestamp)
-                $meta->xmls->submitTime = !empty($hpcareq['submitTime']) ? strtotime($hpcareq['submitTime']) : null;
-
-                $meta->jmd->target->wallTime = $hpcares['wallTime'];
-                $meta->jmd->target->CPUTime  = $hpcares['CPUTime'];
-                $meta->jmd->target->max_rss  = $hpcares['max_rss'];
-
-                # echo_json( "HPCAnalysisRequest $thisreqid HPCAnalysisResult $thisresid", $hpcares );
-            }
-
-            if ( $skip ) {
-                continue;
-            }
-
-            ## collect dataset parameters
-
-            $meta->datasets = (object)[];
-            $meta->datasets->edited_radial_points = [];
-            $meta->datasets->edited_data_points   = [];
-            $meta->datasets->simpoints            = [];
-            $meta->datasets->radial_grid          = [];
-            $meta->datasets->time_grid            = [];
-            $meta->datasets->meniscus             = [];
-            $meta->datasets->bottom               = [];
-            $meta->datasets->rotorspeed           = [];
-            $meta->datasets->duration_hrs         = [];
-            $meta->datasets->duration_mins        = [];
-
-            # echo "HPCAnalysisRequestID $thisreqid checking dataset\n";
-            # echo_json( "--> xmlj", $meta->xmlj );
-            # echo_json( "--> xmlj->dataset", $meta->xmlj->dataset );
-            # error_exit( "testing" );
-
-            foreach ( $meta->xmlj->dataset as $dataset ) {
-                if ( $meta->xmlj->job->datasetCount->{'@attributes'}->value == 1 ) {
-                    $dataset = $meta->xmlj->dataset;
-                }
-                # echo_json( "dataset", $dataset );
-                @$file      = $dataset->files->auc->{'@attributes'}->filename;
-                @$edit      = $dataset->files->edit->{'@attributes'}->filename;
-
-                ## <speedstep> decodes to a single object for one speed step, or an array
-                ## for multiple (nstep > 1) -- expID is the same across all steps of a
-                ## dataset, so the first element's value is sufficient either way. Without
-                ## this check, multi-step datasets silently failed isset($expID) below and
-                ## the whole job was dropped via missing_dataset_parameters.
-                @$speedstep = $dataset->parameters->speedstep;
-                @$expID     = is_array( $speedstep )
-                    ? $speedstep[0]->{'@attributes'}->expID
-                    : $speedstep->{'@attributes'}->expID;
-
-                ## rotorspeed/duration: looked up from the pre-pass's batched speedstep
-                ## query (in-memory, no per-dataset DB call). Aggregated the same way
-                ## checkGridSize() (utils/us_solve_sim.cpp) does: rpm_max = max(rotorspeed),
-                ## time_max = max(single-step duration) across every speed step for this
-                ## experiment -- not a sum, matching the C++ per-step qMax() logic.
-                ##
-                ## -1 sentinel (not 0) when no speedstep row matches this expID -- confirmed
-                ## 2026-07-13 against real uslims3_CCH data that this really happens (e.g.
-                ## experimentID 2517/2533 have zero speedstep rows despite being referenced by
-                ## real jobs, same "referenced record later became unavailable" pattern as the
-                ## missing_edited_data case). Unlike missing_edited_data, this does NOT skip the
-                ## whole job -- rotorspeed/duration are new, additive fields with no dependency
-                ## from the pre-existing core features (edited_scans/edited_radial_points etc.),
-                ## so excluding an otherwise-valid job over an optional field would lose more
-                ## than it protects. 0 would be silently indistinguishable from this case (and
-                ## physically meaningless as a real rotor speed) -- -1 matches the script's own
-                ## existing "n/a" sentinel convention used elsewhere.
-                $rotorspeed    = -1;
-                $duration_hrs  = -1;
-                $duration_mins = -1.0;
-                if ( isset( $expID ) && isset( $speedstep_by_expid[ $expID ] ) ) {
-                    $max_step_mins = 0.0;
-                    $rotorspeed    = 0;
-                    foreach ( $speedstep_by_expid[ $expID ] as $ssrow ) {
-                        $rotorspeed    = max( $rotorspeed, intVal( $ssrow['rotorspeed'] ) );
-                        $step_mins     = intVal( $ssrow['durationhrs'] ) * 60.0 + floatval( $ssrow['durationmins'] );
-                        $max_step_mins = max( $max_step_mins, $step_mins );
-                    }
-                    $duration_hrs  = intVal( $max_step_mins / 60 );
-                    $duration_mins = $max_step_mins - ( $duration_hrs * 60 );
-                } else if ( isset( $expID ) ) {
-                    $counts->missing_speedstep_data++;
-                }
-
-                @$simpoints   = intVal( $dataset->parameters->simpoints->{'@attributes'}->value );
-                @$radial_grid = intVal( $dataset->parameters->radial_grid->{'@attributes'}->value );
-                @$time_grid   = intVal( $dataset->parameters->time_grid->{'@attributes'}->value );
-                # echo "file $file expID $expID edit $edit (HPCAnalysisRequest experimentID $meta->experimentID)\n";
-                if ( !isset( $file ) || !isset($expID) || !isset($edit) ) {
-                    ## error_exit( "HPCAnalysisRequestID $thisreqid missing expected dataset file & expID & edit" );
-                    $counts->missing_dataset_parameters++;
-                    $skip = true;
-                    break;
-                }
-                $query = "select rawDataID, data from ${db}.editedData where filename='$edit' order by lastUpdated desc limit 1";
-                $editeddata = db_obj_result( $db_handle, $query, false, true );
-
-                if ( !$editeddata ) {
-                    # error_exit( "HPCAnalysisRequestID $thisreqid missing expected editedData for edit='$edit'" );
-                    $counts->missing_edited_data++;
-                    $skip = true;
-                    break;
-                }
-
-                if ( false === ( $xml_decoded = @simplexml_load_string( $editeddata->data ) ) ) {
-                    $counts->error_decoding_xml++;
-                    $skip = true;
-                    continue;
-                }
-
-                $editeddata->xmlj = json_decode( json_encode( $xml_decoded ) );
-                $editeddata->xmls = (object)squash( $editeddata->xmlj );
-
-                ## meniscus/bottom: physical run positions (radius, cm), distinct from the
-                ## meniscus_points/bottom_points position-*search* counts in jobParameters.
-                ## Live in the edit file's <run><parameters>, sibling to data_range above,
-                ## using a "radius" attribute rather than the usual "value".
-                @$meniscus = floatval( $editeddata->xmlj->run->parameters->meniscus->{'@attributes'}->radius );
-                @$bottom   = floatval( $editeddata->xmlj->run->parameters->bottom->{'@attributes'}->radius );
-
-                # echo_json( "edit xmlj", $editeddata->xmlj );
-                # echo_json( "edit xmls", $editeddata->xmls );
-
-                $query = "select data from ${db}.rawData where rawDataID=$editeddata->rawDataID";
-                # echo "$query\n";
-                $rawdata = db_obj_result( $db_handle, $query, false, true );
-
-                if ( !$rawdata ) {
-                    # error_exit( "HPCAnalysisRequestID $thisreqid missing expected rawData for rawDataID=$editeddata->rawDataID" );
-                    $skip = true;
-                    break;
-                }
-
-                $datastats = auc2obj( $rawdata->data );
-
-                if (
-                    !isset( $datastats->radius_delta )
-                    || $datastats->radius_delta <= 0
-                    || !isset( $datastats->scans )
-                    || $datastats->scans <= 0
-                    ) {
-                    # error_exit( "HPCAnalysisRequestID $thisreqid insufficient results decoding auc longblob" );
-                    $counts->auc_decoding_error++;
-                    $skip = true;
-                    break;
-                }
-                
-                if (
-                    isset( $editeddata->xmlj->run )
-                    && isset( $editeddata->xmlj->run->excludes )
-                    && isset( $editeddata->xmlj->run->excludes->exclude )
-                    && is_array( $editeddata->xmlj->run->excludes->exclude )
-                    ) {
-                    $datastats->edited_scans         = $datastats->scans - count( $editeddata->xmlj->run->excludes->exclude );
-                } else {
-                    $datastats->edited_scans         = $datastats->scans;
-                }
-                
-                if (
-                    isset( $editeddata->xmlj->run )
-                    && isset( $editeddata->xmlj->run->parameters )
-                    && isset( $editeddata->xmlj->run->parameters->data_range )
-                    && isset( $editeddata->xmlj->run->parameters->data_range->{'@attributes'} )
-                    && isset( $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->right )
-                    && isset( $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->left )
-                    ) {
-                    $datastats->edited_radial_points =
-                        floor(
-                            ( $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->right
-                              - $editeddata->xmlj->run->parameters->data_range->{'@attributes'}->left )
-                            / $datastats->radius_delta
-                        )
-                        ;
-                } else {
-                    $datastats->edited_radial_points = $dataset->radial_points;
-                }
-                
-                $datastats->edited_data_points = $datastats->edited_scans * $datastats->edited_radial_points;
-
-                $meta->datasets->edited_radial_points[] = $datastats->edited_radial_points;
-                $meta->datasets->edited_scans[]         = $datastats->edited_scans;
-                $meta->datasets->simpoints[]            = $simpoints;
-                $meta->datasets->radial_grid[]           = $radial_grid;
-                $meta->datasets->time_grid[]             = $time_grid;
-                $meta->datasets->meniscus[]              = $meniscus;
-                $meta->datasets->bottom[]                = $bottom;
-                $meta->datasets->rotorspeed[]             = $rotorspeed;
-                $meta->datasets->duration_hrs[]           = $duration_hrs;
-                $meta->datasets->duration_mins[]          = $duration_mins;
-
-                # echo_json( "auc2obj", $datastats );
-
-                if ( $meta->xmlj->job->datasetCount->{'@attributes'}->value == 1 ) {
-                    break;
-                }
-            }
-
-            if ( $skip ) {
-                continue;
-            }
-
-            while( count( $meta->datasets->edited_scans ) < $metadata_format->maximum_datasets ) {
-                $meta->datasets->edited_radial_points[] = 0;
-                $meta->datasets->edited_scans[]         = 0;
-                $meta->datasets->simpoints[]            = 0;
-                $meta->datasets->radial_grid[]           = 0;
-                $meta->datasets->time_grid[]             = 0;
-                $meta->datasets->meniscus[]              = 0;
-                $meta->datasets->bottom[]                = 0;
-                $meta->datasets->rotorspeed[]             = 0;
-                $meta->datasets->duration_hrs[]           = 0;
-                $meta->datasets->duration_mins[]          = 0;
-            }
-
-            if ( $skip ) {
-                echo "HPCAnalysisRequestID $thisreqid NOT ok\n";
-                $counts->missing_raw_data++;
-                continue;
-            }
-
-            $counts->ok++;
-
-            # echo_json( "meta datasets", $meta->datasets );
-            
-            if ( $listdatasetcount || $listanalysistype ) {
-                $out = "HPCAnalysisRequestID $thisreqid :";
-                if ( $listanalysistype ) {
-                    $out .= " analType : $meta->analType";
-                }
-                if ( $listdatasetcount ) {
-                    $out .= " datasetCount : " . $meta->xmlj->job->datasetCount->{'@attributes'}->value;
-                }
-                echo "$out\n";
-            }
-
-            if ( $json ) {
-                ## no squashed
-                $tmpmeta = json_decode( json_encode( $meta ) );
-                unset( $tmpmeta->xmls );
-                echo_json( "HPCAnalysisRequestID $thisreqid json", $tmpmeta );
-            }
-
-            if ( $squashedjson ) {
-                echo_json( "HPCAnalysisRequestID $thisreqid squashedjson", $meta->xmls );
-            }
-
-            if ( $liststringvariants ) {
-                foreach ( $metadata_format->string_mapping as $k => $v ) {
-                    if ( isset( $meta->xmls->{$k} ) ) {
-                        $string_variants->{$k}->{$meta->xmls->{$k}} = true;
-                    }
-                }
-            }
-            
-            foreach ( $metadata_format->fields->input as $v ) {
-                $meta->jmd->input->{$v} =
-                    isset( $meta->xmls->{$v} )
-                    ? (
-                        is_numeric( $meta->xmls->{$v} )
-                        ? floatval( $meta->xmls->{$v} )
-                        : $meta->xmls->{$v}
-                    )
-                    : "n/a"
-                    ;
-                
-            }
-            foreach ( $metadata_format->fields->target as $v ) {
-                $meta->jmd->target->{$v} =
-                    isset( $meta->jmd->target->{$v} )
-                    ? (
-                        is_numeric( $meta->jmd->target->{$v} )
-                        ? floatval( $meta->jmd->target->{$v} )
-                        : $meta->jmd->target->{$v} 
-                    )
-                    : "n/a"
-                    ;
-            }
-            ## merge scan data
-            $meta->jmd->input = (object) array_merge( (array) $meta->jmd->input, (array) squash( $meta->datasets ) );
-
-            if ( $jsonmetadata ) {
-                echo_json( "HPCAnalysisRequestID $thisreqid json metadata input", $meta->jmd->input );
-                echo_json( "HPCAnalysisRequestID $thisreqid json metadata target", $meta->jmd->target );
-            }                
-
-            if ( $metadata ) {
-                ## create files for input & target for this dataset
-                $csv_base_name =
-                    preg_replace(
-                        [
-                         "/__version__/"
-                         ,"/__db__/"
-                         ,"/__requestid__/"
-                        ]
-                        ,[
-                            $metadata_format->version
-                            ,$db
-                            ,$thisreqid
-                        ]
-                        , $metadata_format->filename_format->base )
-                    ;
-
-                $dataset_base_filename =
-                    $metadata_format->output_dir
-                    . "/"
-                    . $csv_base_name
-                    ;
-
-                # echo "dataset_base_filename $dataset_base_filename\n";
-
-                $dataset_filename_input  = "$dataset_base_filename" . "." . $metadata_format->filename_format->extension->input;
-                $dataset_filename_target = "$dataset_base_filename" . "." . $metadata_format->filename_format->extension->target;
-
-                ## write to input & output
-
-                $input_data = [];
-
-                for ( $i = 0; $i < count( $input_format ); ++$i ) {
-                    if ( !isset( $meta->jmd->input->{$input_format[$i]} ) ) {
-                        error_exit( "key $input_format[$i] missing from \$meta->jmd->input" );
-                    }
-                    if ( isset( $metadata_format->string_mapping->{$input_format[$i]} ) ) {
-                        ## check in $metadata_format->string_mapping
-                        if ( !isset( $metadata_format->string_mapping->{$input_format[$i]}->{$meta->jmd->input->{$input_format[$i]}} ) ) {
-                            if ( $meta->jmd->input->{$input_format[$i]} === "n/a" ) {
-                                $input_data[] = -1;
-                            } else {
-                                error_exit( "attribute '$input_format[$i]' found in \$metadata_format->string_mapping, but value '" . $meta->jmd->input->{$input_format[$i]} . "' missing" );
-                            }
-                        } else {
-                            $input_data[] = $metadata_format->string_mapping->{$input_format[$i]}->{$meta->jmd->input->{$input_format[$i]}};
-                        }
-                    } else {
-                        $input_data[] =
-                            $meta->jmd->input->{$input_format[$i]} === "n/a"
-                            ? -1
-                            : $meta->jmd->input->{$input_format[$i]};
-                    }
-                }
-
-                for ( $i = 0; $i < count( $input_format ); ++$i ) {
-                    $input_data[$i] = trim( $input_data[$i] );
-                    if ( !strlen( $input_data[$i] ) ) {
-                        $input_data[$i] = 0;
-                    }
-                    if ( !is_numeric( $input_data[$i] ) ) {
-                        if ( preg_match( '/^-?(\\d+,\\d*|,\\d+)(|e-?\\d+)$/', $input_data[$i] ) ) {
-                            $input_data[$i] = str_replace( ',', '.', $input_data[$i] );
-                        }
-                        if ( !is_numeric( $input_data[$i] ) ) {
-                            error_exit( "non float data found in input data <$input_data[$i]>" );
-                        }
-                    }
-                    if ( $input_data[$i] != floatval( $input_data[$i] ) ) {
-                        error_exit( "non float data found in input data" );
-                    }
-                    # echo sprintf( "key %s : val %s\n", $input_format[$i], $input_data[$i] );
-                }
-
-                if ( empty( $metadatacsv ) ) {
-                    if ( false ===
-                         file_put_contents(
-                             $dataset_filename_input
-                             , implode( "\n", $input_data ) . "\n" )
-                        ) {
-                        error_exit( "error creating file $dataset_filename_input" );
-                    }
-                }
-
-                $target_data = [];
-
-                for ( $i = 0; $i < count( $target_format ); ++$i ) {
-                    if ( !isset( $meta->jmd->target->{$target_format[$i]} ) ) {
-                        error_exit( "key $target_format[$i] missing from \$meta->jmd->target" );
-                    }
-                    if ( isset( $metadata_format->string_mapping->{$target_format[$i]} ) ) {
-                        ## check in $metadata_format->string_mapping
-                        if ( !isset( $metadata_format->string_mapping->{$target_format[$i]}->{$meta->jmd->target->{$target_format[$i]}} ) ) {
-                            error_exit( "attribute '$target_format[$i]' found in \$metadata_format->string_mapping, but value '" . $meta->jmd->target->{$target_format[$i]} . "' missing" );
-                        }
-                        $target_data[] = $metadata_format->string_mapping->{$target_format[$i]}->{$meta->jmd->target->{$target_format[$i]}};
-                    } else {
-                        $target_data[] =
-                            $meta->jmd->target->{$target_format[$i]} === "n/a"
-                            ? -1
-                            : $meta->jmd->target->{$target_format[$i]};
-                    }
-                }
-
-                for ( $i = 0; $i < count( $target_format ); ++$i ) {
-                    if ( $target_data[$i] != floatval( $target_data[$i] ) ) {
-                        error_exit( "non float data found in input data" );
-                    }
-                    # echo sprintf( "key %s : val %s\n", $target_format[$i], $target_data[$i] );
-                }
-
-                if ( empty( $metadatacsv ) ) {
-                    if ( false ===
-                         file_put_contents(
-                             $dataset_filename_target
-                             , implode( "\n", $target_data ) . "\n" )
-                        ) {
-                        error_exit( "error creating file $dataset_filename_target" );
-                    }
-                } else {
-                    $csv_data[] =
-                        implode( " ", $input_data )
-                        . " "
-                        . implode( " ", $target_data )
-                        . "\t"
-                        . $csv_base_name
-                        ;
-                }
-            }
-
-            if ( $limit && $counts->ok >= $limit ) {
-                break;
-            }
+        $jp = $xml->job->jobParameters ?? null;
+        $cg_node = $jp !== null && isset($jp->CG_model) ? $jp->CG_model : null;
+        $dc_node = $jp !== null && isset($jp->DC_model) ? $jp->DC_model : null;
+        $cg = usmd_model_from_db($db,$cg_node,'cg',$model_cache);
+        $dmga = usmd_model_from_db($db,$dc_node,'dmga',$model_cache);
+        $issues = [];
+        if (!$valid_xml) $issues[] = ['code'=>'missing-or-invalid-request-xml'];
+        if ($declared === null || $declared != $serialized) $issues[] = ['code'=>'dataset-count-mismatch','declared'=>$declared,'serialized'=>$serialized];
+        $datasets = usmd_dataset_features($db,$xml,$speedsteps,$issues);
+        $base = $flat;
+        $classification_status='legacy-mapping';
+        if (($metadata_format->method_classification??null)==='research-v1') {
+            [$research_method,$classification_status]=csv_research_method(
+                usmd_attr($xml,'method'),$request['analType']??null,
+                isset($xml->job->analysis_type)?usmd_attr($xml->job->analysis_type,'value'):null,
+                $cg_node!==null,$dc_node!==null,$valid_xml);
+            $base['@attributes.method']=$research_method;
         }
+        $base['analysis_variant']=$request['analType']??(isset($xml->job->analysis_type)?usmd_attr($xml->job->analysis_type,'value'):null);
+        $base['serialized_dataset_count'] = $serialized;
+        $base['request_xml_valid'] = (int)$valid_xml;
+        $base['bucket_count'] = $valid_xml ? count(usmd_bucket_rows($jp)) : null;
+        foreach (['cg_component_count'=>[$cg,'component_count'],'cg_declared_subgrids'=>[$cg,'declared_subgrids'],
+                  'dmga_floating_constraints'=>[$dmga,'floating_constraints'],'dmga_base_components'=>[$dmga,'base_components'],
+                  'dmga_base_associations'=>[$dmga,'base_associations']] as $name=>$source) $base[$name]=$source[0][$source[1]]??null;
+        $vectors = ['edited_scans'=>'scan_count_by_dataset','edited_radial_points'=>'point_count_by_dataset',
+            'simpoints'=>'simulation_points_by_dataset','radial_grid'=>'radial_grid_type_by_dataset',
+            'time_grid'=>'time_grid_type_by_dataset','meniscus'=>'meniscus_radius_cm_by_dataset','bottom'=>'bottom_radius_cm_by_dataset'];
+        foreach ($dataset_fields as $field) for ($i=0;$i<$metadata_format->maximum_datasets;++$i) {
+            $value = null;
+            if ($i >= $serialized && $valid_xml) $value = 0;
+            elseif (isset($vectors[$field])) $value = $datasets[$vectors[$field]][$i]??null;
+            else {
+                $steps = $datasets['speed_profile_by_dataset'][$i]??null;
+                if ($steps) {
+                    if ($field==='speedstep_count') $value=count($steps);
+                    $key = $field==='rotorspeed'?'rotor_speed_rpm':($field==='duration_seconds'?'duration_seconds':null);
+                    if ($key) { $vals=array_column($steps,$key); if (!in_array(null,$vals,true)) $value=max($vals); }
+                }
+            }
+            $base["$field.$i"]=$value;
+        }
+        $results = db_obj_result($db_handle,"select * from {$db}.HPCAnalysisResult where HPCAnalysisRequestID=$thisreqid order by HPCAnalysisResultID",true,true);
+        $result_rows = [];
+        if ($results) while ($result=mysqli_fetch_assoc($results)) $result_rows[]=$result;
+        if (!$result_rows) { $result_rows=[[]]; ++$global_counts['missing_results']; }
+        foreach ($result_rows as $result) {
+            $values=$base;
+            $resources=usmd_parse_jobfile($result['jobfile']??null);
+            foreach (['requested_nodes','requested_ranks','requested_cores','requested_memory_per_core','requested_memory_total','requested_wall_limit'] as $key) $values[$key]=$resources[$key];
+            $values['CPUCount']=$result['CPUCount']??null;
+            $values['actual_master_groups']=$result['mgroupcount']??null;
+            $values['submitTime']=csv_timestamp($request['submitTime']??null);
+            foreach (['startTime','endTime','updateTime'] as $key) $values[$key]=csv_timestamp($result[$key]??null);
+            $completed=($result['queueStatus']??null)==='completed' && strpos($result['lastMessage']??'','FAILED')===false;
+            $values['result_completed']=(int)$completed;
+            if (!$completed) ++$global_counts['incomplete_results'];
+            $values['method_classification_status']=$classification_status;
+            $values['request_id']=$thisreqid;
+            $values['result_id']=$result['HPCAnalysisResultID']??null;
+            $values['experiment_id']=$request['experimentID']??null;
+            $values['metadata_format_version']=$metadata_format->version;
+            $values['cg_model_id']=$cg['model_id']??null;
+            $values['dmga_model_id']=$dmga['model_id']??null;
+            $values['cg_model_status']=$cg['status'];
+            $values['dmga_model_status']=$dmga['status'];
+            $values['queue_status']=$result['queueStatus']??'no-result';
+            $values['resource_parser_status']=$resources['parser_status'];
+            $values['scheduler']=$resources['scheduler_family'];
+            $values['resource_wall_limit_conflict']=isset($resources['evidence']['wall_limit_conflict'])?1:0;
+            $missing=[];$unmapped=[];$input_data=[];$target_data=[];
+            foreach ($input_format as $field) {
+                $value=$values[$field]??null;
+                if (isset($metadata_format->string_mapping->{$field}) && $value!==null) {
+                    $string_variants[$field][(string)$value]=true;
+                    $mapped=$metadata_format->string_mapping->{$field}->{(string)$value}??null;
+                    if ($mapped===null) $unmapped[$field]=$value;
+                    $value=$mapped;
+                }
+                $number=csv_number($value);
+                if ($number===null) $missing[]=$field;
+                $input_data[]=$number??$missing_value;
+            }
+            foreach ($target_format as $field) $target_data[]=csv_number($result[$field]??null)??$missing_value;
+            $csv_base_name=str_replace(['__version__','__db__','__requestid__'],[$metadata_format->version,$db,$thisreqid],$metadata_format->filename_format->base);
+            // Keep every result distinct, including requests with no result.
+            if (($metadata_format->method_classification??null)==='research-v1') $csv_base_name.='-r'.($result['HPCAnalysisResultID']??'none');
+            if ($metadata) {
+                if ($csv_handle) {
+                    $line=implode(' ',array_merge($input_data,$target_data))."\t".$csv_base_name."\n";
+                    if (fwrite($csv_handle,$line)===false) throw new RuntimeException('CSV write failed');
+                } else {
+                    $path=$metadata_format->output_dir.'/'.$csv_base_name;
+                    csv_write($path.'.input',implode("\n",$input_data)."\n");
+                    csv_write($path.'.target',implode("\n",$target_data)."\n");
+                }
+            }
+            if ($json || $squashedjson || $jsonmetadata) echo_json('metadata', ['input'=>array_combine($input_format,$input_data),'target'=>array_combine($target_format,$target_data)]);
+            if ($listanalysistype) echo "HPCAnalysisRequestID $thisreqid analType: ".($request['analType']??'')."\n";
+            if ($listdatasetcount) echo "HPCAnalysisRequestID $thisreqid datasetCount: ".($declared??'unknown')."\n";
+            ++$global_counts['records'];
+        }
+        // Model contents are cached only within a request to bound memory use.
+        $model_cache=[];
     }
-
-    accum_global_counts();
-    if ( $counts->total ) {
-        $counts->percent_ok = floatval( sprintf( "%.2f", 100 * $counts->ok / $counts->total ) );
-    }
-    echo_json( "counts", $counts );
 }
-
-if ( !empty( $metadatacsv ) ) {
-    $metadatacsvfile =
-        $metadata_format->output_dir
-        . "/"
-        . $metadatacsv
-        ;
-
-    if ( false ===
-         file_put_contents(
-             $metadatacsvfile
-             , implode( "\n", $csv_data ) . "\n" )
-        ) {
-        error_exit( "error creating file $metadatacsvfile" );
-    }
-}    
-
-if ( count( $use_dbs ) > 1 ) {
-    headerline( "summary" );
-
-    if ( $global_counts->total ) {
-        $global_counts->percent_ok = floatval( sprintf( "%.2f", 100 * $global_counts->ok / $global_counts->total ) );
-    }
-    
-    echo_json( "counts", $global_counts );
-}
-
-if ( $liststringvariants ) {
-    echo_json( "string variants", $string_variants );
-}
-
+if ($csv_handle) fclose($csv_handle);
+if ($liststringvariants) echo_json('string variants',$string_variants);
+echo_json('counts',$global_counts);
 if ( $pythonppcode ) {
     $pyout = "test.py";
+    $python_nonpredictors = json_encode($metadata_format->non_predictor_fields ?? []);
     $python_performance_prediction_code = <<<_PPPC
 # based upon https://www.tensorflow.org/tutorials/keras/regression retrieved 2023.05.03
 import matplotlib.pyplot as plt
@@ -1168,6 +838,7 @@ raw_dataset = pd.read_csv( datafile,
                            na_values='?', comment='\\t',
                            sep=' ', skipinitialspace=True, low_memory=False)
 dataset = raw_dataset.copy()
+dataset = dataset.drop(columns=$python_nonpredictors, errors="ignore")
 
 # optionally find and drop n/a values
 # dataset.isna().sum()
