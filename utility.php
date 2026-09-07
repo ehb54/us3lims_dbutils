@@ -8,7 +8,7 @@ function write_logl( $msg, $this_level = 0 ) {
     global $logging_level;
     global $self;
     if ( $logging_level >= $this_level ) {
-        echo "${self}: $msg\n";
+        echo "{$self}: $msg\n";
     }
 }
 
@@ -20,7 +20,7 @@ function write_logld( $msg, $this_level = 0 ) {
     global $logging_level;
     global $self;
     if ( $logging_level >= $this_level ) {
-        echo timestamp() . "${self}: $msg\n";
+        echo timestamp() . "{$self}: $msg\n";
     }
 }
 

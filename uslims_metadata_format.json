@@ -1,6 +1,6 @@
 # comments supported
 {
-    "version"          : "1.0"
+    "version"          : "2.4"
 
     ,"output_dir"      : "/tmp/training"
 
@@ -29,6 +29,7 @@
             ,"endTime"
             ,"updateTime"
             ,"@attributes.method"
+            ,"analysis_variant"
             ,"job.jobParameters.s_min.@attributes.value"
             ,"job.jobParameters.s_max.@attributes.value"
             ,"job.jobParameters.s_resolution.@attributes.value"
@@ -79,6 +80,44 @@
             ,"job.jobParameters.curves_points.@attributes.value"
             ,"job.jobParameters.tikreg_option.@attributes.value"
             ,"job.jobParameters.tikreg_alpha.@attributes.value"
+            ,"job.jobParameters.fit_mb_select.@attributes.value"
+            ,"job.datasetCount.@attributes.value"
+            ,"job.global_fit.@attributes.value"
+            ,"bucket_count"
+            ,"job.jobParameters.p_grid.@attributes.value"
+            ,"job.jobParameters.minimize_opt.@attributes.value"
+            ,"job.jobParameters.bottom_points.@attributes.value"
+            ,"job.jobParameters.bottom_range.@attributes.value"
+            ,"job.jobParameters.bottom.@attributes.value"
+            ,"job.jobParameters.nstep.@attributes.value"
+            ,"serialized_dataset_count"
+            ,"cg_component_count"
+            ,"cg_declared_subgrids"
+            ,"dmga_floating_constraints"
+            ,"dmga_base_components"
+            ,"dmga_base_associations"
+            ,"actual_master_groups"
+            ,"requested_nodes"
+            ,"requested_ranks"
+            ,"requested_cores"
+            ,"requested_memory_per_core"
+            ,"requested_memory_total"
+            ,"requested_wall_limit"
+            ,"result_completed"
+            ,"request_xml_valid"
+            ,"method_classification_status"
+            ,"request_id"
+            ,"result_id"
+            ,"experiment_id"
+            ,"metadata_format_version"
+            ,"cg_model_id"
+            ,"cg_model_status"
+            ,"dmga_model_id"
+            ,"dmga_model_status"
+            ,"resource_parser_status"
+            ,"scheduler"
+            ,"resource_wall_limit_conflict"
+            ,"queue_status"
         ]
         ,"target" : [
             "wallTime"
@@ -88,6 +127,108 @@
     }
 
     ,"string_mapping" : {
+# Exact analysis variants have separate numeric codes; family is @attributes.method
+        "analysis_variant" : {
+            "2DSA" : 1,
+            "2DSA-CG" : 2,
+            "2DSA-CG-FB" : 3,
+            "2DSA-CG-FM" : 4,
+            "2DSA-CG-FM-IT" : 5,
+            "2DSA-CG-FM-IT-MC" : 6,
+            "2DSA-CG-FMB" : 7,
+            "2DSA-CG-GL" : 8,
+            "2DSA-CG-GL-IT-MC" : 9,
+            "2DSA-CG-IT" : 10,
+            "2DSA-CG-MC" : 11,
+            "2DSA-FB" : 12,
+            "2DSA-FB-IT" : 13,
+            "2DSA-FM" : 14,
+            "2DSA-FM-IT" : 15,
+            "2DSA-FM-IT-MC" : 16,
+            "2DSA-FMB" : 17,
+            "2DSA-FMB-IT" : 18,
+            "2DSA-GL" : 19,
+            "2DSA-GL-FM" : 20,
+            "2DSA-GL-IT" : 21,
+            "2DSA-GL-IT-MC" : 22,
+            "2DSA-GL-MC" : 23,
+            "2DSA-IT" : 24,
+            "2DSA-IT-MC" : 25,
+            "2DSA-MC" : 26,
+            "2DSA_CG" : 27,
+            "2DSA_CG-FB" : 28,
+            "2DSA_CG-FM" : 29,
+            "2DSA_CG-FM-IT" : 30,
+            "2DSA_CG-FM-IT-MC" : 31,
+            "2DSA_CG-FMB" : 32,
+            "2DSA_CG-GL" : 33,
+            "2DSA_CG-GL-IT-MC" : 34,
+            "2DSA_CG-IT" : 35,
+            "2DSA_CG-MC" : 36,
+            "DMGA" : 37,
+            "DMGA-MC" : 38,
+            "GA" : 39,
+            "GA-GL" : 40,
+            "GA-GL-MC" : 41,
+            "GA-MC" : 42,
+            "PCSA" : 43,
+            "PCSA-2O" : 44,
+            "PCSA-2O-MC" : 45,
+            "PCSA-2O-TR" : 46,
+            "PCSA-2O-TR-MC" : 47,
+            "PCSA-All" : 48,
+            "PCSA-All-MC" : 49,
+            "PCSA-All-TR" : 50,
+            "PCSA-All-TR-MC" : 51,
+            "PCSA-DS" : 52,
+            "PCSA-DS-MC" : 53,
+            "PCSA-DS-TR" : 54,
+            "PCSA-DS-TR-MC" : 55,
+            "PCSA-GL-2O" : 56,
+            "PCSA-GL-2O-MC" : 57,
+            "PCSA-GL-2O-TR" : 58,
+            "PCSA-GL-2O-TR-MC" : 59,
+            "PCSA-GL-All" : 60,
+            "PCSA-GL-All-MC" : 61,
+            "PCSA-GL-All-TR" : 62,
+            "PCSA-GL-All-TR-MC" : 63,
+            "PCSA-GL-DS" : 64,
+            "PCSA-GL-DS-MC" : 65,
+            "PCSA-GL-DS-TR" : 66,
+            "PCSA-GL-DS-TR-MC" : 67,
+            "PCSA-GL-HL" : 68,
+            "PCSA-GL-HL-MC" : 69,
+            "PCSA-GL-HL-TR" : 70,
+            "PCSA-GL-HL-TR-MC" : 71,
+            "PCSA-GL-IS" : 72,
+            "PCSA-GL-IS-MC" : 73,
+            "PCSA-GL-IS-TR" : 74,
+            "PCSA-GL-IS-TR-MC" : 75,
+            "PCSA-GL-SL" : 76,
+            "PCSA-GL-SL-MC" : 77,
+            "PCSA-GL-SL-TR" : 78,
+            "PCSA-GL-SL-TR-MC" : 79,
+            "PCSA-HL" : 80,
+            "PCSA-HL-MC" : 81,
+            "PCSA-HL-TR" : 82,
+            "PCSA-HL-TR-MC" : 83,
+            "PCSA-IS" : 84,
+            "PCSA-IS-MC" : 85,
+            "PCSA-IS-TR" : 86,
+            "PCSA-IS-TR-MC" : 87,
+            "PCSA-SL" : 88,
+            "PCSA-SL-MC" : 89,
+            "PCSA-SL-TR" : 90,
+            "PCSA-SL-TR-MC" : 91
+        },
+
+        "method_classification_status" : {"classified": 0, "missing-cg-reference": 1, "missing-dc-reference": 2, "invalid-request-xml": 3, "missing-label": 4, "unrecognized-label": 5, "conflicting-method-labels": 6, "conflicting-model-reference": 7},
+        "cg_model_status" : {"available": 0, "missing": 1, "invalid": 2},
+        "dmga_model_status" : {"available": 0, "missing": 1, "invalid": 2},
+        "resource_parser_status" : {"parsed": 0, "partial": 1, "missing": 2, "unsupported-format": 3},
+        "scheduler" : {"PBS": 1, "Slurm": 2},
+        "queue_status" : {"no-result": 0, "completed": 1, "failed": 2, "aborted": 3, "canceled": 4, "cancelled": 4, "running": 5, "queued": 6, "submitted": 7, "pending": 8, "unknown": 9},
+
         "job.cluster.@attributes.name" : {
             "alamo.uthscsa.edu"                 : 1
             ,"anvil.rcac.purdue.edu"             : 2
@@ -104,6 +245,7 @@
             ,"gordon.sdsc.edu"                   : 12
             ,"gordon.sdsc.xsede.org"             : 13
             ,"H7-380489.ad.PSU.edu"              : 14
+            ,"h7-380489.huck.psu.edu"            : 14
             ,"jetstream.jetdomain"               : 15
             ,"js-157-184.jetstream-cloud.org"    : 16
             ,"js-169-137.jetstream-cloud.org"    : 16
@@ -181,18 +323,18 @@
             ,"403.dsv" : 11
         }
 
-## @attributes.method are grouped coarsely
-## all relevant parameters for training should already be in the fields->input
+## Research families: 1 standard 2DSA; 2 DMGA; 3 GA; 4 PCSA; 5 2DSA-CG
+## Execution variants are retained in exact labels and scientific controls.
         ,"@attributes.method" : {
             "2DSA"            : 1
-            ,"2DSA-CG"         : 1
-            ,"2DSA_CG"         : 1
-            ,"2DSA_CG-FB"      : 1
-            ,"2DSA_CG-FM"      : 1
-            ,"2DSA_CG-FM-IT"   : 1
-            ,"2DSA_CG-GL"      : 1
-            ,"2DSA_CG-IT"      : 1
-            ,"2DSA_CG-MC"      : 1
+            ,"2DSA-CG"         : 5
+            ,"2DSA_CG"         : 5
+            ,"2DSA_CG-FB"      : 5
+            ,"2DSA_CG-FM"      : 5
+            ,"2DSA_CG-FM-IT"   : 5
+            ,"2DSA_CG-GL"      : 5
+            ,"2DSA_CG-IT"      : 5
+            ,"2DSA_CG-MC"      : 5
             ,"2DSA-FB"         : 1
             ,"2DSA-FB-IT"      : 1
             ,"2DSA-FM"         : 1
@@ -232,4 +374,12 @@
             ,"PCSA-SL-TR"      : 4
         }
     }
+
+# Additional scientific columns generated for each dataset slot
+    ,"dataset_fields" : ["edited_scans", "edited_radial_points", "simpoints", "radial_grid", "time_grid", "meniscus", "bottom", "rotorspeed", "duration_seconds", "speedstep_count"]
+    ,"method_classification" : "research-v1"
+    ,"missing_value" : "NA"
+
+# Numeric recordkeeping/quality fields: retain for selection, exclude from predictors
+    ,"non_predictor_fields" : ["submitTime", "startTime", "endTime", "updateTime", "CPUCount", "actual_master_groups", "result_completed", "request_xml_valid", "method_classification_status", "request_id", "result_id", "experiment_id", "metadata_format_version", "cg_model_id", "cg_model_status", "dmga_model_id", "dmga_model_status", "resource_parser_status", "scheduler", "resource_wall_limit_conflict", "queue_status"]
 }        
