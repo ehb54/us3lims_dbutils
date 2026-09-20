@@ -684,14 +684,6 @@ function usmd_model_from_db( $db, $node, $kind, &$cache ) {
     $parsed=usmd_parse_model($row->xml??null,$kind);$parsed["model_id"]=intval($id);$parsed["filename"]=$filename;$parsed["description"]=$row->description??null;
     return $cache[$key]=$parsed;
 }
-// A database name cannot be bound as a query parameter, so it is validated as a
-// bare identifier before interpolation and rejected if it is anything else.
-function usmd_db_identifier( $db ) {
-    if ( !preg_match( '/^[A-Za-z0-9_]+$/', (string)$db ) ) {
-        error_exit( "refusing unsafe database identifier '$db'" );
-    }
-    return (string)$db;
-}
 // Report documents per edited dataset, one query per database. A dataset that
 // reached a report is a second, independent outcome signal alongside the fit
 // statistic. Returns null when the table is absent, so "no report table" stays
@@ -703,8 +695,13 @@ function usmd_report_counts( $db ) {
         return $cache[$db];
     }
     $map = [];
-    $safe = usmd_db_identifier( $db );
-    $rows = @mysqli_query( $db_handle, "select editedDataID, count(*) n from `{$safe}`.reportDocument where editedDataID is not null group by editedDataID" );
+    // The database is selected rather than interpolated, so the statement is a
+    // constant. Every other query here fully qualifies its tables, so changing
+    // the default database affects nothing else.
+    if ( !@mysqli_select_db( $db_handle, $db ) ) {
+        return $cache[$db] = null;
+    }
+    $rows = @mysqli_query( $db_handle, "select editedDataID, count(*) n from reportDocument where editedDataID is not null group by editedDataID" );
     if ( !$rows ) {
         return $cache[$db] = null;
     }
