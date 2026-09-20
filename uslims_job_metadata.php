@@ -408,17 +408,10 @@ function usmd_dataset_value( $field, $i, $vectors, $datasets ) {
     if ( $field === 'speedstep_count' ) {
         return count( $steps );
     }
-    $key = $field === 'rotorspeed' ? 'rotor_speed_rpm'
-         : ( $field === 'duration_seconds' ? 'duration_seconds' : null );
-    if ( $key === null ) {
-        return null;
-    }
-    $vals = array_column( $steps, $key );
+    $keys = [ 'rotorspeed' => 'rotor_speed_rpm', 'duration_seconds' => 'duration_seconds' ];
+    $vals = isset( $keys[$field] ) ? array_column( $steps, $keys[$field] ) : [];
     // A partially-unknown profile stays unknown, not the max of the readable steps.
-    if ( in_array( null, $vals, true ) ) {
-        return null;
-    }
-    return max( $vals );
+    return ( !$vals || in_array( null, $vals, true ) ) ? null : max( $vals );
 }
 
 // Salted digest of a GUID, 16 hex characters, emitted as a string. The salt
@@ -578,9 +571,7 @@ function usmd_parse_jobfile( $jobfile ) {
         $out["parser_status"] = "partial";
     }
     /* The partition is the real queue; recorded verbatim, never parsed further. */
-    if ( preg_match( '/^#SBATCH\s+(?:--partition(?:=|\s+)|-p\s+)([A-Za-z0-9_.,\-]+)/m', $jobfile, $m ) ) {
-        $out["requested_partition"] = $m[1];
-    } elseif ( preg_match( '/^#PBS\s+-q\s+([A-Za-z0-9_.,\-]+)/mi', $jobfile, $m ) ) {
+    if ( preg_match( '/^(?:#SBATCH\s+(?:--partition(?:=|\s+)|-p\s+)|#PBS\s+-q\s+)([\w.,\-]+)/mi', $jobfile, $m ) ) {
         $out["requested_partition"] = $m[1];
     }
     if ( preg_match( '/^#SBATCH\s+(?:--nodes(?:=|\s+)|-N\s*)(\d+)/m', $jobfile, $m ) ) {
@@ -1052,15 +1043,19 @@ foreach ($use_dbs as $db) {
         // One round trip per request rather than per result; RTT dominates here.
         $model_quality=[];
         $rids=[];
-        foreach ($result_rows as $rr) { if(isset($rr['HPCAnalysisResultID'])) $rids[]=intval($rr['HPCAnalysisResultID']); }
+        foreach ($result_rows as $rr) {
+            if (isset($rr['HPCAnalysisResultID'])) {
+                $rids[]=intval($rr['HPCAnalysisResultID']);
+            }
+        }
         if ($rids) {
             $mq=db_obj_result($db_handle,"select d.HPCAnalysisResultID as rid, count(*) as cnt, min(m.variance) as v, max(m.variance) as vmax, stddev_samp(m.variance) as vsd from {$db}.HPCAnalysisResultData d join {$db}.model m on m.modelID=d.resultID where d.HPCAnalysisResultType='model' and d.HPCAnalysisResultID in (".implode(',',$rids).") group by d.HPCAnalysisResultID",true,true);
-            if ($mq) { while($w=mysqli_fetch_assoc($mq)) {
+            while ($mq && $w=mysqli_fetch_assoc($mq)) {
                 $model_quality[intval($w['rid'])]=['cnt'=>intval($w['cnt']),
                     'v'=>is_numeric($w['v'])?floatval($w['v']):null,
                     'vmax'=>is_numeric($w['vmax'])?floatval($w['vmax']):null,
                     'vsd'=>is_numeric($w['vsd'])?floatval($w['vsd']):null];
-            } }
+            }
         }
         foreach ($result_rows as $result) {
             $values=$base;
@@ -1116,7 +1111,7 @@ foreach ($use_dbs as $db) {
             // clusterName overwritten with the cluster the metascheduler chose
             // (jobmonitor/cleanup.php:636), so their cluster is not the
             // submitter's choice.
-            $values['is_airavata']=($gfacid==='')?null:(int)(preg_match('/US3-A/i',$gfacid)?1:0);
+            $values['is_airavata']=($gfacid==='')?null:(int)preg_match('/US3-A/i',$gfacid);
             // The gateway's identifier for this job. NOT a join key to
             // gfac.analysis: cleanup_gfac.php deletes that row on completion, so
             // the table holds only in-flight work. Provenance only.
