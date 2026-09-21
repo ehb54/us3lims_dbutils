@@ -684,6 +684,55 @@ function usmd_model_from_db( $db, $node, $kind, &$cache ) {
     $parsed=usmd_parse_model($row->xml??null,$kind);$parsed["model_id"]=intval($id);$parsed["filename"]=$filename;$parsed["description"]=$row->description??null;
     return $cache[$key]=$parsed;
 }
+// Monte Carlo yields confidence intervals rather than a better fit. The combined
+// model's XML nests one <model> per iteration, so the spread of a fitted
+// parameter across them IS the interval. Summarised here because the nested XML
+// averages 286 KB and cannot be exported. Attributes are read positionally-free:
+// the tag is matched first, then each attribute within it.
+function usmd_mc_spread( $xml ) {
+    $out = [ 'models'=>null, 'analytes'=>null, 's_rel_sd_median'=>null, 's_rel_sd_max'=>null ];
+    if ( $xml === null || $xml === '' ) {
+        return $out;
+    }
+    $models = preg_match_all( '/<model\b/', $xml );
+    if ( $models < 2 ) {
+        return $out;   // a single model carries no iteration spread
+    }
+    if ( !preg_match_all( '/<analyte\b([^>]*)>/', $xml, $tags ) ) {
+        return $out;
+    }
+    $by = [];
+    foreach ( $tags[1] as $t ) {
+        if ( preg_match( '/\bname="([^"]*)"/', $t, $n )
+          && preg_match( '/\bs="([^"]*)"/', $t, $v )
+          && is_numeric( $v[1] ) ) {
+            $by[$n[1]][] = floatval( $v[1] );
+        }
+    }
+    $rel = [];
+    foreach ( $by as $vals ) {
+        $c = count( $vals );
+        if ( $c < 2 ) {
+            continue;
+        }
+        $mean = array_sum( $vals ) / $c;
+        if ( $mean == 0.0 ) {
+            continue;   // a fixed solute has no interval, not a zero-width one
+        }
+        $ss = 0.0;
+        foreach ( $vals as $x ) { $ss += ( $x - $mean ) * ( $x - $mean ); }
+        $rel[] = sqrt( $ss / ( $c - 1 ) ) / abs( $mean );
+    }
+    $out['models'] = $models;
+    $out['analytes'] = count( $by );
+    if ( $rel ) {
+        sort( $rel );
+        $c = count( $rel );
+        $out['s_rel_sd_median'] = ( $c % 2 ) ? $rel[intdiv($c,2)] : ( $rel[$c/2-1] + $rel[$c/2] ) / 2;
+        $out['s_rel_sd_max'] = $rel[$c-1];
+    }
+    return $out;
+}
 // Report documents per edited dataset, one query per database. A dataset that
 // reached a report is a second, independent outcome signal alongside the fit
 // statistic. Returns null when the table is absent, so "no report table" stays
@@ -866,6 +915,11 @@ $dataset_fields = $metadata_format->dataset_fields ?? ['edited_scans','edited_ra
 // dataset_fields. 'aggregate': primary dataset plus order-free summaries.
 // string_fields are emitted verbatim instead of coerced to a number.
 $string_fields = array_flip((array)($metadata_format->string_fields ?? []));
+// Reading the nested MC models costs a large blob per Monte Carlo job, so it is
+// skipped entirely unless the output asks for it.
+$want_mc_spread = (bool)array_intersect(
+    ['mc_models_parsed','mc_analytes','mc_s_rel_sd_median','mc_s_rel_sd_max'],
+    (array)$metadata_format->fields->input);
 $dataset_encoding = $metadata_format->dataset_encoding ?? 'positional';
 if ( !in_array( $dataset_encoding, ['positional','aggregate'], true ) ) {
     error_exit( "$metadata_format_file has unknown dataset_encoding '$dataset_encoding'" );
@@ -1055,12 +1109,32 @@ foreach ($use_dbs as $db) {
             }
         }
         if ($rids) {
-            $mq=db_obj_result($db_handle,"select d.HPCAnalysisResultID as rid, count(*) as cnt, min(m.variance) as v, max(m.variance) as vmax, stddev_samp(m.variance) as vsd from {$db}.HPCAnalysisResultData d join {$db}.model m on m.modelID=d.resultID where d.HPCAnalysisResultType='model' and d.HPCAnalysisResultID in (".implode(',',$rids).") group by d.HPCAnalysisResultID",true,true);
+            $mq=db_obj_result($db_handle,"select d.HPCAnalysisResultID as rid, count(*) as cnt, min(m.variance) as v, max(m.variance) as vmax, stddev_samp(m.variance) as vsd, max(m.MCIteration) as mcit from {$db}.HPCAnalysisResultData d join {$db}.model m on m.modelID=d.resultID where d.HPCAnalysisResultType='model' and d.HPCAnalysisResultID in (".implode(',',$rids).") group by d.HPCAnalysisResultID",true,true);
             while ($mq && $w=mysqli_fetch_assoc($mq)) {
                 $model_quality[intval($w['rid'])]=['cnt'=>intval($w['cnt']),
                     'v'=>is_numeric($w['v'])?floatval($w['v']):null,
                     'vmax'=>is_numeric($w['vmax'])?floatval($w['vmax']):null,
-                    'vsd'=>is_numeric($w['vsd'])?floatval($w['vsd']):null];
+                    'vsd'=>is_numeric($w['vsd'])?floatval($w['vsd']):null,
+                    'mcit'=>intval($w['mcit'])];
+            }
+        }
+        // The nested models live in one large blob per MC job, so they are read
+        // only for results the aggregate above marked as Monte Carlo.
+        $mc_spread=[];
+        if ($want_mc_spread) {
+            $mcrids=[];
+            foreach ($model_quality as $rid=>$mv) { if (($mv['mcit']??0)>1) $mcrids[]=$rid; }
+            if ($mcrids) {
+                $mx=db_obj_result($db_handle,"select d.HPCAnalysisResultID as rid, m.xml as xml from {$db}.HPCAnalysisResultData d join {$db}.model m on m.modelID=d.resultID where d.HPCAnalysisResultType='model' and m.MCIteration>1 and d.HPCAnalysisResultID in (".implode(',',$mcrids).")",true,true);
+                while ($mx && $w=mysqli_fetch_assoc($mx)) {
+                    $rid=intval($w['rid']);
+                    // several MC models on one result: keep the widest interval
+                    $sp=usmd_mc_spread($w['xml']);
+                    if (!isset($mc_spread[$rid])
+                        || ($sp['s_rel_sd_max']??-1) > ($mc_spread[$rid]['s_rel_sd_max']??-1)) {
+                        $mc_spread[$rid]=$sp;
+                    }
+                }
             }
         }
         foreach ($result_rows as $result) {
@@ -1088,6 +1162,15 @@ foreach ($use_dbs as $db) {
                 $values['model_variance_sd']=$model_quality[intval($rid)]['vsd'];
             } elseif ($rid!==null) {
                 $values['model_count']=0;
+            }
+            $values['mc_models_parsed']=null; $values['mc_analytes']=null;
+            $values['mc_s_rel_sd_median']=null; $values['mc_s_rel_sd_max']=null;
+            if ($rid!==null && isset($mc_spread[intval($rid)])) {
+                $sp=$mc_spread[intval($rid)];
+                $values['mc_models_parsed']=$sp['models'];
+                $values['mc_analytes']=$sp['analytes'];
+                $values['mc_s_rel_sd_median']=$sp['s_rel_sd_median'];
+                $values['mc_s_rel_sd_max']=$sp['s_rel_sd_max'];
             }
             if (!$completed) {
                 ++$global_counts['incomplete_results'];

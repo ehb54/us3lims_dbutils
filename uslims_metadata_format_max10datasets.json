@@ -1,6 +1,6 @@
 # comments supported
 {
-    "version"          : "3.0"
+    "version"          : "3.1"
 
     ,"output_dir"      : "/tmp/training"
 
@@ -25,6 +25,10 @@
              "edited_data_id"
             ,"edited_data_reported"
             ,"edited_data_report_count"
+            ,"mc_models_parsed"
+            ,"mc_analytes"
+            ,"mc_s_rel_sd_median"
+            ,"mc_s_rel_sd_max"
             ,"model_variance"
             ,"model_variance_max"
             ,"model_variance_sd"
@@ -403,5 +407,5 @@
     ,"missing_value" : "NA"
 
 # Numeric recordkeeping/quality fields: retain for selection, exclude from predictors
-    ,"non_predictor_fields" : ["edited_data_id", "edited_data_reported", "edited_data_report_count", "model_variance", "model_variance_max", "model_variance_sd", "model_count", "requested_partition", "submitTime", "startTime", "endTime", "updateTime", "CPUCount", "actual_master_groups", "result_completed", "request_xml_valid", "method_classification_status", "request_id", "result_id", "experiment_id", "metadata_format_version", "cg_model_id", "cg_model_status", "dmga_model_id", "dmga_model_status", "resource_parser_status", "scheduler", "resource_wall_limit_conflict", "queue_status", "cluster_name", "analysis_variant_name", "investigator_hash", "submitter_hash", "submitted_by_other", "gfac_id", "gfac_id_form", "is_airavata"]
+    ,"non_predictor_fields" : ["edited_data_id", "edited_data_reported", "edited_data_report_count", "mc_models_parsed", "mc_analytes", "mc_s_rel_sd_median", "mc_s_rel_sd_max", "model_variance", "model_variance_max", "model_variance_sd", "model_count", "requested_partition", "submitTime", "startTime", "endTime", "updateTime", "CPUCount", "actual_master_groups", "result_completed", "request_xml_valid", "method_classification_status", "request_id", "result_id", "experiment_id", "metadata_format_version", "cg_model_id", "cg_model_status", "dmga_model_id", "dmga_model_status", "resource_parser_status", "scheduler", "resource_wall_limit_conflict", "queue_status", "cluster_name", "analysis_variant_name", "investigator_hash", "submitter_hash", "submitted_by_other", "gfac_id", "gfac_id_form", "is_airavata"]
 }        
