@@ -395,6 +395,43 @@ function usmd_dataset_nodes( $xml ) {
     return $out;
 }
 
+// One dataset's value for one per-dataset field, or null. Shared by both
+// dataset encodings so they cannot drift apart.
+function usmd_dataset_value( $field, $i, $vectors, $datasets ) {
+    if ( isset( $vectors[$field] ) ) {
+        return $datasets[$vectors[$field]][$i] ?? null;
+    }
+    $steps = $datasets['speed_profile_by_dataset'][$i] ?? null;
+    if ( !$steps ) {
+        return null;
+    }
+    if ( $field === 'speedstep_count' ) {
+        return count( $steps );
+    }
+    $keys = [ 'rotorspeed' => 'rotor_speed_rpm', 'duration_seconds' => 'duration_seconds' ];
+    $vals = isset( $keys[$field] ) ? array_column( $steps, $keys[$field] ) : [];
+    // A partially-unknown profile stays unknown, not the max of the readable steps.
+    return ( !$vals || in_array( null, $vals, true ) ) ? null : max( $vals );
+}
+
+// Salted digest of a GUID, 16 hex characters, emitted as a string. The salt
+// must be the same for every database in a collection event, or the same person
+// will not match across them. Never store the salt in this repo.
+function usmd_identity_hash( $guid ) {
+    static $salt = null;
+    if ( $salt === null ) {
+        global $metadata_hash_salt;
+        $salt = $metadata_hash_salt ?? getenv( 'USLIMS_METADATA_HASH_SALT' );
+        if ( $salt === false || $salt === null || $salt === '' ) {
+            error_exit( "identity fields requested but no hash salt configured: set \$metadata_hash_salt in the db config file or USLIMS_METADATA_HASH_SALT in the environment.\nThe same salt must be used for every database in a collection event, or the same person will not match across them." );
+        }
+    }
+    if ( $guid === null || trim( (string)$guid ) === '' ) {
+        return null;
+    }
+    return substr( hash( 'sha256', $salt . '|' . trim( (string)$guid ) ), 0, 16 );
+}
+
 function usmd_bucket_rows( $jp ) {
     $rows = [];
     if ( $jp === null || !isset( $jp->bucket ) ) {
@@ -514,6 +551,7 @@ function usmd_parse_jobfile( $jobfile ) {
         "requested_memory_per_core" => null,
         "requested_memory_total" => null,
         "requested_wall_limit" => null,
+        "requested_partition" => null,
         "units" => [ "requested_memory_per_core"=>"bytes/core", "requested_memory_total"=>"bytes", "requested_wall_limit"=>"seconds" ],
         "evidence" => []
     ];
@@ -531,6 +569,10 @@ function usmd_parse_jobfile( $jobfile ) {
     if ( preg_match( '/^#PBS\s+-l\s+[^\r\n]*walltime=([0-9:]+)/mi', $jobfile, $m ) ) {
         $out["requested_wall_limit"] = usmd_parse_wall_seconds( $m[1] );
         $out["parser_status"] = "partial";
+    }
+    /* The partition is the real queue; recorded verbatim, never parsed further. */
+    if ( preg_match( '/^(?:#SBATCH\s+(?:--partition(?:=|\s+)|-p\s+)|#PBS\s+-q\s+)([\w.,\-]+)/mi', $jobfile, $m ) ) {
+        $out["requested_partition"] = $m[1];
     }
     if ( preg_match( '/^#SBATCH\s+(?:--nodes(?:=|\s+)|-N\s*)(\d+)/m', $jobfile, $m ) ) {
         $out["scheduler_family"] = "Slurm";
@@ -642,6 +684,81 @@ function usmd_model_from_db( $db, $node, $kind, &$cache ) {
     $parsed=usmd_parse_model($row->xml??null,$kind);$parsed["model_id"]=intval($id);$parsed["filename"]=$filename;$parsed["description"]=$row->description??null;
     return $cache[$key]=$parsed;
 }
+// Monte Carlo yields confidence intervals rather than a better fit. The combined
+// model's XML nests one <model> per iteration, so the spread of a fitted
+// parameter across them IS the interval. Summarised here because the nested XML
+// averages 286 KB and cannot be exported. Attributes are read positionally-free:
+// the tag is matched first, then each attribute within it.
+function usmd_mc_spread( $xml ) {
+    $out = [ 'models'=>null, 'analytes'=>null, 's_rel_sd_median'=>null, 's_rel_sd_max'=>null ];
+    if ( $xml === null || $xml === '' ) {
+        return $out;
+    }
+    $models = preg_match_all( '/<model\b/', $xml );
+    if ( $models < 2 ) {
+        return $out;   // a single model carries no iteration spread
+    }
+    if ( !preg_match_all( '/<analyte\b([^>]*)>/', $xml, $tags ) ) {
+        return $out;
+    }
+    $by = [];
+    foreach ( $tags[1] as $t ) {
+        if ( preg_match( '/\bname="([^"]*)"/', $t, $n )
+          && preg_match( '/\bs="([^"]*)"/', $t, $v )
+          && is_numeric( $v[1] ) ) {
+            $by[$n[1]][] = floatval( $v[1] );
+        }
+    }
+    $rel = [];
+    foreach ( $by as $vals ) {
+        $c = count( $vals );
+        if ( $c < 2 ) {
+            continue;
+        }
+        $mean = array_sum( $vals ) / $c;
+        if ( $mean == 0.0 ) {
+            continue;   // a fixed solute has no interval, not a zero-width one
+        }
+        $ss = 0.0;
+        foreach ( $vals as $x ) { $ss += ( $x - $mean ) * ( $x - $mean ); }
+        $rel[] = sqrt( $ss / ( $c - 1 ) ) / abs( $mean );
+    }
+    $out['models'] = $models;
+    $out['analytes'] = count( $by );
+    if ( $rel ) {
+        sort( $rel );
+        $c = count( $rel );
+        $out['s_rel_sd_median'] = ( $c % 2 ) ? $rel[intdiv($c,2)] : ( $rel[$c/2-1] + $rel[$c/2] ) / 2;
+        $out['s_rel_sd_max'] = $rel[$c-1];
+    }
+    return $out;
+}
+// Report documents per edited dataset, one query per database. A dataset that
+// reached a report is a second, independent outcome signal alongside the fit
+// statistic. Returns null when the table is absent, so "no report table" stays
+// distinguishable from "no report".
+function usmd_report_counts( $db ) {
+    global $db_handle;
+    static $cache = [];
+    if ( array_key_exists( $db, $cache ) ) {
+        return $cache[$db];
+    }
+    $map = [];
+    // The database is selected rather than interpolated, so the statement is a
+    // constant. Every other query here fully qualifies its tables, so changing
+    // the default database affects nothing else.
+    if ( !@mysqli_select_db( $db_handle, $db ) ) {
+        return $cache[$db] = null;
+    }
+    $rows = @mysqli_query( $db_handle, "select editedDataID, count(*) n from reportDocument where editedDataID is not null group by editedDataID" );
+    if ( !$rows ) {
+        return $cache[$db] = null;
+    }
+    while ( $row = mysqli_fetch_assoc( $rows ) ) {
+        $map[intval( $row["editedDataID"] )] = intval( $row["n"] );
+    }
+    return $cache[$db] = $map;
+}
 function usmd_speedsteps( $db ) {
     global $db_handle;$map=[];
     $rows=db_obj_result($db_handle,"select experimentID,rotorspeed,durationhrs,durationmins from {$db}.speedstep",true,true);
@@ -654,7 +771,10 @@ function usmd_speedsteps( $db ) {
 }
 function usmd_dataset_features( $db, $xml, $speedsteps, &$issues ) {
     global $db_handle;
-    $out=["scan_count_by_dataset"=>[],"point_count_by_dataset"=>[],"simulation_points_by_dataset"=>[],"radial_grid_type_by_dataset"=>[],"time_grid_type_by_dataset"=>[],"meniscus_radius_cm_by_dataset"=>[],"bottom_radius_cm_by_dataset"=>[],"speed_profile_by_dataset"=>[]];
+    // Keyed on the edit filename, which these values are a pure function of.
+    // Saves the editedData query and the rawData blob decode on re-analyses.
+    static $dscache = [];
+    $out=["scan_count_by_dataset"=>[],"point_count_by_dataset"=>[],"simulation_points_by_dataset"=>[],"radial_grid_type_by_dataset"=>[],"time_grid_type_by_dataset"=>[],"meniscus_radius_cm_by_dataset"=>[],"bottom_radius_cm_by_dataset"=>[],"speed_profile_by_dataset"=>[],"edited_data_id_by_dataset"=>[]];
     foreach(usmd_dataset_nodes($xml) as $index=>$dataset) {
 
         foreach(["simpoints"=>"simulation_points_by_dataset","radial_grid"=>"radial_grid_type_by_dataset","time_grid"=>"time_grid_type_by_dataset"] as $xmlname=>$outname) {
@@ -669,28 +789,39 @@ function usmd_dataset_features( $db, $xml, $speedsteps, &$issues ) {
         }
         $out["speed_profile_by_dataset"][]=$expid!==null&&isset($speedsteps[$expid])?$speedsteps[$expid]:null;
         $edit=isset($dataset->files->edit)?usmd_attr($dataset->files->edit,"filename"):null;
+        $vals=["edited_data_id_by_dataset"=>null,"meniscus_radius_cm_by_dataset"=>null,
+               "bottom_radius_cm_by_dataset"=>null,"scan_count_by_dataset"=>null,
+               "point_count_by_dataset"=>null];
+        $ckey="$db/".(string)$edit;
         if($edit===null) {
-            $issues[]=["dataset_index"=>$index,"code"=>"missing-edit-filename"];$out["scan_count_by_dataset"][]=null;$out["point_count_by_dataset"][]=null;$out["meniscus_radius_cm_by_dataset"][]=null;$out["bottom_radius_cm_by_dataset"][]=null;continue;
-        }
-        $edited=db_obj_result($db_handle,"select rawDataID,data from {$db}.editedData where filename=".usmd_sql_string($edit)." order by lastUpdated desc limit 1",false,true);
-        if(!$edited||($editxml=@simplexml_load_string($edited->data))===false) {
-            $issues[]=["dataset_index"=>$index,"code"=>"missing-or-invalid-edited-data"];$out["scan_count_by_dataset"][]=null;$out["point_count_by_dataset"][]=null;$out["meniscus_radius_cm_by_dataset"][]=null;$out["bottom_radius_cm_by_dataset"][]=null;continue;
-        }
-        $men=isset($editxml->run->parameters->meniscus)?usmd_attr($editxml->run->parameters->meniscus,"radius"):null;$bot=isset($editxml->run->parameters->bottom)?usmd_attr($editxml->run->parameters->bottom,"radius"):null;
-        $out["meniscus_radius_cm_by_dataset"][]=is_numeric($men)?floatval($men):null;$out["bottom_radius_cm_by_dataset"][]=is_numeric($bot)?floatval($bot):null;
-        $rawrow=db_obj_result($db_handle,"select data from {$db}.rawData where rawDataID=".intval($edited->rawDataID),false,true);
-        if(!$rawrow) {
-            $issues[]=["dataset_index"=>$index,"code"=>"missing-raw-data"];$out["scan_count_by_dataset"][]=null;$out["point_count_by_dataset"][]=null;continue;
-        }
-
-        $auc=auc2obj($rawrow->data);$excluded=0;if(isset($editxml->run->excludes->exclude)) {
-            foreach($editxml->run->excludes->exclude as $_) {
-                $excluded++;
+            $issues[]=["dataset_index"=>$index,"code"=>"missing-edit-filename"];
+        } elseif(array_key_exists($ckey,$dscache)) {
+            $vals=$dscache[$ckey];
+        } else {
+            $edited=db_obj_result($db_handle,"select editedDataID,rawDataID,data from {$db}.editedData where filename=".usmd_sql_string($edit)." order by lastUpdated desc limit 1",false,true);
+            if(!$edited||($editxml=@simplexml_load_string($edited->data))===false) {
+                $issues[]=["dataset_index"=>$index,"code"=>"missing-or-invalid-edited-data"];
+            } else {
+                $vals["edited_data_id_by_dataset"]=isset($edited->editedDataID)?intval($edited->editedDataID):null;
+                $men=isset($editxml->run->parameters->meniscus)?usmd_attr($editxml->run->parameters->meniscus,"radius"):null;$bot=isset($editxml->run->parameters->bottom)?usmd_attr($editxml->run->parameters->bottom,"radius"):null;
+                $vals["meniscus_radius_cm_by_dataset"]=is_numeric($men)?floatval($men):null;$vals["bottom_radius_cm_by_dataset"]=is_numeric($bot)?floatval($bot):null;
+                $rawrow=db_obj_result($db_handle,"select data from {$db}.rawData where rawDataID=".intval($edited->rawDataID),false,true);
+                if(!$rawrow) {
+                    $issues[]=["dataset_index"=>$index,"code"=>"missing-raw-data"];
+                } else {
+                    $auc=auc2obj($rawrow->data);$excluded=0;if(isset($editxml->run->excludes->exclude)) {
+                        foreach($editxml->run->excludes->exclude as $_) {
+                            $excluded++;
+                        }
+                    }
+                    $left=isset($editxml->run->parameters->data_range)?usmd_attr($editxml->run->parameters->data_range,"left"):null;$right=isset($editxml->run->parameters->data_range)?usmd_attr($editxml->run->parameters->data_range,"right"):null;
+                    $scans=isset($auc->scans)?$auc->scans-$excluded:null;$points=is_numeric($left)&&is_numeric($right)&&isset($auc->radius_delta)&&$auc->radius_delta>0?intval(floor((floatval($right)-floatval($left))/$auc->radius_delta)):null;
+                    $vals["scan_count_by_dataset"]=$scans>0?$scans:null;$vals["point_count_by_dataset"]=$points>0?$points:null;
+                }
+                $dscache[$ckey]=$vals;
             }
         }
-        $left=isset($editxml->run->parameters->data_range)?usmd_attr($editxml->run->parameters->data_range,"left"):null;$right=isset($editxml->run->parameters->data_range)?usmd_attr($editxml->run->parameters->data_range,"right"):null;
-        $scans=isset($auc->scans)?$auc->scans-$excluded:null;$points=is_numeric($left)&&is_numeric($right)&&isset($auc->radius_delta)&&$auc->radius_delta>0?intval(floor((floatval($right)-floatval($left))/$auc->radius_delta)):null;
-        $out["scan_count_by_dataset"][]=$scans>0?$scans:null;$out["point_count_by_dataset"][]=$points>0?$points:null;
+        foreach($vals as $k=>$v) { $out[$k][]=$v; }
     }
     return $out;
 }
@@ -750,6 +881,15 @@ function csv_research_method($root, $db_label, $xml_label, $has_cg, $has_dc, $va
     return [$family,($family==='DMGA' && !$has_dc)?'missing-dc-reference':'classified'];
 }
 
+// PHP renders a float above `precision` (default 14) digits in scientific
+// notation, silently truncating it. Print large integral magnitudes in full.
+function csv_render($value) {
+    if (is_float($value) && is_finite($value) && floor($value) === $value && abs($value) >= 1e15) {
+        return sprintf('%.0f', $value);
+    }
+    return $value;
+}
+
 function csv_number($value) {
     if (is_string($value)) {
         $value = str_replace(',', '.', trim($value));
@@ -771,7 +911,28 @@ function csv_write($path, $data) {
 
 $input_format = $metadata_format->fields->input;
 $dataset_fields = $metadata_format->dataset_fields ?? ['edited_scans','edited_radial_points','simpoints'];
+// 'positional': one column per dataset slot, width maximum_datasets x
+// dataset_fields. 'aggregate': primary dataset plus order-free summaries.
+// string_fields are emitted verbatim instead of coerced to a number.
+$string_fields = array_flip((array)($metadata_format->string_fields ?? []));
+// Reading the nested MC models costs a large blob per Monte Carlo job, so it is
+// skipped entirely unless the output asks for it.
+$want_mc_spread = (bool)array_intersect(
+    ['mc_models_parsed','mc_analytes','mc_s_rel_sd_median','mc_s_rel_sd_max'],
+    (array)$metadata_format->fields->input);
+$dataset_encoding = $metadata_format->dataset_encoding ?? 'positional';
+if ( !in_array( $dataset_encoding, ['positional','aggregate'], true ) ) {
+    error_exit( "$metadata_format_file has unknown dataset_encoding '$dataset_encoding'" );
+}
+// mean is deliberately absent: it is exactly sum/n from the emitted columns.
+$dataset_suffixes = ['0','n','sum','min','max'];
 foreach ($dataset_fields as $field) {
+    if ( $dataset_encoding === 'aggregate' ) {
+        foreach ( $dataset_suffixes as $suffix ) {
+            $input_format[] = "$field.$suffix";
+        }
+        continue;
+    }
     for ($i = 0; $i < $metadata_format->maximum_datasets; ++$i) {
         $input_format[] = "$field.$i";
     }
@@ -810,6 +971,7 @@ if (array_diff($use_dbs,$existing)) {
     throw new RuntimeException('Requested database not found');
 }
 $string_variants = [];
+$global_unmapped = [];
 $model_cache = [];
 $global_counts = ['requests'=>0,'records'=>0,'invalid_xml'=>0,'filtered_dataset_count'=>0,'missing_results'=>0,'incomplete_results'=>0];
 foreach ($use_dbs as $db) {
@@ -856,7 +1018,7 @@ foreach ($use_dbs as $db) {
             || ($datasetcount_end && $declared > $datasetcount_end))) {
             ++$global_counts['filtered_dataset_count']; continue;
         }
-        if ($serialized > $metadata_format->maximum_datasets) {
+        if ($dataset_encoding === 'positional' && $serialized > $metadata_format->maximum_datasets) {
             throw new RuntimeException("$db request $thisreqid has $serialized datasets: select the full formatter or increase maximum_datasets; refusing to truncate scientific fields");
         }
         $jp = $xml->job->jobParameters ?? null;
@@ -882,9 +1044,19 @@ foreach ($use_dbs as $db) {
             $base['@attributes.method']=$research_method;
         }
         $base['analysis_variant']=$request['analType']??(isset($xml->job->analysis_type)?usmd_attr($xml->job->analysis_type,'value'):null);
+        // Verbatim companion to the mapped code; the suffix space is
+        // combinatorial, so no enumeration stays complete.
+        $base['analysis_variant_name']=$base['analysis_variant'];
         $base['serialized_dataset_count'] = $serialized;
         $base['request_xml_valid'] = (int)$valid_xml;
         $base['bucket_count'] = $valid_xml ? count(usmd_bucket_rows($jp)) : null;
+        // Campaign key: the edited dataset the primary analysis ran against.
+        $base['edited_data_id'] = $datasets['edited_data_id_by_dataset'][0] ?? null;
+        $reports = usmd_report_counts($db);
+        $base['edited_data_report_count'] = ($reports === null || $base['edited_data_id'] === null)
+            ? null : ($reports[intval($base['edited_data_id'])] ?? 0);
+        $base['edited_data_reported'] = $base['edited_data_report_count'] === null
+            ? null : (int)($base['edited_data_report_count'] > 0);
         foreach (['cg_component_count'=>[$cg,'component_count'],'cg_declared_subgrids'=>[$cg,'declared_subgrids'],
                   'dmga_floating_constraints'=>[$dmga,'floating_constraints'],'dmga_base_components'=>[$dmga,'base_components'],
                   'dmga_base_associations'=>[$dmga,'base_associations']] as $name=>$source) {
@@ -894,28 +1066,27 @@ foreach ($use_dbs as $db) {
             'simpoints'=>'simulation_points_by_dataset','radial_grid'=>'radial_grid_type_by_dataset',
             'time_grid'=>'time_grid_type_by_dataset','meniscus'=>'meniscus_radius_cm_by_dataset','bottom'=>'bottom_radius_cm_by_dataset'];
         foreach ($dataset_fields as $field) {
-            for ($i=0;$i<$metadata_format->maximum_datasets;++$i) {
-                $value = null;
-                if ($i >= $serialized && $valid_xml) {
-                    $value = 0;
-                }
-                elseif (isset($vectors[$field])) {
-                    $value = $datasets[$vectors[$field]][$i]??null;
-                }
-                else {
-                    $steps = $datasets['speed_profile_by_dataset'][$i]??null;
-                    if ($steps) {
-                        if ($field==='speedstep_count') {
-                            $value=count($steps);
-                        }
-                        $key = $field==='rotorspeed'?'rotor_speed_rpm':($field==='duration_seconds'?'duration_seconds':null);
-                        if ($key) {
-                            $vals=array_column($steps,$key); if (!in_array(null,$vals,true)) {
-                                $value=max($vals);
-                            }
-                        }
+            if ($dataset_encoding === 'aggregate') {
+                // Runs over serialized datasets only, never maximum_datasets.
+                $vals = [];
+                for ($i=0;$i<$serialized;++$i) {
+                    $value = usmd_dataset_value($field,$i,$vectors,$datasets);
+                    if ($value !== null) {
+                        $vals[] = $value;
                     }
                 }
+                // .n is the contributing count, so a short sum stays detectable.
+                $base["$field.0"]   = usmd_dataset_value($field,0,$vectors,$datasets);
+                $base["$field.n"]   = $valid_xml ? count($vals) : null;
+                $base["$field.sum"] = $vals ? array_sum($vals) : null;
+                $base["$field.min"] = $vals ? min($vals) : null;
+                $base["$field.max"] = $vals ? max($vals) : null;
+                continue;
+            }
+            for ($i=0;$i<$metadata_format->maximum_datasets;++$i) {
+                $value = ($i >= $serialized && $valid_xml)
+                    ? 0
+                    : usmd_dataset_value($field,$i,$vectors,$datasets);
                 $base["$field.$i"]=$value;
             }
         }
@@ -929,10 +1100,47 @@ foreach ($use_dbs as $db) {
         if (!$result_rows) {
             $result_rows=[[]]; ++$global_counts['missing_results'];
         }
+        // One round trip per request rather than per result; RTT dominates here.
+        $model_quality=[];
+        $rids=[];
+        foreach ($result_rows as $rr) {
+            if (isset($rr['HPCAnalysisResultID'])) {
+                $rids[]=intval($rr['HPCAnalysisResultID']);
+            }
+        }
+        if ($rids) {
+            $mq=db_obj_result($db_handle,"select d.HPCAnalysisResultID as rid, count(*) as cnt, min(m.variance) as v, max(m.variance) as vmax, stddev_samp(m.variance) as vsd, max(m.MCIteration) as mcit from {$db}.HPCAnalysisResultData d join {$db}.model m on m.modelID=d.resultID where d.HPCAnalysisResultType='model' and d.HPCAnalysisResultID in (".implode(',',$rids).") group by d.HPCAnalysisResultID",true,true);
+            while ($mq && $w=mysqli_fetch_assoc($mq)) {
+                $model_quality[intval($w['rid'])]=['cnt'=>intval($w['cnt']),
+                    'v'=>is_numeric($w['v'])?floatval($w['v']):null,
+                    'vmax'=>is_numeric($w['vmax'])?floatval($w['vmax']):null,
+                    'vsd'=>is_numeric($w['vsd'])?floatval($w['vsd']):null,
+                    'mcit'=>intval($w['mcit'])];
+            }
+        }
+        // The nested models live in one large blob per MC job, so they are read
+        // only for results the aggregate above marked as Monte Carlo.
+        $mc_spread=[];
+        if ($want_mc_spread) {
+            $mcrids=[];
+            foreach ($model_quality as $rid=>$mv) { if (($mv['mcit']??0)>1) $mcrids[]=$rid; }
+            if ($mcrids) {
+                $mx=db_obj_result($db_handle,"select d.HPCAnalysisResultID as rid, m.xml as xml from {$db}.HPCAnalysisResultData d join {$db}.model m on m.modelID=d.resultID where d.HPCAnalysisResultType='model' and m.MCIteration>1 and d.HPCAnalysisResultID in (".implode(',',$mcrids).")",true,true);
+                while ($mx && $w=mysqli_fetch_assoc($mx)) {
+                    $rid=intval($w['rid']);
+                    // several MC models on one result: keep the widest interval
+                    $sp=usmd_mc_spread($w['xml']);
+                    if (!isset($mc_spread[$rid])
+                        || ($sp['s_rel_sd_max']??-1) > ($mc_spread[$rid]['s_rel_sd_max']??-1)) {
+                        $mc_spread[$rid]=$sp;
+                    }
+                }
+            }
+        }
         foreach ($result_rows as $result) {
             $values=$base;
             $resources=usmd_parse_jobfile($result['jobfile']??null);
-            foreach (['requested_nodes','requested_ranks','requested_cores','requested_memory_per_core','requested_memory_total','requested_wall_limit'] as $key) {
+            foreach (['requested_nodes','requested_ranks','requested_cores','requested_memory_per_core','requested_memory_total','requested_wall_limit','requested_partition'] as $key) {
                 $values[$key]=$resources[$key];
             }
             $values['CPUCount']=$result['CPUCount']??null;
@@ -943,6 +1151,27 @@ foreach ($use_dbs as $db) {
             }
             $completed=($result['queueStatus']??null)==='completed' && strpos($result['lastMessage']??'','FAILED')===false;
             $values['result_completed']=(int)$completed;
+            // Fit quality of the models this job produced. An outcome, not a predictor.
+            $values['model_count']=null; $values['model_variance']=null;
+            $values['model_variance_max']=null; $values['model_variance_sd']=null;
+            $rid=$result['HPCAnalysisResultID']??null;
+            if ($rid!==null && isset($model_quality[intval($rid)])) {
+                $values['model_count']=$model_quality[intval($rid)]['cnt'];
+                $values['model_variance']=$model_quality[intval($rid)]['v'];
+                $values['model_variance_max']=$model_quality[intval($rid)]['vmax'];
+                $values['model_variance_sd']=$model_quality[intval($rid)]['vsd'];
+            } elseif ($rid!==null) {
+                $values['model_count']=0;
+            }
+            $values['mc_models_parsed']=null; $values['mc_analytes']=null;
+            $values['mc_s_rel_sd_median']=null; $values['mc_s_rel_sd_max']=null;
+            if ($rid!==null && isset($mc_spread[intval($rid)])) {
+                $sp=$mc_spread[intval($rid)];
+                $values['mc_models_parsed']=$sp['models'];
+                $values['mc_analytes']=$sp['analytes'];
+                $values['mc_s_rel_sd_median']=$sp['s_rel_sd_median'];
+                $values['mc_s_rel_sd_max']=$sp['s_rel_sd_max'];
+            }
             if (!$completed) {
                 ++$global_counts['incomplete_results'];
             }
@@ -956,6 +1185,34 @@ foreach ($use_dbs as $db) {
             $values['cg_model_status']=$cg['status'];
             $values['dmga_model_status']=$dmga['status'];
             $values['queue_status']=$result['queueStatus']??'no-result';
+            // Verbatim companion to the mapped code: an unenumerated host maps
+            // to null and would otherwise lose its identity.
+            $values['cluster_name']=$base['job.cluster.@attributes.name']??null;
+            // Investigator is whose science this is, submitter is who pressed the
+            // button; they differ often enough that both are kept.
+            $values['investigator_hash']=usmd_identity_hash($request['investigatorGUID']??null);
+            $values['submitter_hash']=usmd_identity_hash($request['submitterGUID']??null);
+            $values['submitted_by_other']=(isset($request['investigatorGUID'],$request['submitterGUID'])
+                && $request['investigatorGUID']!=='' && $request['submitterGUID']!=='')
+                ? (int)($request['investigatorGUID']!==$request['submitterGUID']) : null;
+            $gfacid=trim((string)($result['gfacID']??''));
+            // Matches gridctl's is_aira_job(). Only these jobs can have had
+            // clusterName overwritten with the cluster the metascheduler chose
+            // (jobmonitor/cleanup.php:636), so their cluster is not the
+            // submitter's choice.
+            $values['is_airavata']=($gfacid==='')?null:(int)preg_match('/US3-A/i',$gfacid);
+            // The gateway's identifier for this job. NOT a join key to
+            // gfac.analysis: cleanup_gfac.php deletes that row on completion, so
+            // the table holds only in-flight work. Provenance only.
+            if ($gfacid==='') {
+                $values['gfac_id']=null; $values['gfac_id_form']=2;
+            } else {
+                // The row format is whitespace-delimited, so embedded whitespace
+                // is substituted and gfac_id_form records that it was.
+                $collapsed=preg_replace('/\s+/u','_',$gfacid);
+                $values['gfac_id']=$collapsed;
+                $values['gfac_id_form']=($collapsed===$gfacid)?0:1;
+            }
             $values['resource_parser_status']=$resources['parser_status'];
             $values['scheduler']=$resources['scheduler_family'];
             $values['resource_wall_limit_conflict']=isset($resources['evidence']['wall_limit_conflict'])?1:0;
@@ -967,17 +1224,32 @@ foreach ($use_dbs as $db) {
                     $mapped=$metadata_format->string_mapping->{$field}->{(string)$value}??null;
                     if ($mapped===null) {
                         $unmapped[$field]=$value;
+                        // Otherwise silent: the value becomes NA, which is
+                        // indistinguishable from absent.
+                        $global_unmapped[$field][(string)$value]=
+                            ($global_unmapped[$field][(string)$value]??0)+1;
                     }
                     $value=$mapped;
+                }
+                if (isset($string_fields[$field])) {
+                    // Coercing an identifier to a number would drop every
+                    // non-numeric value, which is not a random subset.
+                    if ($value===null || trim((string)$value)==='') {
+                        $missing[]=$field;
+                        $input_data[]=$missing_value;
+                    } else {
+                        $input_data[]=preg_replace('/\s+/u','_',trim((string)$value));
+                    }
+                    continue;
                 }
                 $number=csv_number($value);
                 if ($number===null) {
                     $missing[]=$field;
                 }
-                $input_data[]=$number??$missing_value;
+                $input_data[]=csv_render($number??$missing_value);
             }
             foreach ($target_format as $field) {
-                $target_data[]=csv_number($result[$field]??null)??$missing_value;
+                $target_data[]=csv_render(csv_number($result[$field]??null)??$missing_value);
             }
             $csv_base_name=str_replace(['__version__','__db__','__requestid__'],[$metadata_format->version,$db,$thisreqid],$metadata_format->filename_format->base);
             // Keep every result distinct, including requests with no result.
@@ -1009,6 +1281,16 @@ foreach ($use_dbs as $db) {
         }
         // Model contents are cached only within a request to bound memory use.
         $model_cache=[];
+    }
+}
+// Every value listed here was emitted as NA and cannot be told from absent.
+if ($global_unmapped) {
+    echo "\nUNMAPPED string_mapping values (emitted as the missing sentinel):\n";
+    foreach ($global_unmapped as $f=>$vals) {
+        arsort($vals);
+        foreach ($vals as $v=>$n) {
+            echo "  $f: ".($v===''?'(empty)':$v)." x $n\n";
+        }
     }
 }
 if ($csv_handle) {
