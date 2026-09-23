@@ -176,7 +176,7 @@ $use_config_file does not exist
 
 to fix:
 
-cp ${config_file}.template $use_config_file
+cp {$config_file}.template $use_config_file
 and edit with appropriate values
 ")
         ;
@@ -310,7 +310,7 @@ if ( $getpriorids ) {
 
     $maxclusternamelen = 30;
 
-    $fmt = "%-${maxclusternamelen}s | %-20s | %-6s | %-45s | %-19s | %-12s\n";
+    $fmt = "%-{$maxclusternamelen}s | %-20s | %-6s | %-45s | %-19s | %-12s\n";
     $fmtlen = $maxclusternamelen + 3 + 20 + 3 + 6 + 3 + 45 + 3 + 19 + 3 + 12;
 
     echoline( "-", $fmtlen );
@@ -474,8 +474,8 @@ if ( $maxrss ) {
     $query =
 "
 SELECT (HPCAnalysisResult.max_rss/1024) AS 'maxrss', HPCAnalysisRequest.analType
-FROM ${db}.HPCAnalysisResult
-JOIN ${db}.HPCAnalysisRequest ON HPCAnalysisResult.HPCAnalysisRequestID=HPCAnalysisRequest.HPCAnalysisRequestID
+FROM {$db}.HPCAnalysisResult
+JOIN {$db}.HPCAnalysisRequest ON HPCAnalysisResult.HPCAnalysisRequestID=HPCAnalysisRequest.HPCAnalysisRequestID
 WHERE HPCAnalysisResult.max_rss > 0
 ORDER BY HPCAnalysisRequest.analType, HPCAnalysisResult.max_rss
 ";
