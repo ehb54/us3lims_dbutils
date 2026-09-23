@@ -4,17 +4,11 @@
 
 $us3lims      = exec( "ls -d ~us3/lims" );
 $ll_base_dir  = "$us3lims/etc/joblog";
-$udplogf      = "$us3lims/etc/udp.log";
 $us3bin       = "$us3lims/bin";
-$cwd          = getcwd();
-$getrunbdir   = "$cwd/getrun";
 
 include "$us3bin/listen-config.php";
-if ( file_exists( $class_dir_p . "job_details.php" ) ) {
-   include $class_dir_p . "job_details.php";
-}
 
-$global_config_file = $class_dir_p . "../global_config.php";
+$global_config_file = $class_dir . "../global_config.php";
 
 include $global_config_file;
 
@@ -47,13 +41,6 @@ Options
 --restart                  : restart jobmonitors if needed (e.g. after a system reboot)
 --restart-only       n     : restart n jobmonitors if needed (typically for debugging purposes)
 --check-log                : checks the log (requires --gfacid & exclusive of --monitor)
---getrundir                : gets running directory for airavata jobs 
---getrun                   : collects running info from rundir into $getrunbdir/db/HPCAnalysisRequestID
---runinfo                  : displays various debugging info for airavata jobs
---copyrun            queue : gets running info and sends to remote cluster for testing
---ga-times                 : reports timings for ga mc jobs (experimental)
---pmg                n     : report timings for specific pmg # (default 0), use 'all' do show all, 'most-recent' for just most recent, 'max-gen' for details about pmg with maximum generation
---airavata-details         : get current airavata job details (requires --gfacid)
 --maxrss                   : maximum memory used report for selected database
 --get-prior-ids      n     : report n previously completed ids
 
@@ -76,13 +63,6 @@ $running        = false;
 $restart        = false;
 $restart_only   = false;
 $checklog       = false;
-$getrundir      = false;
-$getrun         = false;
-$runinfo        = false;
-$copyrun        = false;
-$gatimes        = false;
-$adetails       = false;
-$pmg            = 0;
 $maxrss         = false;
 $getpriorids    = 0;
 
@@ -101,48 +81,12 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $db = array_shift( $u_argv );
             break;
         }
-        case "--pmg": {
-            array_shift( $u_argv );
-            if ( !count( $u_argv ) ) {
-                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
-            }
-            $pmg = array_shift( $u_argv );
-            break;
-        }
         case "--get-prior-ids": {
             array_shift( $u_argv );
             if ( !count( $u_argv ) ) {
                 error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
             }
             $getpriorids = array_shift( $u_argv );
-            break;
-        }
-        case "--getrundir": {
-            array_shift( $u_argv );
-            $getrundir = true;
-            break;
-        }
-        case "--getrun": {
-            array_shift( $u_argv );
-            $getrun = true;
-            break;
-        }
-        case "--runinfo": {
-            array_shift( $u_argv );
-            $runinfo = true;
-            break;
-        }
-        case "--ga-times": {
-            array_shift( $u_argv );
-            $gatimes = true;
-            break;
-        }
-        case "--copyrun": {
-            array_shift( $u_argv );
-            if ( !count( $u_argv ) ) {
-                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
-            }
-            $copyrun = array_shift( $u_argv );
             break;
         }
         case "--reqid": {
@@ -204,11 +148,6 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $checklog = true;
             break;
         }
-        case "--airavata-details": {
-            array_shift( $u_argv );
-            $adetails = true;
-            break;
-        }
         case "--maxrss": {
             array_shift( $u_argv );
             $maxrss = true;
@@ -237,7 +176,7 @@ $use_config_file does not exist
 
 to fix:
 
-cp ${config_file}.template $use_config_file
+cp {$config_file}.template $use_config_file
 and edit with appropriate values
 ")
         ;
@@ -265,38 +204,6 @@ if ( $checklog && !$gfacid ) {
 
 if ( $checklog && $monitor ) {
     error_exit( "ERROR: --checklog and --monitor can not both be specified" );
-}
-
-if (
-    ( $getrundir && $getrun )
-    || ( $getrundir && $copyrun )
-    || ( $getrun && $copyrun )
-    ) {
-    error_exit( "ERROR: --getrundir --getrun --copyrun are mutually exclusive" );
-}
-
-if ( $getrundir && !$reqid ) {
-    error_exit( "ERROR: --getrundir requires --reqid" );
-}
-
-if ( $getrun && !$reqid ) {
-    error_exit( "ERROR: --getrun requires --reqid" );
-}
-
-if ( $copyrun && !$reqid ) {
-    error_exit( "ERROR: --copyrun requires --reqid" );
-}
-
-if ( $runinfo && !$getrun ) {
-    error_exit( "ERROR: --runinfo requires --getrun" );
-}
-
-if ( $gatimes && !$getrun ) {
-    error_exit( "ERROR: --ga-times requires --getrun" );
-}
-
-if ( $adetails && ( !$gfacid || !$db ) ) {
-    error_exit( "ERROR: --airavata-details requires --gfacid and --db" );
 }
 
 function jm_only_report( $jm_active ) {
@@ -403,7 +310,7 @@ if ( $getpriorids ) {
 
     $maxclusternamelen = 30;
 
-    $fmt = "%-${maxclusternamelen}s | %-20s | %-6s | %-45s | %-19s | %-12s\n";
+    $fmt = "%-{$maxclusternamelen}s | %-20s | %-6s | %-45s | %-19s | %-12s\n";
     $fmtlen = $maxclusternamelen + 3 + 20 + 3 + 6 + 3 + 45 + 3 + 19 + 3 + 12;
 
     echoline( "-", $fmtlen );
@@ -432,32 +339,6 @@ if ( $getpriorids ) {
     }
         
     echoline( "-", $fmtlen );
-    exit;
-}
-
-if ( $adetails ) {
-    if ( !is_aira_job( $gfacid ) ) {
-        error_exit( "$gfacid does not appear to be a valid id for an Airavata managed job" );
-    }
-    $jobDetails = getJobDetails( $gfacid );
-    if ( $jobDetails ) {
-        if ( $jobDetails === ' No Job Details ' ) {
-            $jdstdout = $jobDetails;
-            $jdstderr = $jobDetails;
-            
-        } else {
-            $jdstdout = isset( $jobDetails->stdOut ) ? trim( $jobDetails->stdOut ) : "n/a";
-            $jdstderr = isset( $jobDetails->stdErr ) ? trim( $jobDetails->stdErr ) : "n/a";
-        }
-    } else {
-        $jdstdout = "failed to get job details";
-        $jdstderr = "failed to get job details";
-    }
-    $aira_details =
-        sprintf(   "   Airavata stdout : %s\n", $jdstdout )
-        . sprintf( "   Airavata stderr : %s\n", $jdstderr )
-        ;
-    echo $aira_details;
     exit;
 }
 
@@ -593,8 +474,8 @@ if ( $maxrss ) {
     $query =
 "
 SELECT (HPCAnalysisResult.max_rss/1024) AS 'maxrss', HPCAnalysisRequest.analType
-FROM ${db}.HPCAnalysisResult
-JOIN ${db}.HPCAnalysisRequest ON HPCAnalysisResult.HPCAnalysisRequestID=HPCAnalysisRequest.HPCAnalysisRequestID
+FROM {$db}.HPCAnalysisResult
+JOIN {$db}.HPCAnalysisRequest ON HPCAnalysisResult.HPCAnalysisRequestID=HPCAnalysisRequest.HPCAnalysisRequestID
 WHERE HPCAnalysisResult.max_rss > 0
 ORDER BY HPCAnalysisRequest.analType, HPCAnalysisResult.max_rss
 ";
@@ -900,7 +781,7 @@ if ( $reqid && $onlygfac ) {
     exit;
 }
 
-if ( $reqid && !$getrundir && !$getrun && !$copyrun) {
+if ( $reqid ) {
     $out = "";
     $out .= hpcreqout( $reqid );
     $out .= hpcresbyreqout( $reqid );
@@ -910,35 +791,9 @@ if ( $reqid && !$getrundir && !$getrun && !$copyrun) {
     exit(0);
 }
 
-function is_aira_job( $gfacID ) {
-    return preg_match( "/US3-A/i", $gfacID ) ? true : false;
-}
-
 if ( $gfacid ) {
     $out = "";
     $out .= gfacanalysisout( $gfacid );
-    if ( is_aira_job( $gfacid ) ) {
-        $out .= echoline( '-', 80, false );
-        $jobDetails = getJobDetails( $gfacid );
-        if ( $jobDetails ) {
-            if ( $jobDetails === ' No Job Details ' ) {
-                $jdstdout = $jobDetails;
-                $jdstderr = $jobDetails;
-                
-            } else {
-                $jdstdout = isset( $jobDetails->stdOut ) ? trim( $jobDetails->stdOut ) : "n/a";
-                $jdstderr = isset( $jobDetails->stdErr ) ? trim( $jobDetails->stdErr ) : "n/a";
-            }
-        } else {
-            $jdstdout = "failed to get job details";
-            $jdstderr = "failed to get job details";
-        }
-        $out .=
-            sprintf( "Airavata job stdout    %s\n", $jdstdout )
-            . sprintf( "Airavata job stderr    %s\n", $jdstderr )
-            ;
-    }
-
     $out .= hpcresbyreqout( $gfacid, true );
 
     echo $out;
@@ -1039,333 +894,4 @@ function check_log( $fname ) {
 
     sort( $out );
     echo implode( "\n", $out ) . "\n";
-}
-
-if ( $getrundir || $getrun || $copyrun ) {
-    ## get run dir
-    ## possibly a better way via airavata call
-
-    ## get full info
-    global $db;
-    global $db_handle;
-
-    $res = db_obj_result( $db_handle, "select *  from $db.HPCAnalysisRequest where HPCAnalysisRequestID=\"$reqid\"" );
-
-    $cluster  = $res->{ 'clusterName' };
-    $method   = $res->{ 'method' };
-    $analType = $res->{ 'analType' };
-
-    # echo "cluster $cluster\n";
-
-    ## we don't have the queue name :( look it up
-
-    $queue   = false;
-    $login   = false;
-    $workdir = false;
-
-    foreach ( $cluster_details as $k => $v ) {
-        if (
-            $v['name'] == $cluster &&
-            isset( $v['login'] ) &&
-            isset( $v['workdir'] )
-            ) {
-            $queue   = $k;
-            $login   = $v['login'];
-            $workdir = $v['workdir'];
-            break;
-        }
-    }
-    
-    if ( !$queue ) {
-        error_exit( "could not find any queue with login defined in $global_config_file for cluster $cluster" );
-    }
-    
-    if ( !isset( $cluster_details[$queue]['airavata'] ) ||
-         !$cluster_details[$queue]['airavata'] ) {
-        error_exit( "cluster $queue not marked as airavata in $global_config_file" );
-    }        
-
-    # echo "queue   $queue\n";
-    # echo "login   $login\n";
-    # echo "workdir $workdir\n";
-
-    $padreqid = str_pad( $reqid, 5, '0', STR_PAD_LEFT );
-
-    $inputfile = "hpcinput-localhost-$db-$padreqid.tar";
-
-    $cmd = "runuser -l us3 -c \"ssh $login ls $workdir/PROCESS_*/$inputfile\" | grep PROCESS";
-    $res = run_cmd( $cmd, false, true );
-
-    # echo "cmd     $cmd\n";
-    if ( count( $res ) != 1 ) {
-        error_exit( "error attempting to retrieve rundir, multiple results:\n" . implode( "\n", $res ) );
-    }
-    $rundir = preg_replace( '/\/hpcinput.*tar/', '', $res[0] );
-    echoline();
-    echo "$login:$rundir\n";
-    if ( $getrundir ) {
-        exit(0);
-    }
-
-    ## mkdir
-
-    $tdir = "$getrunbdir/$db/$reqid";
-
-    if ( !is_dir( $tdir ) ) {
-        mkdir( $tdir, 0777, true );
-        if ( !is_dir( $tdir ) ) {
-            error_exit( "Could not make directory $tdir" );
-        }
-    }
-
-    ## make sure directory is owned by us3
-    $cmd = "chown -R us3:us3 $getrunbdir";
-    run_cmd( $cmd );
-
-    ## get info
-
-    $reqxmlf = "hpcrequest-localhost-$db-$padreqid.xml";
-
-    $getfiles = [
-        "job_*.slurm"
-        ,$inputfile
-        ,"Ultrascan.stdout"
-        ,"Ultrascan.stderr"
-        ,$reqxmlf
-        ,"output/analysis-results.tar"
-        ];
-
-    $cmd = "runuser -l us3 -c \"rsync -avz $login:$rundir/{" . implode(",",$getfiles) . "} " . $tdir . "\"";
-
-    echoline();
-    echo "$cmd\n";
-    echoline();
-
-    echo run_cmd( $cmd, false );
-
-    echo "results in:\n$tdir\n";
-    echoline();
-    echo run_cmd( "cd $tdir && ls -ltr" );
-    echoline();
-    echo "results in:\n$tdir\n";
-
-    if ( $runinfo ) {
-        $slurms = glob( "$tdir/job*slurm" );
-        if ( count( $slurms ) ) {
-            echoline();
-            echo run_cmd( "grep 'SBATCH' $slurms[0]" );
-        }
-        if ( file_exists( "$tdir/$reqxmlf" ) ) {
-            echoline();
-            echo run_cmd( "grep -P '(datasetCount|iterations|groupcount|method)' $tdir/$reqxmlf | sed 's/^ *<//;s/> *$//;s/\/$//'" );
-        }
-        echoline();
-        echo run_cmd( "cd $tdir && tail -25 Ultrascan.stderr" );
-    }
-
-    if ( $gatimes ) {
-        ## this should be rewritten in a cleaner way with objects
-
-        echoline();
-        echo "ga-times:\n";
-        echoline();
-        
-        if ( $method != "GA" ) {
-            error_exit( "--ga-times selected but HPCRequestMethod is not GA" );
-        }
-        ## if ( strpos( $analType, "-MC" ) === false ) {
-        ## error_exit( "--ga-times selected but HPCRequestMethod analysis type does not contain -MC" );
-        ## }
-        if ( !file_exists( "$tdir/Ultrascan.stderr" ) ) {
-            error_exit( "--ga-times : $tdir/Ultrascan.stderr does not exist" );
-        }
-        if ( !file_exists( $udplogf ) ) {
-            error_exit( "--ga-times : $udplogf does not exist" );
-        }
-
-        $udpstats = run_cmd( "grep manage-us3-pipe $udplogf | grep -P '$db-0*$reqid:'" , false, true );
-
-        if ( $pmg == 'all' || strpos( $pmg, 'most-recent' ) !== false || strpos( $pmg, 'max-gen' ) !== false  ) {
-            $mgcount = trim( run_cmd( "grep -P 'groupcount' $tdir/$reqxmlf | sed 's/^.*value=\"//;s/\".*$//'" ) );
-            echo "mgroupcount is '$mgcount'\n";
-            $pmg_start = 0;
-            $pmg_end   = $mgcount;
-        } else {
-            $pmg_start = $pmg;
-            $pmg_end   = $pmg + 1;
-        }            
-        
-        $pmg_iterations       = [];
-        $pmg_iter_generations = [];
-        $pmg_iter_start       = [];
-        $pmg_iter_end         = [];
-        $last_update_time     = new DateTime('1970-01-01');
-        $max_gen              = 0;
-        $max_gen_pmg          = 0;
-
-        $pmg_msgs = [];
-        
-        for ( $this_pmg = $pmg_start; $this_pmg < $pmg_end; ++$this_pmg ) {
-            $this_udpstats = $udpstats;
-
-            $pmg_msgs[ $this_pmg ] = "";
-
-            if ( preg_grep( '/\(pmg \d+\)/', $this_udpstats ) ) {
-                $this_udpstats = preg_replace( "/\(pmg $this_pmg\) /", '', preg_grep( "/\(pmg $this_pmg\)/", $this_udpstats ) );
-            }
-            
-            if ( !count( $this_udpstats ) ) {
-                error_exit( "--ga-times : no status found for pmg $this_pmg" );
-            }
-
-            ## echo implode( "\n", $this_udpstats ) . "\n";
-
-            $times       = [];
-            $generations = [];
-            $mc          = [];
-
-            foreach ( $this_udpstats as $v ) {
-                if ( strpos( $v, "Avg. Generation" ) === false ) {
-                    continue;
-                }
-
-                $vf = explode( " ", $v );
-                $times[]       = new DateTime( "$vf[0] $vf[1]" );
-                $generations[] = rtrim( $vf[6], ';' );
-                $mc[]          = $vf[10];
-            }
-
-            $last_mci                 = 0;
-            $mc_iteration_start       = [];
-            $mc_iteration_end         = [];
-            $mc_iteration_generations = [];
-            $mc_pos                   = 0;
-
-            for ( $i = 0; $i < count($times); ++$i ) {
-                if ( $debug ) {
-                    echo sprintf(
-                        "%s %s %s\n"
-                        ,$times[$i]->format( 'r' )
-                        ,$generations[$i]
-                        ,$mc[$i]
-                        );
-                }
-
-                if ( !isset( $pmg_iter_generations[$this_pmg] ) ) {
-                    $pmg_iter_generations[$this_pmg] = [];
-                    $pmg_iter_start      [$this_pmg] = [];
-                    $pmg_iter_end        [$this_pmg] = [];
-                }
-
-                if ( $last_mci != $mc[$i] ) {
-                    ++$mc_pos;
-                    $last_mci                                    = $mc[$i];
-                    $mc_iteration_start[$mc_pos]                 = $times[$i];
-                    $pmg_iter_start         [$this_pmg][$mc_pos] = $times[$i];
-                }
-
-                $mc_iteration_generations[$mc_pos]   = $generations[$i];
-                $mc_iteration_end        [$mc_pos]   = $times      [$i];
-
-                $pmg_iter_generations[$this_pmg][$mc_pos] = $generations[$i];
-                $pmg_iter_end        [$this_pmg][$mc_pos] = $times      [$i];
-
-                if ( $last_update_time->getTimestamp() < $times[$i]->getTimestamp() ) {
-                    $last_update_time = $times[$i];
-                    $last_update_pmg  = $this_pmg;
-                }
-                if ( $max_gen < $generations[$i] ) {
-                    $max_gen     = $generations[$i];
-                    $max_gen_pmg = $this_pmg;
-                }
-            }
-
-            $tot_generations = 0;
-
-            foreach ( $mc_iteration_start as $k => $v ) {
-                $iteration_duration = dt_duration_minutes( $mc_iteration_start[$k], $mc_iteration_end[$k] );
-                $tot_generations += $mc_iteration_generations[$k];
-                $pmg_msgs[ $this_pmg ] .= sprintf(
-                    "mc iteration %s last generation %s duration %s avg duration per generation %s\n"
-                    ,$k
-                    ,$mc_iteration_generations[$k]
-                    ,dhms_from_minutes( $iteration_duration )
-                    ,dhms_from_minutes( $iteration_duration / $mc_iteration_generations[$k] )
-                    )
-                    ;
-            }
-            
-            ## total duration
-            $tot_dur_min = dt_duration_minutes( $times[0], end($times) );
-            $pmg_msgs[ $this_pmg ] .= sprintf( "total duration %s\n", dhms_from_minutes( $tot_dur_min ) );
-
-            $mc_count = count( $mc_iteration_start );
-            $pmg_msgs[ $this_pmg ] .= sprintf(
-                "average time per mc iteration %s\n"
-                ,dhms_from_minutes( $tot_dur_min / $mc_count )
-                );
-            $pmg_msgs[ $this_pmg ] .= sprintf(
-                "average time per generation %s\n"
-                ,dhms_from_minutes( $tot_dur_min / $tot_generations )
-                );
-            if ( $pmg == "all" ) {
-                echoline();
-                echo "pmg $this_pmg\n";
-                echoline();
-                echo $pmg_msgs[ $this_pmg ];
-            }
-        }
-        if ( $pmg_start != $pmg_end ) {
-            echoline();
-            echo "most recent pmg with update $last_update_pmg\n";
-            echoline();
-            if ( strpos( $pmg, "most-recent" ) !== false ) {
-                echo $pmg_msgs[ $last_update_pmg ];
-            }
-            echoline();
-            echo "max generations pmg $max_gen_pmg\n";
-            echoline();
-            if ( strpos( $pmg, "max-gen" ) !== false ) {
-                echo $pmg_msgs[ $max_gen_pmg ];
-            }                
-        } else {
-            echo $pmg_msgs[ $this_pmg ];
-        }
-    }
-    
-    if ( !$copyrun ) {
-        exit(0);
-    }
-
-    ## get target info
-    
-    if ( !isset( $cluster_details[ $copyrun ] ) ) {
-        error_exit( "could not find queue $copyrun in $global_config_file" );
-    }
-
-    if ( !isset( $cluster_details[ $copyrun ]['login'] ) ) {
-        error_exit( "$global_config_file \$cluster_details['$copyrun'] does not have 'login' set" );
-    }
-    if ( !isset( $cluster_details[ $copyrun ]['workdir'] ) ) {
-        error_exit( "$global_config_file \$cluster_details['$copyrun'] does not have 'workdir' set" );
-    }
-
-    $dworkdir = $cluster_details[ $copyrun ]['workdir'] . "/test/$db/$reqid";
-    $dlogin   = $cluster_details[ $copyrun ]['login'];
-        
-    ## mkdir workdir/../test/db/reqid
-    $cmd = "runuser -l us3 -c \"ssh $dlogin mkdir -p $dworkdir\"";
-    echoline();
-    echo "$cmd\n";
-    echoline();
-    echo run_cmd( $cmd, false );
-
-    ## rsync to workdir/../test/db/reqid
-    $cmd = "runuser -l us3 -c \"rsync -avz $tdir/* $dlogin:$dworkdir\"";
-    echoline();
-    echo "$cmd\n";
-    echoline();
-    echo run_cmd( $cmd, false );
-    echoline();
-    echo "results now in:\n$dlogin:$dworkdir\n";
 }
