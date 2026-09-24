@@ -18,3 +18,5 @@ mariadb-binary-backup-*
 schemas-*
 my.cnf
 training
+test_bin/sbatch
+test_bin/state/
