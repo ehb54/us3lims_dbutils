@@ -30,8 +30,10 @@ testing reliably misses them. It reports:
 | cross-origin CSS `@import` / `url()` | `style-src`, `font-src`, `img-src` |
 | PHP tags inside `.js` files | — see below |
 
-Vendored libraries (`jquery*.js`) are skipped: they are loaded as external
-files, so their internals are not a CSP concern.
+Vendored libraries (`jquery*.js`) are skipped by this text scanner to avoid
+noisy matches. External scripts can still perform operations CSP blocks (for
+example jQuery evaluating scripts inside AJAX fragments). Browser tests must
+verify their runtime behavior; a clean scan does not establish compatibility.
 
 `blob:` URL construction is reported separately and does **not** count as a
 violation — it is an input to the policy, not a defect. See below.
@@ -53,10 +55,11 @@ header name to `Content-Security-Policy`.
 
 The policy is not simply `default-src 'self'`. Three additions are load-bearing:
 
-- **`blob:`** in `img-src`, `object-src` and `connect-src`. The supporting-files
+- **`blob:`** in `img-src`, `object-src`, `connect-src` and `frame-src`. The supporting-files
   viewer builds object URLs with `URL.createObjectURL()` and feeds them to
   `<object data=>`, `<img src=>` and `fetch()`. `blob:` is not covered by
-  `'self'`, so without these the document viewer silently shows nothing.
+  `'self'`, so without these the document viewer silently shows nothing. Chromium also creates a frame for its
+  embedded PDF viewer, so `frame-src blob:` is required for that path.
 - **`form-action`, `base-uri`, `frame-ancestors`** must be stated explicitly.
   None of them fall back to `default-src`, so a policy that omits them leaves
   form submission targets, `<base>` injection and framing unrestricted.

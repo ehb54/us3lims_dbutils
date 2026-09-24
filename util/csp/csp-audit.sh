@@ -36,8 +36,8 @@ done
 
 total=0
 
-# Vendored libraries are third-party and are loaded as external files, so their
-# internals are not a CSP concern.  .git and node_modules are noise.
+# Skip vendored libraries in this text scan to avoid noisy matches. Browser
+# tests must still verify their runtime CSP behavior. .git/node_modules are noise.
 PRUNE=( -name .git -o -name node_modules -o -name 'jquery*.js' )
 
 sources() {
