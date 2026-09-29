@@ -23,7 +23,8 @@ $reposearchpaths =
     ];
 
 ## regexp list of directory names to ignore
-$ignore_repos = [ '/undrop-for-innodb/' ];
+## the Airavata bridge is no longer installed; skip copies left on older deployments
+$ignore_repos = [ '/undrop-for-innodb/', '/ultrascan-airavata-bridge/' ];
 ## additional site-specific ignores can be added via $ignore_repos_add in db_config.php
 
 # user defines continued
@@ -70,14 +71,6 @@ $known_repos =
          ,"own" => "us3:apache"
          ,"git" => [
              "url" => "https://github.com/ehb54/us3lims_common.git"
-             ,"branch" => "master"
-         ]
-     ]
-     ,"$wwwpath/common/class/ultrascan-airavata-bridge" => [
-         "use" => "lims"
-         ,"own" => "us3:apache"
-         ,"git" => [
-             "url" => "https://github.com/SciGaP/ultrascan-airavata-bridge.git"
              ,"branch" => "master"
          ]
      ]
