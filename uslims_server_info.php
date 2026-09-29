@@ -96,12 +96,29 @@ echo "\n";
 $gui_vers = intval( run_cmd( "php uslims_git_info.php  | grep gui | awk '{ print $9 }'" ) );
 $db_vers = intval( run_cmd( "php uslims_git_info.php  | grep us3_sql.git | awk '{ print $9 }'" ) );
 echo sprintf( "GUI %d (%d visually) DB %d\n", $gui_vers, ($gui_vers + 2), $db_vers );
+## ultrascan version ( VERSION file in the gui repo, present since 4.1.0 )
+$us_vers = trim( run_cmd( "cat /opt/ultrascan3/VERSION 2>/dev/null", false ) );
+if ( strlen( $us_vers ) ) {
+    echo sprintf( "GUI %d DB %d Version %s\n", $gui_vers, $db_vers, $us_vers );
+}
 echo "\n";
 
-## qt_version
-$qt_vers = run_cmd( "ls -l /opt/qt | sed 's/^.*\/qt-//g'" );
-echo $qt_vers;
+## qt_version + qwt version
+$qt_vers  = trim( run_cmd( "ls -l /opt/qt | sed 's/^.*\/qt-//g'" ) );
+$qwt_vers = trim( run_cmd( "ls -d /opt/qt-$qt_vers-qwt-* 2>/dev/null | sed 's|^.*-qwt-||' | head -1", false ) );
+if ( strlen( $qwt_vers ) ) {
+    echo sprintf( "%s qwt %s\n", $qt_vers, $qwt_vers );
+} else {
+    echo "$qt_vers\n";
+}
 echo "\n";
+
+## lims version ( VERSION file in the lims bin repo, present since 4.1.0 )
+$lims_vers = trim( run_cmd( "cat ~us3/lims/bin/VERSION 2>/dev/null", false ) );
+if ( strlen( $lims_vers ) ) {
+    echo sprintf( "Version %s\n", $lims_vers );
+    echo "\n";
+}
 
 
 ## db
