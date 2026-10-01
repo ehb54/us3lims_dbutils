@@ -14,7 +14,10 @@ $wwwpath = "/srv/www/htdocs";
 
 $self = __FILE__;
 
-require "utility.php";
+require_once "utility.php";
+
+const NO_STDERR   = ' 2>/dev/null';
+const WITH_STDERR = ' 2>&1';
 
 ## Report failed connections and queries as values, not exceptions (PHP 8.1+)
 mysqli_report( MYSQLI_REPORT_OFF );
@@ -142,13 +145,13 @@ function config_vars( $file ) {
           . ' $v = array_filter( get_defined_vars(), function ( $k ) { return $k[ 0 ] !== "_" && $k !== "GLOBALS"; },'
           . ' ARRAY_FILTER_USE_KEY ); unset( $v["argv"], $v["argc"] );'
           . ' echo json_encode( $v, JSON_PARTIAL_OUTPUT_ON_ERROR );';
-    $out  = shell_exec( escapeshellarg( PHP_BINARY ) . ' -r ' . escapeshellarg( $code ) . ' 2>/dev/null' );
+    $out  = shell_exec( escapeshellarg( PHP_BINARY ) . ' -r ' . escapeshellarg( $code ) . NO_STDERR );
     $vars = json_decode( (string) $out, true );
     return is_array( $vars ) ? $vars : null;
 }
 
 function lint_ok( $file ) {
-    exec( escapeshellarg( PHP_BINARY ) . ' -l ' . escapeshellarg( $file ) . ' 2>&1', $out, $rc );
+    exec( escapeshellarg( PHP_BINARY ) . ' -l ' . escapeshellarg( $file ) . WITH_STDERR, $out, $rc );
     return $rc === 0;
 }
 
@@ -177,7 +180,7 @@ function write_file( $path, $contents ) {
 
 ## Run a command as another account, returning its exit status.
 function run_as( $account, $cmd ) {
-    exec( 'su -s /bin/sh ' . escapeshellarg( $account ) . ' -c ' . escapeshellarg( $cmd ) . ' 2>&1', $out, $rc );
+    exec( 'su -s /bin/sh ' . escapeshellarg( $account ) . ' -c ' . escapeshellarg( $cmd ) . WITH_STDERR, $out, $rc );
     return $rc;
 }
 
@@ -338,7 +341,7 @@ foreach ( $active as $name => $c ) {
     $queue = $c[ 'queue' ] ?? '';
     $count = trim( (string) shell_exec( 'su -s /bin/sh us3 -c ' . escapeshellarg(
         'ssh -n -o BatchMode=yes -o ConnectTimeout=15 ' . escapeshellarg( $login ) . ' '
-        . escapeshellarg( 'sinfo -h -N -o %N' . ( $queue !== '' ? ' -p ' . escapeshellarg( $queue ) : '' ) . ' | sort -u | wc -l' ) ) . ' 2>/dev/null' ) );
+        . escapeshellarg( 'sinfo -h -N -o %N' . ( $queue !== '' ? ' -p ' . escapeshellarg( $queue ) : '' ) . ' | sort -u | wc -l' ) ) . NO_STDERR ) );
     if ( $count === '1' ) {
         report( 'todo', "set single_node for $name (its queue has one node)" );
         $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'single_node\' ] = true;';
@@ -380,9 +383,9 @@ foreach ( $active as $name => $c ) {
         $known = $entry[ 'dir' ] . "/.ssh/known_hosts";
         $o = $keys = $fp = [];
         $lookup = $port === 22 ? $host : "[$host]:$port";
-        exec( 'ssh-keygen -F ' . escapeshellarg( $lookup ) . ' -f ' . escapeshellarg( $known ) . ' 2>/dev/null', $o, $found );
+        exec( 'ssh-keygen -F ' . escapeshellarg( $lookup ) . ' -f ' . escapeshellarg( $known ) . NO_STDERR, $o, $found );
         if ( $found !== 0 ) {
-            exec( "ssh-keyscan -p $port " . escapeshellarg( $host ) . ' 2>/dev/null', $keys );
+            exec( "ssh-keyscan -p $port " . escapeshellarg( $host ) . NO_STDERR, $keys );
             if ( !$keys ) {
                 report( 'FAIL', "$name: no host key could be fetched from $host:$port" );
                 continue;
@@ -438,7 +441,7 @@ if ( preg_match( '/gridctl_(pro|dev)\.php/', $crontab ) ) {
         file_put_contents( $tmp, $crontab );
         backup_file( $tmp );
         file_put_contents( $tmp, $fixed );
-        exec( 'crontab -u us3 ' . escapeshellarg( $tmp ) . ' 2>&1', $o, $rc );
+        exec( 'crontab -u us3 ' . escapeshellarg( $tmp ) . WITH_STDERR, $o, $rc );
         unlink( $tmp );
         report( $rc === 0 ? 'done' : 'FAIL', "us3 crontab updated" );
         $changes++;
@@ -458,7 +461,7 @@ report( lint_ok( $global_config ) ? 'ok' : 'FAIL', "global_config.php parses" );
 
 $probe = '$us3bin = ' . var_export( $us3bin, true ) . '; require ' . var_export( "$gridctl_dir/gridctl_bootstrap.php", true )
        . '; echo function_exists( "write_log" ) ? "ok" : "missing";';
-$out = trim( (string) shell_exec( 'su -s /bin/sh us3 -c ' . escapeshellarg( escapeshellarg( PHP_BINARY ) . ' -r ' . escapeshellarg( $probe ) ) . ' 2>&1' ) );
+$out = trim( (string) shell_exec( 'su -s /bin/sh us3 -c ' . escapeshellarg( escapeshellarg( PHP_BINARY ) . ' -r ' . escapeshellarg( $probe ) ) . WITH_STDERR ) );
 report( $out === 'ok' ? 'ok' : 'FAIL', "gridctl loads its configuration as us3" . ( $out === 'ok' ? '' : ": $out" ) );
 
 report( run_as( $web_user, 'test -w ' . escapeshellarg( $breaker_dir ) ) === 0 ? 'ok' : 'FAIL',

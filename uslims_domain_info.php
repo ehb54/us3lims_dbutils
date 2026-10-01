@@ -15,10 +15,19 @@ function instance_overlay( $instpath, $k ) {
         ? "$configroot/instances/$k.php" : null;
 }
 
+// The value a config file returns, including each file only once
+function returned_config( $path ) {
+    static $cache = [];
+    if ( !array_key_exists( $path, $cache ) ) {
+        $cache[ $path ] = @include_once $path;
+    }
+    return $cache[ $path ];
+}
+
 function base_class_dir() {
     global $configroot;
     $bases = glob( "$configroot/dbinst-base.v*.php" );
-    $base  = $bases ? include end( $bases ) : [];
+    $base  = $bases ? returned_config( end( $bases ) ) : [];
     return $base[ 'values' ][ 'class_dir' ] ?? '';
 }
 $srvconfig      = "$wwwpath/uslims3/config.php";
@@ -240,7 +249,7 @@ foreach ( $mysql_dbs as $k => $v ) {
     $instpath = "$wwwpath/uslims3/$k/config.php";
     $tmp_key  = "$instpath: \$org_site";
     if ( $overlay = instance_overlay( $instpath, $k ) ) {
-        $contract = @include $overlay;
+        $contract = returned_config( $overlay );
         $check_names[ $tmp_key ] = $contract[ 'values' ][ 'org_site' ] ?? '';
         $class_dirs [ $tmp_key ] = base_class_dir();
     } else {
@@ -403,7 +412,7 @@ if ( get_yn_answer( "Update php variables?" ) ) {
         echoline();
         echo "Checking '$instpath'\n";
         if ( $overlay = instance_overlay( $instpath, $k ) ) {
-            $contract = @include $overlay;
+            $contract = returned_config( $overlay );
             if ( !is_array( $contract ) ) {
                 error_exit( "could not read $overlay" );
             }
