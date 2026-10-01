@@ -301,26 +301,22 @@ function confirm_host_keys( $question ) {
     return interactive() ? ask_yn( $question, 'rerun with --accept-host-keys to trust it' ) : false;
 }
 
-## Write a file after backing up the original, keeping its owner, group and mode.
+## Write a file after backing up the original. Rewriting an existing file
+## truncates it in place, so it keeps its owner, group and mode: a switch to
+## writing a temp file and renaming it would have to restore all three.
 ## $verify lints the result and restores the original if it does not parse, so a
 ## bad rewrite never stays live: global_config.php and listen-config.php are both
 ## loaded by running services.
 function write_file( $path, $contents, $verify = true ) {
     global $changes;
-    $stat  = @stat( $path );
     $saved = null;
-    if ( $stat ) {
+    if ( is_file( $path ) ) {
         ensure_backup_dir();
         backup_file( $path );
         $saved = backup_path( $path );
     }
     if ( file_put_contents( $path, $contents ) === false ) {
         error_exit( "could not write $path" );
-    }
-    if ( $stat ) {
-        chown( $path, $stat[ 'uid' ] );
-        chgrp( $path, $stat[ 'gid' ] );
-        chmod( $path, $stat[ 'mode' ] & 07777 );
     }
     if ( $verify && !lint_ok( $path, $why ) ) {
         if ( $saved !== null && is_file( $saved ) && @copy( $saved, $path ) ) {
