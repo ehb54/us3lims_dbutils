@@ -930,9 +930,72 @@ if ( !$old_crons ) {
     report( 'ok', "no crontab entry calls gridctl_pro.php or gridctl_dev.php" );
 }
 
-## ------------------------------------------------------------- 7. verify
+## ------------------------------------------------------------- 7. jobmonitors
 
-step( "7. Verify" );
+## A jobmonitor started before the upgrade runs the old code, which has no
+## cleanup claim: cleanup_claim_acquire() arrived with the Slurm change. The
+## claim therefore excludes nothing for it, and job_cleanup() imports with plain
+## INSERTs, so it can import a job's results a second time alongside the new
+## sweep. Restarting the services does not reach these processes, because
+## services.php manages listen only.
+step( "7. Jobmonitors from before the upgrade" );
+
+list( $ps_out, $ps_err, $ps_rc ) = capture( "ps -eo pid=,args=" );
+$old_jms = [];
+$mine    = [ getmypid(), posix_getppid() ];
+foreach ( explode( "\n", $ps_out ) as $line ) {
+    ## Match the launched form only: a php binary followed by the monitor's own
+    ## path ("/usr/bin/php .../jobmonitor/jobmonitor.php <db> <gfacID> <id>").
+    ## A looser match would also catch anything that merely names the script on
+    ## its command line, such as a grep or a shell, and this step kills as root.
+    if ( !preg_match( '#^\s*(\d+)\s+(\S*php[0-9.]*)\s+(\S*jobmonitor/jobmonitor\.php)(\s|$)#', $line, $m ) ) {
+        continue;
+    }
+    $pid = (int) $m[ 1 ];
+    if ( in_array( $pid, $mine, true ) ) {
+        continue;
+    }
+    $old_jms[ $pid ] = trim( substr( $line, strlen( $m[ 1 ] ) + 1 ) );
+}
+$killed_jms = [];
+
+if ( $ps_rc !== 0 ) {
+    report( 'FAIL', "could not list processes (exit $ps_rc): " . reason( $ps_err ) );
+} elseif ( !$old_jms ) {
+    report( 'ok', "no jobmonitor is running" );
+} else {
+    report( 'todo', count( $old_jms ) . " jobmonitor(s) predate the upgrade and would double-import; "
+                    . "kill them, then restart under the new code (pid " . implode( ', ', array_keys( $old_jms ) ) . ")" );
+    if ( $apply && confirm( "Kill " . count( $old_jms ) . " old jobmonitor(s) and restart them under the new code?" ) ) {
+        foreach ( array_keys( $old_jms ) as $pid ) {
+            @posix_kill( $pid, SIGTERM );
+        }
+        ## Give them a moment to finish the statement they are on, then insist.
+        sleep( 5 );
+        foreach ( array_keys( $old_jms ) as $pid ) {
+            if ( @posix_kill( $pid, 0 ) ) {
+                @posix_kill( $pid, SIGKILL );
+            }
+        }
+        $killed_jms = array_keys( $old_jms );
+        $changes++;
+        ## uslims_jobs.php respawns a monitor only for a job that still needs
+        ## one, and it must run as us3, which owns them.
+        $jobs = __DIR__ . '/uslims_jobs.php';
+        if ( !is_file( $jobs ) ) {
+            report( 'FAIL', "cannot restart jobmonitors: $jobs not found" );
+        } else {
+            $rc = run_as( 'us3', escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( $jobs ) . ' --restart',
+                          $jm_out, $jm_err );
+            report( $rc === 0 ? 'done' : 'FAIL', "jobmonitors restarted under the new code"
+                    . ( $rc === 0 ? '' : " (exit $rc): " . reason( $jm_err !== '' ? $jm_err : $jm_out ) ) );
+        }
+    }
+}
+
+## ------------------------------------------------------------- 8. verify
+
+step( "8. Verify" );
 
 ## These checks describe the upgraded host, so on a dry run they would all fail
 ## by construction. Their outcome is only meaningful once the changes are in.
@@ -972,6 +1035,11 @@ if ( !$apply ) {
             . ( $rc === 0 ? '' : ( $gc_stat ? ' (' . owner_of( $gc_stat ) . ')' : '' )
                                 . ' ' . reason( $g_err !== '' ? $g_err : $g_out ) ) );
 
+    ## Any pre-upgrade monitor still alive can still double-import.
+    $survivors = array_values( array_filter( $killed_jms, function ( $pid ) { return @posix_kill( $pid, 0 ); } ) );
+    report( $survivors ? 'FAIL' : 'ok', "no jobmonitor from before the upgrade is still running"
+            . ( $survivors ? ': pid ' . implode( ', ', $survivors ) : '' ) );
+
     $rc = run_as( $web_user, 'test -w ' . escapeshellarg( $breaker_dir ), $w_out, $w_err );
     report( $rc === 0 ? 'ok' : 'FAIL', "$web_user can write the breaker directory"
             . ( $rc === 0 ? '' : ' ' . reason( $w_err !== '' ? $w_err : $w_out ) ) );
@@ -988,6 +1056,12 @@ if ( !$apply ) {
 echo $failures ? "$failures check(s) FAILED.\n" : "All checks passed.\n";
 if ( $apply && $changes ) {
     echo "Restart the gridctl services: cd $us3bin && php services.php restart\n";
+    if ( !$killed_jms ) {
+        ## services.php does not manage jobmonitors, so say so rather than let
+        ## the line above read as covering them.
+        echo "Jobmonitors are separate processes: if any were running from before"
+           . " the upgrade, kill them and run " . __DIR__ . "/uslims_jobs.php --restart as us3.\n";
+    }
 }
 ## A dry run with work outstanding is not a failure, so it exits 0; only a real
 ## problem exits non-zero, which is what automation reads.

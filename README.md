@@ -44,7 +44,8 @@
      4. records each cluster's host key and checks ssh for us3 and the web account (the PHP-FPM pool user); sets up the keys for the host's own cluster
      5. creates the shared circuit-breaker directory
      6. fixes crontabs (us3's, /etc/crontab, /etc/cron.d) that still call gridctl_pro.php / gridctl_dev.php
-     7. verifies the result
+     7. replaces jobmonitors started before the upgrade, which take no cleanup claim and would import a job's results twice
+     8. verifies the result
    - dry run by default; ```php uslims_upgrade.php --apply``` makes the changes, backing up each file first; safe to rerun
  - uslims_git_info.php
    - for all expected and discovered repos, reports path, url, branch, use, rev#, rev date, local changes, and deltas
