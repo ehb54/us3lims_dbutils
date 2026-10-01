@@ -15,20 +15,45 @@ function instance_overlay( $instpath, $k ) {
         ? "$configroot/instances/$k.php" : null;
 }
 
-// The value a config file returns, including each file only once
+// The value a config file returns, read once per path. include_once is not
+// usable here: it returns true rather than the value when something else in the
+// process has already included the file.
 function returned_config( $path ) {
     static $cache = [];
     if ( !array_key_exists( $path, $cache ) ) {
-        $cache[ $path ] = @include_once $path;
+        $cache[ $path ] = is_readable( $path ) ? include $path : false;
     }
     return $cache[ $path ];
 }
 
-function base_class_dir() {
+// The newest dbinst base config. Sorted by version number: a plain sort puts
+// v10 before v9.
+function base_config_path() {
     global $configroot;
     $bases = glob( "$configroot/dbinst-base.v*.php" );
-    $base  = $bases ? returned_config( end( $bases ) ) : [];
-    return $base[ 'values' ][ 'class_dir' ] ?? '';
+    if ( !$bases ) {
+        return null;
+    }
+    usort( $bases, function ( $a, $b ) {
+        $va = preg_match( '/\.v(\d+)\.php$/', $a, $m ) ? (int) $m[ 1 ] : 0;
+        $vb = preg_match( '/\.v(\d+)\.php$/', $b, $m ) ? (int) $m[ 1 ] : 0;
+        return $va === $vb ? strcmp( $a, $b ) : $va - $vb;
+    } );
+    return end( $bases );
+}
+
+function base_class_dir() {
+    $path = base_config_path();
+    if ( $path === null ) {
+        return '';
+    }
+    $base = returned_config( $path );
+    if ( !is_array( $base ) || !isset( $base[ 'values' ][ 'class_dir' ] ) ) {
+        global $warnings;
+        $warnings .= "WARNING: could not read class_dir from $path\n";
+        return '';
+    }
+    return $base[ 'values' ][ 'class_dir' ];
 }
 $srvconfig      = "$wwwpath/uslims3/config.php";
 $httpdconfigdir = "/etc/httpd/conf.d";
@@ -250,7 +275,10 @@ foreach ( $mysql_dbs as $k => $v ) {
     $tmp_key  = "$instpath: \$org_site";
     if ( $overlay = instance_overlay( $instpath, $k ) ) {
         $contract = returned_config( $overlay );
-        $check_names[ $tmp_key ] = $contract[ 'values' ][ 'org_site' ] ?? '';
+        if ( !is_array( $contract ) || !isset( $contract[ 'values' ][ 'org_site' ] ) ) {
+            $warnings .= "WARNING: could not read \$org_site from $overlay\n";
+        }
+        $check_names[ $tmp_key ] = is_array( $contract ) ? ( $contract[ 'values' ][ 'org_site' ] ?? '' ) : '';
         $class_dirs [ $tmp_key ] = base_class_dir();
     } else {
         $check_names[ $tmp_key ] = trim( run_cmd( "grep -e '^\s*\$org_site\s*=' $instpath  | tail -1 | awk -F\\' '{ print \$2 }'" ) );
@@ -413,8 +441,8 @@ if ( get_yn_answer( "Update php variables?" ) ) {
         echo "Checking '$instpath'\n";
         if ( $overlay = instance_overlay( $instpath, $k ) ) {
             $contract = returned_config( $overlay );
-            if ( !is_array( $contract ) ) {
-                error_exit( "could not read $overlay" );
+            if ( !is_array( $contract ) || !isset( $contract[ 'values' ][ 'org_site' ] ) ) {
+                error_exit( "could not read \$org_site from $overlay" );
             }
             if ( $contract[ 'values' ][ 'org_site' ] === "$new_domain/$k" ) {
                 echo "NOTICE: $overlay already contains '$new_domain', not updated\n";
