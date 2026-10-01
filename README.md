@@ -40,7 +40,7 @@
    - moves an existing host to the Slurm submission contract; run as root after pulling common, every instance, gridctl and dbutils
      1. refuses to run while Airavata jobs remain in gfac.analysis (let them finish or cancel them first)
      2. rewrites listen-config.php from the gridctl template, carrying the site's values
-     3. sets the global_config.php settings the new code requires (queue time 0, tenant scope, local cluster, env_script_lines per cluster)
+     3. sets the global_config.php settings the new code requires (queue time 0, tenant scope, local cluster, env_script_lines per cluster, single_node on one-node appliances)
      4. records each cluster's host key and checks ssh for us3 and the web account
      5. creates the shared circuit-breaker directory
      6. fixes crontabs that still call gridctl_pro.php / gridctl_dev.php

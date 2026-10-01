@@ -329,6 +329,26 @@ foreach ( $active as $name => $c ) {
     }
 }
 
+## One-node appliances: resource sizing needs single_node to keep a job on one node
+foreach ( $active as $name => $c ) {
+    if ( array_key_exists( 'single_node', $c ) || ( empty( $c[ 'localhost' ] ) && empty( $c[ 'fixed_capacity' ] ) ) ) {
+        continue;
+    }
+    $login = $c[ 'login' ] ?? ( 'us3@' . ( $c[ 'name' ] ?? '' ) );
+    $queue = $c[ 'queue' ] ?? '';
+    $count = trim( (string) shell_exec( 'su -s /bin/sh us3 -c ' . escapeshellarg(
+        'ssh -n -o BatchMode=yes -o ConnectTimeout=15 ' . escapeshellarg( $login ) . ' '
+        . escapeshellarg( 'sinfo -h -N -o %N' . ( $queue !== '' ? ' -p ' . escapeshellarg( $queue ) : '' ) . ' | sort -u | wc -l' ) ) . ' 2>/dev/null' ) );
+    if ( $count === '1' ) {
+        report( 'todo', "set single_node for $name (its queue has one node)" );
+        $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'single_node\' ] = true;';
+    } elseif ( ctype_digit( $count ) ) {
+        report( 'ok', "$name has $count nodes; single_node not needed" );
+    } else {
+        report( 'note', "$name: could not count its nodes (sinfo over ssh); set single_node by hand if it is one node" );
+    }
+}
+
 if ( $managed && $apply && confirm( "Write these settings to $global_config?" ) ) {
     $begin = "## BEGIN uslims_upgrade.php settings (rerun the script rather than editing by hand)";
     $end   = "## END uslims_upgrade.php settings";
