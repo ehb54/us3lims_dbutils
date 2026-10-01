@@ -38,7 +38,7 @@
    - optionally sets up redirects
  - uslims_upgrade.php
    - moves an existing host to the Slurm submission contract; run as root after pulling common, every instance, gridctl and dbutils
-     1. refuses to run while Airavata jobs remain in gfac.analysis (let them finish or cancel them first)
+     1. refuses to run while any Airavata job is in flight, while any job is collecting or importing results, or while any job holds a cleanup claim (step 7 replaces the jobmonitors, so a half-imported result must not be possible)
      2. rewrites listen-config.php from the gridctl template, carrying the site's values
      3. sets the global_config.php settings the new code requires (queue time 0, tenant scope, local cluster, env_script_lines per cluster, single_node on one-node appliances)
      4. records each cluster's host key and checks ssh for us3 and the web account (the PHP-FPM pool user); sets up the keys for the host's own cluster

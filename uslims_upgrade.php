@@ -464,7 +464,7 @@ function reason( $text ) {
 
 ## After the upgrade nothing can monitor, fetch or finalize an Airavata job,
 ## so every one must finish (or be cancelled) on the old code first.
-step( "1. Preflight: Airavata jobs must finish before the upgrade" );
+step( "1. Preflight: no job may be mid-import before the upgrade" );
 
 if ( !is_file( $listen_config ) ) {
     error_exit( "cannot read $listen_config: no such file" );
@@ -481,13 +481,23 @@ $gdb = @mysqli_connect( $old_listen[ 'dbhost' ] ?? 'localhost',
 if ( !$gdb ) {
     error_exit( "cannot connect to the gfac database: " . mysqli_connect_error() );
 }
-## gfac.analysis keeps finished jobs, so counting every Airavata row would refuse
-## the upgrade on every host that ever ran one. Only jobs still in flight matter.
-## Terminal statuses are listed rather than active ones so a status this script
-## does not know about counts as in flight, which errs toward refusing.
+## job_cleanup() deletes the analysis row once it has imported, so a row that is
+## still here is a job no cleanup has finished. Counting every Airavata row would
+## therefore refuse the upgrade over jobs that failed years ago and can never be
+## finished, since the new code cannot run them. Terminal statuses are listed
+## rather than active ones, so a status this script does not know about counts as
+## in flight and errs toward refusing.
 $finished = [ 'COMPLETE', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA', 'ERROR',
               'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ];
 $terminal = "'" . implode( "','", $finished ) . "'";
+## A job is only safe to take a monitor away from while the cluster still has it.
+## Past that, "DATA" means "finished, waiting for its data to be collected", and
+## everything terminal is at or past job_cleanup()'s import. Killing a monitor
+## there can leave a half-imported result that the respawned monitor imports
+## again, and the old code holds no cleanup claim to prevent it.
+$watching = "status IN ( 'SUBMITTED', 'RUNNING' )";
+$importing = "( status IS NULL OR NOT ( $watching ) )";
+$numeric  = "gfacID REGEXP '^[0-9]+$'";
 ## A NULL or empty gfacID is a job that has no cluster id yet: it cannot be told
 ## apart from an Airavata job, so it is reported rather than assumed harmless.
 $active   = "( status IS NULL OR status NOT IN ( $terminal ) )";
@@ -495,7 +505,11 @@ $named    = "gfacID IS NOT NULL AND gfacID <> ''";
 $res = mysqli_query( $gdb,
     "SELECT SUM( $active AND $named AND gfacID NOT REGEXP '^[0-9]+\$' ) AS airavata_active,
             SUM( $active AND NOT ( $named ) )                           AS unidentified_active,
-            SUM( $named AND gfacID NOT REGEXP '^[0-9]+\$' )             AS airavata_total
+            SUM( $named AND gfacID NOT REGEXP '^[0-9]+\$' )             AS airavata_total,
+            SUM( $named AND $numeric AND $importing
+                 AND time >= NOW() - INTERVAL 1 HOUR )                  AS importing_now,
+            SUM( $named AND $numeric AND $importing
+                 AND time <  NOW() - INTERVAL 1 HOUR )                  AS importing_stalled
        FROM analysis" );
 if ( !$res ) {
     report( 'FAIL', "could not query gfac.analysis: " . mysqli_error( $gdb ) );
@@ -505,6 +519,19 @@ $row       = mysqli_fetch_assoc( $res );
 $in_flight = (int) $row[ 'airavata_active' ];
 $unknown   = (int) $row[ 'unidentified_active' ];
 $history   = (int) $row[ 'airavata_total' ];
+$importing_now     = (int) $row[ 'importing_now' ];
+$importing_stalled = (int) $row[ 'importing_stalled' ];
+
+## A claim directory on disk is a worker in job_cleanup() right now. An hour is
+## the window cleanup_claim_acquire() itself treats as abandoned.
+$claims = [];
+foreach ( glob( "$us3_home/lims/etc/joblog/*/*/cleanup.claim" ) ?: [] as $claim ) {
+    $owner = (int) @file_get_contents( "$claim/owner" );
+    $age   = time() - (int) @filemtime( $claim );
+    if ( $age < 3600 || ( $owner && @posix_kill( $owner, 0 ) ) ) {
+        $claims[] = basename( dirname( $claim ) ) . ( $owner ? " (pid $owner)" : '' );
+    }
+}
 
 if ( $in_flight || $unknown ) {
     if ( $in_flight ) {
@@ -516,7 +543,29 @@ if ( $in_flight || $unknown ) {
     error_exit( "let these jobs finish (or cancel them) on the current code, then rerun; nothing was changed" );
 }
 report( 'ok', "no Airavata jobs in flight"
-              . ( $history ? " ($history finished Airavata job(s) remain in gfac.analysis; they are history and are left alone)" : "" ) );
+              . ( $history ? " ($history unfinished Airavata job(s) remain in gfac.analysis; the new code cannot run them, so they are left alone)" : "" ) );
+
+## Step 7 replaces the jobmonitors, so nothing may be mid-import when it does.
+if ( $importing_now || $claims ) {
+    if ( $importing_now ) {
+        report( 'FAIL', "$importing_now job(s) are collecting or importing results now"
+                        . " (gfac.analysis past SUBMITTED/RUNNING, touched within the hour)" );
+    }
+    if ( $claims ) {
+        report( 'FAIL', count( $claims ) . " job(s) hold a cleanup claim: " . implode( ', ', $claims ) );
+    }
+    error_exit( "replacing the jobmonitors now could leave a half-imported result that is then"
+                . " imported again, and the old code takes no cleanup claim to prevent it.\n"
+                . "Wait for these to finish, then rerun; nothing was changed" );
+}
+report( 'ok', "no job is collecting or importing results" );
+if ( $importing_stalled ) {
+    ## Not blocking: these have not moved in over an hour, so waiting will not
+    ## clear them, but they are the rows to check first if an import looks wrong.
+    report( 'note', "$importing_stalled job(s) are past SUBMITTED/RUNNING but have not been touched"
+                    . " for over an hour; they look stalled rather than active, so they are not blocking."
+                    . " Review them before trusting an import" );
+}
 
 ## ------------------------------------------------------------- 2. listen-config.php
 
