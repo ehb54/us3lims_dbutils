@@ -8,7 +8,11 @@
 #
 # Static analysis of the sources, not of rendered pages, so it flags markup
 # that is only emitted on some code paths -- which is the point, since those
-# paths are the ones manual browser testing misses.
+# paths are the ones manual browser testing misses.  Matching is
+# case-insensitive, since HTML attribute and tag names are.
+#
+# CLEAN means no known pattern was found, not that the policy is safe to
+# enforce: run report-only and the browser tests first.
 #
 # usage: csp-audit.sh <directory> [<directory> ...]
 #
@@ -65,23 +69,26 @@ echo
 HANDLERS='\bon(abort|blur|change|click|dblclick|error|focus|input|invalid|keydown|keypress|keyup|load|mousedown|mousemove|mouseout|mouseover|mouseup|paste|reset|resize|scroll|search|select|submit|toggle|unload|wheel)\s*='
 
 hits=$( sources '*.php' "$@" ; sources '*.html' "$@" )
-hits=$( echo "$hits" | xargs grep -nEI "$HANDLERS" 2>/dev/null \
+hits=$( echo "$hits" | xargs grep -nEIi "$HANDLERS" 2>/dev/null \
         | grep -vE ':[0-9]+:\s*(//|#|\*)' \
-        | grep -vE '\$on[a-z]+\s*=' )
+        | grep -viE '\$on[a-z]+\s*=' )
+# In .js, only markup built in strings counts; element.onclick = fn is allowed.
+js=$( sources '*.js' "$@" | xargs grep -nEIi "<[a-z][^>]*${HANDLERS}" 2>/dev/null )
+hits=$( printf '%s\n%s' "$hits" "$js" | sed '/^$/d' )
 n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
 total=$(( total + n ))
 report "inline event handler attributes" \
        "move to a delegated listener keyed on a class or id" "$n" "$hits"
 
 hits=$( sources '*.php' "$@" ; sources '*.html' "$@" )
-hits=$( echo "$hits" | xargs grep -nI '<script' 2>/dev/null | grep -v 'src=' )
+hits=$( echo "$hits" | xargs grep -nIi '<script' 2>/dev/null | grep -vi 'src=' )
 n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
 total=$(( total + n ))
 report "inline <script> blocks" \
        "move the body into a .js file and load it with <script src>" "$n" "$hits"
 
 hits=$( sources '*.php' "$@" ; sources '*.html' "$@" ; sources '*.js' "$@" )
-hits=$( echo "$hits" | xargs grep -nIE "(href|action|src)\s*=\s*['\"]?javascript:" 2>/dev/null )
+hits=$( echo "$hits" | xargs grep -nIEi "(href|action|src)\s*=\s*['\"]?javascript:" 2>/dev/null )
 n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
 total=$(( total + n ))
 report "javascript: URLs" \
@@ -98,14 +105,16 @@ report "eval / Function / string timers" \
 # --- style-src -------------------------------------------------------------
 
 hits=$( sources '*.php' "$@" ; sources '*.html' "$@" )
-hits=$( echo "$hits" | xargs grep -nIE "\bstyle\s*=\s*[\"']" 2>/dev/null )
+hits=$( echo "$hits" | xargs grep -nIEi "\bstyle\s*=\s*[\"']" 2>/dev/null )
+js=$( sources '*.js' "$@" | xargs grep -nIEi "<[a-z][^>]*\bstyle\s*=" 2>/dev/null )
+hits=$( printf '%s\n%s' "$hits" "$js" | sed '/^$/d' )
 n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
 total=$(( total + n ))
 report "inline style= attributes" \
        "replace with a class in a stylesheet" "$n" "$hits"
 
 hits=$( sources '*.php' "$@" ; sources '*.html' "$@" )
-hits=$( echo "$hits" | xargs grep -nI '<style' 2>/dev/null )
+hits=$( echo "$hits" | xargs grep -nIi '<style' 2>/dev/null )
 n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
 total=$(( total + n ))
 report "inline <style> blocks" \
@@ -114,18 +123,27 @@ report "inline <style> blocks" \
 # --- default-src: subresource origins --------------------------------------
 
 hits=$( sources '*.php' "$@" ; sources '*.html' "$@" )
-hits=$( echo "$hits" | xargs grep -nIE "(src|data)\s*=\s*['\"]https?://" 2>/dev/null )
+hits=$( echo "$hits" | xargs grep -nIEi "(src|data)\s*=\s*['\"]?(https?:)?//|<link[^>]*href\s*=\s*['\"]?(https?:)?//" 2>/dev/null )
 n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
 total=$(( total + n ))
 report "cross-origin subresource loads" \
        "self-host the asset, or add the origin to the policy" "$n" "$hits"
 
 hits=$( sources '*.css' "$@" )
-hits=$( echo "$hits" | xargs grep -nIE "@import|url\(\s*['\"]?https?:" 2>/dev/null )
+hits=$( echo "$hits" | xargs grep -nIEi "@import|url\(\s*['\"]?(https?:)?//" 2>/dev/null )
 n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
 total=$(( total + n ))
 report "cross-origin CSS imports / url()" \
        "self-host the asset, or add the origin to the policy" "$n" "$hits"
+
+# --- form-action: submissions must stay on the same origin -----------------
+
+hits=$( sources '*.php' "$@" ; sources '*.html' "$@" )
+hits=$( echo "$hits" | xargs grep -nIEi "<form[^>]*action\s*=\s*['\"]?(https?:)?//" 2>/dev/null )
+n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
+total=$(( total + n ))
+report "forms posting to an absolute URL" \
+       "use a relative action; form-action 'self' blocks it under any other host name" "$n" "$hits"
 
 # --- correctness checks that silently disable CSP handlers ------------------
 
