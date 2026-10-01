@@ -42,10 +42,12 @@ example jQuery evaluating scripts inside AJAX fragments). Browser tests must
 verify their runtime behavior; a clean scan does not establish compatibility.
 
 **CLEAN does not mean ready to enforce.** The scan only knows the patterns
-above. Content the sources never contain, such as stored UltraScan HTML reports
-with `<style>` blocks that `report_detail.php` inlines, is invisible to it and
-will still trigger `style-src` on every report view. Run report-only, read the
-log, and run the browser tests before switching to enforcement.
+above. HTML loaded from the database is invisible to it and needs runtime
+review. The dbinst report viewer extracts stored UltraScan report bodies,
+removes their inline `<style>` blocks, and serves the table-padding rule from
+`css/reports.css`, so those reports no longer trigger `style-src` violations
+under `style-src 'self'`. Run report-only, read the log, and run the browser
+tests before switching to enforcement.
 
 `blob:` URL construction is reported separately and does **not** count as a
 violation — it is an input to the policy, not a defect. See below.
