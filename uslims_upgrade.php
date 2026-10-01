@@ -34,7 +34,7 @@ Options
 --apply                      : make the changes (each changed file is backed up first)
 --yes                        : accept the proposed value wherever one can be proposed
 --www path                   : web root (default $wwwpath)
---web-user name              : account the web server runs as (default: apache, else www-data)
+--web-user name              : account the web code runs as (default: the PHP-FPM pool user, else apache, else www-data)
 --env cluster=lines          : env_script_lines for a cluster that lacks it ('' for none); repeatable
 --local-cluster name         : cluster used for GUI requests naming 'localhost'
 --single-tenant yes|no       : yes on an appliance (one institution), no on a shared host
@@ -105,6 +105,16 @@ if ( !$us3_entry ) {
 $us3_home  = $us3_entry[ 'dir' ];
 $us3bin    = "$us3_home/lims/bin";
 
+## The web code runs as the PHP-FPM pool user when there is one (us3 on
+## Ansible-built hosts), else as the web server account.
+if ( $web_user === '' ) {
+    foreach ( array_merge( glob( '/etc/php-fpm.d/*.conf' ) ?: [], glob( '/etc/php/*/fpm/pool.d/*.conf' ) ?: [] ) as $pool ) {
+        if ( preg_match( '/^\s*user\s*=\s*(\S+)/m', (string) @file_get_contents( $pool ), $m ) ) {
+            $web_user = $m[ 1 ];
+            break;
+        }
+    }
+}
 if ( $web_user === '' ) {
     $web_user = posix_getpwnam( 'apache' ) ? 'apache' : 'www-data';
 }
@@ -184,6 +194,61 @@ function run_as( $account, $cmd ) {
     return $rc;
 }
 
+## gridctl.php replaces gridctl_pro.php and gridctl_dev.php and takes its own
+## lock, so a pro and dev pair collapses to one line.
+function fix_crontab( $text ) {
+    $seen = [];
+    $out  = [];
+    foreach ( explode( "\n", $text ) as $line ) {
+        $fixed = preg_replace( '/gridctl_(pro|dev)\.php/', 'gridctl.php', $line );
+        if ( $fixed !== $line && isset( $seen[ $fixed ] ) ) {
+            continue;
+        }
+        $seen[ $fixed ] = true;
+        $out[] = $fixed;
+    }
+    return implode( "\n", $out );
+}
+
+## Crontabs still calling the old controllers: us3's own, then system files.
+## Keys are 'us3' or a file path.
+function old_controller_crontabs() {
+    $found = [];
+    $tabs  = [ 'us3' => (string) shell_exec( 'crontab -l -u us3' . NO_STDERR ) ];
+    foreach ( array_merge( [ '/etc/crontab' ], glob( '/etc/cron.d/*' ) ?: [] ) as $file ) {
+        $tabs[ $file ] = is_file( $file ) ? (string) @file_get_contents( $file ) : '';
+    }
+    foreach ( $tabs as $where => $text ) {
+        if ( preg_match( '/gridctl_(pro|dev)\.php/', $text ) ) {
+            $found[ $where ] = $text;
+        }
+    }
+    return $found;
+}
+
+## Give an account a key (if it has none) and authorize it for a local login
+## account, for SSH to the host's own cluster.
+function authorize_local_key( $account, $entry, $login_user ) {
+    $key = $entry[ 'dir' ] . '/.ssh/id_ed25519';
+    if ( !is_file( "$key.pub" ) && run_as( $account, 'mkdir -p -m 700 ~/.ssh && ssh-keygen -q -t ed25519 -N "" -f ' . escapeshellarg( $key ) ) !== 0 ) {
+        return false;
+    }
+    $login = posix_getpwnam( $login_user );
+    if ( !$login ) {
+        return false;
+    }
+    $pub  = trim( (string) file_get_contents( "$key.pub" ) );
+    $auth = $login[ 'dir' ] . '/.ssh/authorized_keys';
+    if ( strpos( (string) @file_get_contents( $auth ), $pub ) === false ) {
+        @mkdir( dirname( $auth ), 0700, true );
+        file_put_contents( $auth, "$pub\n", FILE_APPEND );
+        chown( dirname( $auth ), $login_user );
+        chown( $auth, $login_user );
+        chmod( $auth, 0600 );
+    }
+    return true;
+}
+
 ## ------------------------------------------------------------- 1. preflight
 
 ## After the upgrade nothing can monitor, fetch or finalize an Airavata job,
@@ -215,7 +280,7 @@ report( 'ok', "no Airavata jobs in gfac.analysis" );
 step( "2. listen-config.php (values only, version 2)" );
 
 ## Site values carried from the old file; everything else comes from the template.
-$carried = [ 'submit_dir', 'listen_port', 'dbhost', 'servhost', 'guser', 'gDB', 'user',
+$carried = [ 'submit_dir', 'listen_port', 'dbhost', 'servhost', 'host_name', 'guser', 'gDB', 'user',
              'org_name', 'org_domain', 'admin_email', 'logging_level' ];
 
 if ( ( $old_listen[ 'listen_config_version' ] ?? 0 ) >= 2 ) {
@@ -224,6 +289,9 @@ if ( ( $old_listen[ 'listen_config_version' ] ?? 0 ) >= 2 ) {
     report( 'FAIL', "template not found: $template (update gridctl first)" );
 } else {
     $text = file_get_contents( $template );
+    if ( !isset( $old_listen[ 'host_name' ] ) && isset( $old_listen[ 'servhost' ] ) ) {
+        $old_listen[ 'host_name' ] = $old_listen[ 'servhost' ];
+    }
     foreach ( $carried as $key ) {
         if ( !array_key_exists( $key, $old_listen ) ) {
             continue;
@@ -232,6 +300,12 @@ if ( ( $old_listen[ 'listen_config_version' ] ?? 0 ) >= 2 ) {
             function ( $m ) use ( $old_listen, $key ) {
                 return $m[ 1 ] . var_export( $old_listen[ $key ], true ) . ';';
             }, $text, 1 );
+    }
+
+    $tz = null;
+    ## The time zone is a call, not a variable, so config_vars() does not see it.
+    if ( preg_match( '/^\s*date_default_timezone_set\(\s*([\'"])([^\'"]+)\1\s*\)/m', file_get_contents( $listen_config ), $tz ) ) {
+        $text = preg_replace( '/^(\s*date_default_timezone_set\(\s*)[\'"][^\'"]+[\'"]/m', '${1}' . var_export( $tz[ 2 ], true ), $text, 1 );
     }
 
     ## class_local/ was removed with the Slurm change; the classes are in class/.
@@ -249,7 +323,7 @@ if ( ( $old_listen[ 'listen_config_version' ] ?? 0 ) >= 2 ) {
     $unreviewed = array_diff( array_keys( $old_listen ), $template_vars, $runtime );
 
     report( 'todo', "rewrite from the template, carrying " . implode( ', ', array_intersect( $carried, array_keys( $old_listen ) ) )
-                    . "; class_dir $class_dir" );
+                    . ( $tz ? ", time zone $tz[2]" : '' ) . "; class_dir $class_dir" );
     foreach ( $unreviewed as $key ) {
         report( 'note', "old setting \$$key is not in the new contract and will not be carried; review it" );
     }
@@ -312,6 +386,7 @@ if ( !isset( $gc[ 'default_local_cluster' ] ) || !isset( $active[ $gc[ 'default_
 } else {
     report( 'ok', "\$default_local_cluster is '{$gc['default_local_cluster']}'" );
 }
+$host_cluster = $gc[ 'default_local_cluster' ] ?? $proposal ?? null;
 
 ## Every active cluster needs the env_script_lines key ('' when it needs no setup)
 foreach ( $active as $name => $c ) {
@@ -401,8 +476,15 @@ foreach ( $active as $name => $c ) {
                 $changes++;
             }
         }
-        $rc = run_as( $account, "ssh -n -p $port -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes "
-                                . escapeshellarg( $login ) . " true" );
+        $ssh = "ssh -n -p $port -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes " . escapeshellarg( $login ) . " true";
+        $rc  = run_as( $account, $ssh );
+        if ( $rc !== 0 && $name === $host_cluster ) {
+            report( 'todo', "$name: authorize $account's key for $login on this host" );
+            if ( $apply && confirm( "Set up $account's SSH key for $login?" ) ) {
+                $changes++;
+                $rc = authorize_local_key( $account, $entry, explode( '@', $login )[ 0 ] ) ? run_as( $account, $ssh ) : 1;
+            }
+        }
         report( $rc === 0 ? 'ok' : 'FAIL', "$name: $account can ssh to $login" . ( $rc === 0 ? '' : " (exit $rc: install the account's key, including for the host itself)" ) );
     }
 }
@@ -430,23 +512,30 @@ if ( is_dir( $breaker_dir ) && !is_link( $breaker_dir )
 
 ## ------------------------------------------------------------- 6. crontabs
 
-step( "6. us3 crontab" );
+step( "6. Crontabs" );
 
-$crontab = (string) shell_exec( 'crontab -l -u us3 2>/dev/null' );
-if ( preg_match( '/gridctl_(pro|dev)\.php/', $crontab ) ) {
-    $fixed = preg_replace( '/gridctl_(pro|dev)\.php/', 'gridctl.php', $crontab );
-    report( 'todo', "replace gridctl_pro.php / gridctl_dev.php with gridctl.php (it takes its own lock)" );
-    if ( $apply && confirm( "Update the us3 crontab?" ) ) {
+$old_crons = old_controller_crontabs();
+foreach ( $old_crons as $where => $text ) {
+    $label = $where === 'us3' ? 'us3 crontab' : $where;
+    report( 'todo', "$label: replace gridctl_pro.php / gridctl_dev.php with gridctl.php" );
+    if ( !$apply || !confirm( "Update the $label?" ) ) {
+        continue;
+    }
+    if ( $where === 'us3' ) {
         $tmp = tempnam( sys_get_temp_dir(), 'us3cron' );
-        file_put_contents( $tmp, $crontab );
+        file_put_contents( $tmp, $text );
         backup_file( $tmp );
-        file_put_contents( $tmp, $fixed );
+        file_put_contents( $tmp, fix_crontab( $text ) );
         exec( 'crontab -u us3 ' . escapeshellarg( $tmp ) . WITH_STDERR, $o, $rc );
         unlink( $tmp );
         report( $rc === 0 ? 'done' : 'FAIL', "us3 crontab updated" );
         $changes++;
+    } else {
+        write_file( $where, fix_crontab( $text ) );
+        report( 'done', "$where updated" );
     }
-} else {
+}
+if ( !$old_crons ) {
     report( 'ok', "no crontab entry calls gridctl_pro.php or gridctl_dev.php" );
 }
 
@@ -463,6 +552,9 @@ $probe = '$us3bin = ' . var_export( $us3bin, true ) . '; require ' . var_export(
        . '; echo function_exists( "write_log" ) ? "ok" : "missing";';
 $out = trim( (string) shell_exec( 'su -s /bin/sh us3 -c ' . escapeshellarg( escapeshellarg( PHP_BINARY ) . ' -r ' . escapeshellarg( $probe ) ) . WITH_STDERR ) );
 report( $out === 'ok' ? 'ok' : 'FAIL', "gridctl loads its configuration as us3" . ( $out === 'ok' ? '' : ": $out" ) );
+
+$left = array_keys( old_controller_crontabs() );
+report( $left ? 'FAIL' : 'ok', "no crontab calls gridctl_pro.php or gridctl_dev.php" . ( $left ? ': ' . implode( ', ', $left ) : '' ) );
 
 report( run_as( $web_user, 'test -w ' . escapeshellarg( $breaker_dir ) ) === 0 ? 'ok' : 'FAIL',
         "$web_user can write the breaker directory" );
