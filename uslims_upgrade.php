@@ -35,9 +35,9 @@ Options
 --yes                        : accept the proposed value wherever one can be proposed
 --www path                   : web root (default $wwwpath)
 --web-user name              : account the web code runs as (default: the PHP-FPM pool user, else apache, else www-data)
---env cluster=lines          : env_script_lines for a cluster that lacks it ('' for none); repeatable
---local-cluster name         : cluster used for GUI requests naming 'localhost'
---single-tenant yes|no       : yes on an appliance (one institution), no on a shared host
+--env cluster=lines          : env_script_lines for a cluster ('' for none); sets or changes it; repeatable
+--local-cluster name         : cluster used for GUI requests naming 'localhost'; sets or changes it
+--single-tenant yes|no       : yes on an appliance (one institution), no on a shared host; sets or changes it
 
 __EOD;
 
@@ -249,6 +249,32 @@ function authorize_local_key( $account, $entry, $login_user ) {
     return true;
 }
 
+## A PHP string literal on one line, so each managed setting is one line.
+function php_string( $value ) {
+    return '"' . addcslashes( $value, "\\\"\$\n\r\t" ) . '"';
+}
+
+## The managed block's assignments keyed by their target, e.g. '$default_local_cluster'.
+function block_settings( $block ) {
+    $settings = [];
+    $current  = '';
+    foreach ( token_get_all( "<?php\n$block" ) as $token ) {
+        if ( is_array( $token ) && $token[ 0 ] === T_OPEN_TAG ) {
+            continue;
+        }
+        $text = is_array( $token ) ? $token[ 1 ] : $token;
+        if ( $text === ';' ) {
+            $statement = trim( $current ) . ';';
+            $target    = preg_replace( '/\s+/', '', strstr( $statement, '=', true ) );
+            $settings[ $target ] = $statement;
+            $current = '';
+        } else {
+            $current .= $text;
+        }
+    }
+    return $settings;
+}
+
 ## ------------------------------------------------------------- 1. preflight
 
 ## After the upgrade nothing can monitor, fetch or finalize an Airavata job,
@@ -367,6 +393,9 @@ if ( !array_key_exists( 'single_tenant_deployment', $gc ) ) {
         report( 'todo', "set \$single_tenant_deployment = " . var_export( $value, true ) );
         $managed[] = '$single_tenant_deployment = ' . var_export( $value, true ) . ';';
     }
+} elseif ( $single_tenant !== null && (bool) $gc[ 'single_tenant_deployment' ] !== $single_tenant ) {
+    report( 'todo', "change \$single_tenant_deployment to " . var_export( $single_tenant, true ) . " (--single-tenant)" );
+    $managed[] = '$single_tenant_deployment = ' . var_export( $single_tenant, true ) . ';';
 } else {
     report( 'ok', "\$single_tenant_deployment is " . var_export( (bool) $gc[ 'single_tenant_deployment' ], true ) );
 }
@@ -383,18 +412,32 @@ if ( !isset( $gc[ 'default_local_cluster' ] ) || !isset( $active[ $gc[ 'default_
         report( 'todo', "set \$default_local_cluster = '$proposal'" );
         $managed[] = '$default_local_cluster = ' . var_export( $proposal, true ) . ';';
     }
+} elseif ( $local_cluster !== null && $local_cluster !== $gc[ 'default_local_cluster' ] ) {
+    if ( !isset( $active[ $local_cluster ] ) ) {
+        report( 'FAIL', "--local-cluster '$local_cluster' is not an active cluster" );
+    } else {
+        report( 'todo', "change \$default_local_cluster from '{$gc['default_local_cluster']}' to '$local_cluster' (--local-cluster)" );
+        $managed[] = '$default_local_cluster = ' . var_export( $local_cluster, true ) . ';';
+        $proposal  = $local_cluster;
+    }
 } else {
     report( 'ok', "\$default_local_cluster is '{$gc['default_local_cluster']}'" );
 }
-$host_cluster = $gc[ 'default_local_cluster' ] ?? $proposal ?? null;
+$host_cluster = $proposal ?? $gc[ 'default_local_cluster' ] ?? null;
 
 ## Every active cluster needs the env_script_lines key ('' when it needs no setup)
 foreach ( $active as $name => $c ) {
+    $given = isset( $env_values[ $name ] ) ? str_replace( '\n', "\n", $env_values[ $name ] ) : null;
     if ( array_key_exists( 'env_script_lines', $c ) ) {
-        report( 'ok', "$name has env_script_lines" );
+        if ( $given !== null && $given !== $c[ 'env_script_lines' ] ) {
+            report( 'todo', "change env_script_lines for $name (--env)" );
+            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = ' . php_string( $given ) . ';';
+        } else {
+            report( 'ok', "$name has env_script_lines" );
+        }
         continue;
     }
-    $value = $env_values[ $name ] ?? null;
+    $value = $given;
     if ( $value === null && $apply ) {
         $value = readline( "env_script_lines for $name (modules/PATH setup; empty for none): " );
     }
@@ -402,8 +445,7 @@ foreach ( $active as $name => $c ) {
         report( 'todo', "$name lacks env_script_lines (pass --env $name=... or --env $name=)" );
     } else {
         report( 'todo', "set env_script_lines for $name" );
-        $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = '
-                   . var_export( str_replace( '\n', "\n", $value ), true ) . ';';
+        $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = ' . php_string( $value ) . ';';
     }
 }
 
@@ -414,16 +456,19 @@ foreach ( $active as $name => $c ) {
     }
     $login = $c[ 'login' ] ?? ( 'us3@' . ( $c[ 'name' ] ?? '' ) );
     $queue = $c[ 'queue' ] ?? '';
-    $count = trim( (string) shell_exec( 'su -s /bin/sh us3 -c ' . escapeshellarg(
-        'ssh -n -o BatchMode=yes -o ConnectTimeout=15 ' . escapeshellarg( $login ) . ' '
-        . escapeshellarg( 'sinfo -h -N -o %N' . ( $queue !== '' ? ' -p ' . escapeshellarg( $queue ) : '' ) . ' | sort -u | wc -l' ) ) . NO_STDERR ) );
+    $sinfo = 'sinfo -h -N -o %N' . ( $queue !== '' ? ' -p ' . escapeshellarg( $queue ) : '' ) . ' | sort -u | wc -l';
+    ## The host's own Slurm is counted locally: SSH to it is only set up in step 4.
+    if ( $name !== $host_cluster ) {
+        $sinfo = 'ssh -n -o BatchMode=yes -o ConnectTimeout=15 ' . escapeshellarg( $login ) . ' ' . escapeshellarg( $sinfo );
+    }
+    $count = trim( (string) shell_exec( 'su -s /bin/sh us3 -c ' . escapeshellarg( $sinfo ) . NO_STDERR ) );
     if ( $count === '1' ) {
         report( 'todo', "set single_node for $name (its queue has one node)" );
         $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'single_node\' ] = true;';
     } elseif ( ctype_digit( $count ) ) {
         report( 'ok', "$name has $count nodes; single_node not needed" );
     } else {
-        report( 'note', "$name: could not count its nodes (sinfo over ssh); set single_node by hand if it is one node" );
+        report( 'note', "$name: could not count its nodes with sinfo; set single_node by hand if it is one node" );
     }
 }
 
@@ -431,13 +476,15 @@ if ( $managed && $apply && confirm( "Write these settings to $global_config?" ) 
     $begin = "## BEGIN uslims_upgrade.php settings (rerun the script rather than editing by hand)";
     $end   = "## END uslims_upgrade.php settings";
     $text  = file_get_contents( $global_config );
-    $prior = [];
+    $settings = [];
     if ( preg_match( '/' . preg_quote( $begin, '/' ) . '\n(.*?)' . preg_quote( $end, '/' ) . '\n?/s', $text, $m ) ) {
-        $prior = array_filter( explode( "\n", trim( $m[ 1 ] ) ) );
-        $text  = str_replace( $m[ 0 ], '', $text );
+        $settings = block_settings( $m[ 1 ] );
+        $text     = str_replace( $m[ 0 ], '', $text );
     }
+    ## A new value replaces the earlier line for the same setting.
+    $settings = array_merge( $settings, block_settings( implode( "\n", $managed ) ) );
     $text  = preg_replace( '/\?>\s*$/', '', rtrim( $text ) ) . "\n\n$begin\n"
-           . implode( "\n", array_unique( array_merge( $prior, $managed ) ) ) . "\n$end\n";
+           . implode( "\n", $settings ) . "\n$end\n";
     write_file( $global_config, $text );
     report( lint_ok( $global_config ) ? 'done' : 'FAIL', "$global_config updated" );
 }
@@ -474,6 +521,7 @@ foreach ( $active as $name => $c ) {
                 chown( $known, $account );
                 chmod( dirname( $known ), 0700 );
                 $changes++;
+                report( 'done', "$name: host key recorded for $account" );
             }
         }
         $ssh = "ssh -n -p $port -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes " . escapeshellarg( $login ) . " true";
@@ -483,6 +531,7 @@ foreach ( $active as $name => $c ) {
             if ( $apply && confirm( "Set up $account's SSH key for $login?" ) ) {
                 $changes++;
                 $rc = authorize_local_key( $account, $entry, explode( '@', $login )[ 0 ] ) ? run_as( $account, $ssh ) : 1;
+                report( $rc === 0 ? 'done' : 'FAIL', "$name: $account's key authorized for $login" );
             }
         }
         report( $rc === 0 ? 'ok' : 'FAIL', "$name: $account can ssh to $login" . ( $rc === 0 ? '' : " (exit $rc: install the account's key, including for the host itself)" ) );
