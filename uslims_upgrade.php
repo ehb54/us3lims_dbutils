@@ -449,26 +449,43 @@ foreach ( $active as $name => $c ) {
     }
 }
 
-## One-node appliances: resource sizing needs single_node to keep a job on one node
+## One-node appliances: resource sizing needs single_node to keep a job on one node,
+## and no more tasks per node or per job than the node has CPUs.
 foreach ( $active as $name => $c ) {
-    if ( array_key_exists( 'single_node', $c ) || ( empty( $c[ 'localhost' ] ) && empty( $c[ 'fixed_capacity' ] ) ) ) {
+    if ( empty( $c[ 'single_node' ] ) && empty( $c[ 'localhost' ] ) && empty( $c[ 'fixed_capacity' ] ) ) {
         continue;
     }
     $login = $c[ 'login' ] ?? ( 'us3@' . ( $c[ 'name' ] ?? '' ) );
     $queue = $c[ 'queue' ] ?? '';
-    $sinfo = 'sinfo -h -N -o %N' . ( $queue !== '' ? ' -p ' . escapeshellarg( $queue ) : '' ) . ' | sort -u | wc -l';
-    ## The host's own Slurm is counted locally: SSH to it is only set up in step 4.
+    $sinfo = 'sinfo -h -N -o "%N %c"' . ( $queue !== '' ? ' -p ' . escapeshellarg( $queue ) : '' ) . ' | sort -u';
+    ## The host's own Slurm is queried locally: SSH to it is only set up in step 4.
     if ( $name !== $host_cluster ) {
         $sinfo = 'ssh -n -o BatchMode=yes -o ConnectTimeout=15 ' . escapeshellarg( $login ) . ' ' . escapeshellarg( $sinfo );
     }
-    $count = trim( (string) shell_exec( 'su -s /bin/sh us3 -c ' . escapeshellarg( $sinfo ) . NO_STDERR ) );
-    if ( $count === '1' ) {
+    $nodes = [];
+    foreach ( explode( "\n", trim( (string) shell_exec( 'su -s /bin/sh us3 -c ' . escapeshellarg( $sinfo ) . NO_STDERR ) ) ) as $line ) {
+        if ( preg_match( '/^(\S+)\s+(\d+)$/', trim( $line ), $m ) ) {
+            $nodes[ $m[ 1 ] ] = (int) $m[ 2 ];
+        }
+    }
+    if ( !$nodes ) {
+        report( 'note', "$name: could not query its nodes with sinfo; check single_node, ppn, ppbj and maxproc by hand" );
+        continue;
+    }
+    if ( count( $nodes ) > 1 ) {
+        report( 'ok', "$name has " . count( $nodes ) . " nodes; single_node not needed" );
+        continue;
+    }
+    $cpus = reset( $nodes );
+    if ( !array_key_exists( 'single_node', $c ) ) {
         report( 'todo', "set single_node for $name (its queue has one node)" );
         $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'single_node\' ] = true;';
-    } elseif ( ctype_digit( $count ) ) {
-        report( 'ok', "$name has $count nodes; single_node not needed" );
-    } else {
-        report( 'note', "$name: could not count its nodes with sinfo; set single_node by hand if it is one node" );
+    }
+    foreach ( [ 'ppn', 'ppbj', 'maxproc' ] as $key ) {
+        if ( isset( $c[ $key ] ) && (int) $c[ $key ] > $cpus ) {
+            report( 'todo', "set $key for $name to $cpus, the CPUs on its one node (currently {$c[$key]})" );
+            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ ' . var_export( $key, true ) . ' ] = ' . $cpus . ';';
+        }
     }
 }
 
