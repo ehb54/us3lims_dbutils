@@ -36,6 +36,16 @@
      - ```php uslims_domain_info.php --change old_domain_name new_domain_name```
        - old_domain_name is required for metadata & httpd config changes.
    - optionally sets up redirects
+ - uslims_upgrade.php
+   - moves an existing host to the Slurm submission contract; run as root after pulling common, every instance, gridctl and dbutils
+     1. refuses to run while Airavata jobs remain in gfac.analysis (let them finish or cancel them first)
+     2. rewrites listen-config.php from the gridctl template, carrying the site's values
+     3. sets the global_config.php settings the new code requires (queue time 0, tenant scope, local cluster, env_script_lines per cluster)
+     4. records each cluster's host key and checks ssh for us3 and the web account
+     5. creates the shared circuit-breaker directory
+     6. fixes crontabs that still call gridctl_pro.php / gridctl_dev.php
+     7. verifies the result
+   - dry run by default; ```php uslims_upgrade.php --apply``` makes the changes, backing up each file first; safe to rerun
  - uslims_git_info.php
    - for all expected and discovered repos, reports path, url, branch, use, rev#, rev date, local changes, and deltas
    - also allows updating to expected branches, git pull, and build (for gui & mpi)
