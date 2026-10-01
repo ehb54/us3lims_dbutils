@@ -29,7 +29,11 @@ Options
 
 --help                       : print this information and exit
 --apply                      : make the changes (each changed file is backed up first)
---yes                        : accept the proposed value wherever one can be proposed
+--yes                        : accept the proposed value wherever one can be proposed.
+                               Settings with no value to propose are reported instead of
+                               asked for, so --apply --yes never waits for input.
+--accept-host-keys           : trust the host keys this script fetches, without review.
+                               Only for a network you already trust: --yes does not imply it.
 --www path                   : web root (default $wwwpath)
 --web-user name              : account the web code runs as (default: the PHP-FPM pool user, else apache, else www-data)
 --env cluster=lines          : env_script_lines for a cluster ('' for none); sets or changes it; repeatable
@@ -52,6 +56,7 @@ function opt_value( &$argv, $opt ) {
 
 $apply         = false;
 $assume_yes    = false;
+$accept_keys   = false;
 $web_user      = '';
 $env_values    = [];
 $local_cluster = null;
@@ -68,6 +73,9 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             break;
         case "--yes":
             $assume_yes = true;
+            break;
+        case "--accept-host-keys":
+            $accept_keys = true;
             break;
         case "--www":
             $wwwpath = rtrim( opt_value( $u_argv, $opt ), '/' );
@@ -251,9 +259,46 @@ function lint_ok( $file, &$why = null ) {
     return $rc === 0;
 }
 
+## Whether there is someone at a terminal to answer a question. Without this
+## check utility.php's get_yn_answer() spins forever when readline() hits EOF,
+## which is what happens under cron, Ansible or any other automation.
+function interactive() {
+    return function_exists( 'posix_isatty' ) && @posix_isatty( STDIN );
+}
+
+## Ask a yes/no question, or stop with an explanation if nobody can answer.
+function ask_yn( $question, $hint = 'rerun with --yes to accept' ) {
+    if ( !interactive() ) {
+        error_exit( "$question\nThere is no terminal to answer on; $hint. Nothing further was changed." );
+    }
+    echoline( '=' );
+    while ( true ) {
+        $answer = readline( "$question (y or n) : " );
+        if ( $answer === false ) {
+            ## EOF: readline keeps returning false, so never loop on it.
+            error_exit( "input ended while waiting for an answer; nothing further was changed" );
+        }
+        $answer = strtolower( trim( $answer ) );
+        if ( $answer === 'y' || $answer === 'n' ) {
+            return $answer === 'y';
+        }
+    }
+}
+
 function confirm( $question ) {
     global $assume_yes;
-    return $assume_yes || get_yn_answer( $question );
+    return $assume_yes || ask_yn( $question );
+}
+
+## Trusting a freshly scanned host key is not something --yes should decide: it
+## would turn StrictHostKeyChecking=yes back into accept-new. Unattended runs
+## report the fingerprints instead, and install nothing.
+function confirm_host_keys( $question ) {
+    global $accept_keys;
+    if ( $accept_keys ) {
+        return true;
+    }
+    return interactive() ? ask_yn( $question, 'rerun with --accept-host-keys to trust it' ) : false;
 }
 
 ## Write a file after backing up the original, keeping its owner, group and mode.
@@ -432,13 +477,42 @@ $gdb = @mysqli_connect( $old_listen[ 'dbhost' ] ?? 'localhost',
 if ( !$gdb ) {
     error_exit( "cannot connect to the gfac database: " . mysqli_connect_error() );
 }
-$res = mysqli_query( $gdb, "SELECT COUNT(*) FROM analysis WHERE gfacID NOT REGEXP '^[0-9]+\$'" );
-$airavata = $res ? (int) mysqli_fetch_row( $res )[ 0 ] : -1;
-if ( $airavata !== 0 ) {
-    report( 'FAIL', $airavata < 0 ? "could not query gfac.analysis" : "$airavata non-Slurm (Airavata) job(s) still in gfac.analysis" );
+## gfac.analysis keeps finished jobs, so counting every Airavata row would refuse
+## the upgrade on every host that ever ran one. Only jobs still in flight matter.
+## Terminal statuses are listed rather than active ones so a status this script
+## does not know about counts as in flight, which errs toward refusing.
+$finished = [ 'COMPLETE', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA', 'ERROR',
+              'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ];
+$terminal = "'" . implode( "','", $finished ) . "'";
+## A NULL or empty gfacID is a job that has no cluster id yet: it cannot be told
+## apart from an Airavata job, so it is reported rather than assumed harmless.
+$active   = "( status IS NULL OR status NOT IN ( $terminal ) )";
+$named    = "gfacID IS NOT NULL AND gfacID <> ''";
+$res = mysqli_query( $gdb,
+    "SELECT SUM( $active AND $named AND gfacID NOT REGEXP '^[0-9]+\$' ) AS airavata_active,
+            SUM( $active AND NOT ( $named ) )                           AS unidentified_active,
+            SUM( $named AND gfacID NOT REGEXP '^[0-9]+\$' )             AS airavata_total
+       FROM analysis" );
+if ( !$res ) {
+    report( 'FAIL', "could not query gfac.analysis: " . mysqli_error( $gdb ) );
+    error_exit( "the preflight check could not run; nothing was changed" );
+}
+$row       = mysqli_fetch_assoc( $res );
+$in_flight = (int) $row[ 'airavata_active' ];
+$unknown   = (int) $row[ 'unidentified_active' ];
+$history   = (int) $row[ 'airavata_total' ];
+
+if ( $in_flight || $unknown ) {
+    if ( $in_flight ) {
+        report( 'FAIL', "$in_flight Airavata job(s) still in flight in gfac.analysis" );
+    }
+    if ( $unknown ) {
+        report( 'FAIL', "$unknown unfinished job(s) with no gfacID; they cannot be told apart from Airavata jobs" );
+    }
     error_exit( "let these jobs finish (or cancel them) on the current code, then rerun; nothing was changed" );
 }
-report( 'ok', "no Airavata jobs in gfac.analysis" );
+report( 'ok', "no Airavata jobs in flight"
+              . ( $history ? " ($history finished Airavata job(s) remain in gfac.analysis; they are history and are left alone)" : "" ) );
 
 ## ------------------------------------------------------------- 2. listen-config.php
 
@@ -555,8 +629,11 @@ if ( (int) ( $gc[ 'global_max_queue_time_hours' ] ?? 24 ) !== 0 ) {
 ## Tenant scope: unset reads as single tenant; set it explicitly either way
 if ( !array_key_exists( 'single_tenant_deployment', $gc ) ) {
     $value = $single_tenant;
-    if ( $value === null && $apply ) {
-        $value = get_yn_answer( "Is this a single-institution appliance (single tenant)?" );
+    ## There is no safe value to assume here, so --yes cannot answer it and an
+    ## unattended run reports it rather than prompting.
+    if ( $value === null && $apply && interactive() ) {
+        $value = ask_yn( "Is this a single-institution appliance (single tenant)?",
+                         'pass --single-tenant yes|no' );
     }
     if ( $value === null ) {
         report( 'todo', "set \$single_tenant_deployment (pass --single-tenant yes|no)" );
@@ -612,8 +689,12 @@ foreach ( $active as $name => $c ) {
         continue;
     }
     $value = $given;
-    if ( $value === null && $apply ) {
+    if ( $value === null && $apply && interactive() ) {
         $value = readline( "env_script_lines for $name (modules/PATH setup; empty for none): " );
+        ## At EOF readline() returns false, which must not be written as ''.
+        if ( $value === false ) {
+            error_exit( "input ended while waiting for $name's env_script_lines; nothing further was changed" );
+        }
     }
     if ( $value === null ) {
         report( 'todo', "$name lacks env_script_lines (pass --env $name=... or --env $name=)" );
@@ -733,7 +814,7 @@ foreach ( $active as $name => $c ) {
             }
             report( 'todo', "$name: record $host's host key for $account:\n            "
                             . implode( "\n            ", explode( "\n", $fp ) ) );
-            if ( $apply && confirm( "Do these fingerprints match $host's real host keys?" ) ) {
+            if ( $apply && confirm_host_keys( "Do these fingerprints match $host's real host keys?" ) ) {
                 $dir = dirname( $known );
                 if ( !is_dir( $dir ) && !@mkdir( $dir, 0700, true ) ) {
                     report( 'FAIL', "$name: could not create $dir" );
