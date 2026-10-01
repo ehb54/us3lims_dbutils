@@ -5,6 +5,22 @@
 $us3bin         = "/home/us3/lims/bin";
 $listenconfig   = "$us3bin/listen-config.php";
 $wwwpath        = "/srv/www/htdocs";
+$configroot     = "/home/us3/lims/etc/config";
+
+// A migrated instance's config.php is a generated shim; its values live in an overlay
+function instance_overlay( $instpath, $k ) {
+    global $configroot;
+    $contents = @file_get_contents( $instpath );
+    return ( $contents !== false && strpos( $contents, 'us3_dbinst_config_bootstrap' ) !== false )
+        ? "$configroot/instances/$k.php" : null;
+}
+
+function base_class_dir() {
+    global $configroot;
+    $bases = glob( "$configroot/dbinst-base.v*.php" );
+    $base  = $bases ? include end( $bases ) : [];
+    return $base[ 'values' ][ 'class_dir' ] ?? '';
+}
 $srvconfig      = "$wwwpath/uslims3/config.php";
 $httpdconfigdir = "/etc/httpd/conf.d";
 
@@ -223,8 +239,14 @@ $check_names[ "$srvconfig: \$org_site"     ] = trim( run_cmd( "grep -e '^\s*\$or
 foreach ( $mysql_dbs as $k => $v ) {
     $instpath = "$wwwpath/uslims3/$k/config.php";
     $tmp_key  = "$instpath: \$org_site";
-    $check_names[ $tmp_key ] = trim( run_cmd( "grep -e '^\s*\$org_site\s*=' $instpath  | tail -1 | awk -F\\' '{ print \$2 }'" ) );
-    $class_dirs [ $tmp_key ] = trim( run_cmd( "grep -e '^\s*\$class_dir\s*=' $instpath  | tail -1 | awk -F\\' '{ print \$2 }'" ) );
+    if ( $overlay = instance_overlay( $instpath, $k ) ) {
+        $contract = @include $overlay;
+        $check_names[ $tmp_key ] = $contract[ 'values' ][ 'org_site' ] ?? '';
+        $class_dirs [ $tmp_key ] = base_class_dir();
+    } else {
+        $check_names[ $tmp_key ] = trim( run_cmd( "grep -e '^\s*\$org_site\s*=' $instpath  | tail -1 | awk -F\\' '{ print \$2 }'" ) );
+        $class_dirs [ $tmp_key ] = trim( run_cmd( "grep -e '^\s*\$class_dir\s*=' $instpath  | tail -1 | awk -F\\' '{ print \$2 }'" ) );
+    }
     if ( !preg_match( "/\/$k\$/", $check_names[ $tmp_key ] ) ) {
         $warnings .= "WARNING: $tmp_key does not end with the expected extension '\/$k'\n";
     }
@@ -380,6 +402,25 @@ if ( get_yn_answer( "Update php variables?" ) ) {
         $instpath = "$wwwpath/uslims3/$k/config.php";
         echoline();
         echo "Checking '$instpath'\n";
+        if ( $overlay = instance_overlay( $instpath, $k ) ) {
+            $contract = @include $overlay;
+            if ( !is_array( $contract ) ) {
+                error_exit( "could not read $overlay" );
+            }
+            if ( $contract[ 'values' ][ 'org_site' ] === "$new_domain/$k" ) {
+                echo "NOTICE: $overlay already contains '$new_domain', not updated\n";
+            } else {
+                backup_file( $overlay );
+                $contract[ 'values' ][ 'org_site' ] = "$new_domain/$k";
+                $source = "<?php\n/* Generated configuration; do not edit by hand. */\n"
+                        . 'return ' . var_export( $contract, true ) . ";\n";
+                if ( false === file_put_contents( $overlay, $source ) ) {
+                    error_exit( "could not write $overlay" );
+                }
+                echo "UPDATED: $overlay\n";
+            }
+            continue;
+        }
         $org_contents = $contents = file_get_contents( $instpath );
         if ( $contents !== false && strlen( $contents ) ) {
             $contents = preg_replace( "/^(\\s*\\\$org_site\\s*=).*;/m", "\${1} '$new_domain/$k';", $contents );
