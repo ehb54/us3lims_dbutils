@@ -450,6 +450,14 @@ function substitute( $text, $name, $value, &$replaced = null ) {
     return $result;
 }
 
+## "user:group mode" from a stat() array, for a report() message.
+function owner_of( $stat ) {
+    $pw = posix_getpwuid( $stat[ 'uid' ] );
+    $gr = posix_getgrgid( $stat[ 'gid' ] );
+    return ( $pw ? $pw[ 'name' ] : $stat[ 'uid' ] ) . ':' . ( $gr ? $gr[ 'name' ] : $stat[ 'gid' ] )
+           . ' ' . decoct( $stat[ 'mode' ] & 07777 );
+}
+
 ## One line of a command's complaint, for a report() message.
 function reason( $text ) {
     $text = trim( preg_replace( '/\s+/', ' ', (string) $text ) );
@@ -959,6 +967,14 @@ if ( !$apply ) {
     $left = array_keys( old_controller_crontabs() );
     report( $left ? 'FAIL' : 'ok', "no crontab calls gridctl_pro.php or gridctl_dev.php"
             . ( $left ? ': ' . implode( ', ', $left ) : '' ) );
+
+    ## The gridctl probe above covers us3 reading listen-config.php; the web
+    ## tier reading global_config.php is the path nothing else exercises.
+    $rc = run_as( $web_user, 'test -r ' . escapeshellarg( $global_config ), $g_out, $g_err );
+    $gc_stat = @stat( $global_config );
+    report( $rc === 0 ? 'ok' : 'FAIL', "$web_user can read global_config.php"
+            . ( $rc === 0 ? '' : ( $gc_stat ? ' (' . owner_of( $gc_stat ) . ')' : '' )
+                                . ' ' . reason( $g_err !== '' ? $g_err : $g_out ) ) );
 
     $rc = run_as( $web_user, 'test -w ' . escapeshellarg( $breaker_dir ), $w_out, $w_err );
     report( $rc === 0 ? 'ok' : 'FAIL', "$web_user can write the breaker directory"
