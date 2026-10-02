@@ -689,6 +689,14 @@ function usmd_wall_limit_status( $parsed ) {
  * Status: 0 no stdout, 1 no banner, 2 revision and date, 3 revision only,
  * 4 git commit, 5 banner in another format.
  */
+function usmd_collector_host() {
+    $host = getenv( 'USLIMS_METADATA_HOST' );
+    if ( $host === false || trim( $host ) === '' ) {
+        $host = gethostname();
+    }
+    return ( $host === false || trim( $host ) === '' ) ? null : trim( $host );
+}
+
 function usmd_parse_build( $stdout ) {
     $out = [ "us_revision" => null, "us_build_date" => null, "us_build_token" => null, "us_build_status" => 0 ];
     if ( $stdout === null || trim( $stdout ) === "" ) {
@@ -1306,6 +1314,10 @@ foreach ($use_dbs as $db) {
             // Verbatim companion to the mapped code: an unenumerated host maps
             // to null and would otherwise lose its identity.
             $values['cluster_name']=$base['job.cluster.@attributes.name']??null;
+            // The server this collector ran on. Databases on different servers can share a
+            // name and restart request IDs at 1 (Aalto, FAU), or be copies (LU); the host
+            // separates them when per-host CSVs are concatenated.
+            $values['collector_host']=usmd_collector_host();
             // Investigator is whose science this is, submitter is who pressed the
             // button; they differ often enough that both are kept.
             $values['investigator_hash']=usmd_identity_hash($request['investigatorGUID']??null);

@@ -134,6 +134,7 @@
             ,"us_build_date"
             ,"us_build_status"
             ,"us_build_token"
+            ,"collector_host"
             ,"xml_has_s_grid_points"
             ,"xml_has_ff0_grid_points"
             ,"xml_has_uniform_grid"
@@ -411,7 +412,7 @@
 # Additional scientific columns generated for each dataset slot
 # positional = one column per dataset slot; aggregate = primary + .0 .n .sum .min .max
 # string_fields are emitted verbatim instead of coerced to a number
-    ,"string_fields" : ["us_build_token", "investigator_hash", "submitter_hash", "gfac_id", "requested_partition", "cluster_name", "analysis_variant_name"]
+    ,"string_fields" : ["collector_host", "us_build_token", "investigator_hash", "submitter_hash", "gfac_id", "requested_partition", "cluster_name", "analysis_variant_name"]
 
     ,"dataset_encoding" : "aggregate"
 
@@ -420,5 +421,5 @@
     ,"missing_value" : "NA"
 
 # Numeric recordkeeping/quality fields: retain for selection, exclude from predictors
-    ,"non_predictor_fields" : ["wall_limit_status", "us_revision", "us_build_date", "us_build_status", "us_build_token", "xml_has_s_grid_points", "xml_has_ff0_grid_points", "xml_has_uniform_grid", "xml_has_fit_mb_select", "xml_has_rotorspeed", "xml_has_duration", "xml_speedstep_blocks", "edited_data_id", "edited_data_reported", "edited_data_report_count", "mc_models_parsed", "mc_analytes", "mc_s_rel_sd_median", "mc_s_rel_sd_max", "model_variance", "model_variance_max", "model_variance_sd", "model_count", "requested_partition", "submitTime", "startTime", "endTime", "updateTime", "CPUCount", "actual_master_groups", "result_completed", "request_xml_valid", "method_classification_status", "request_id", "result_id", "experiment_id", "metadata_format_version", "cg_model_id", "cg_model_status", "dmga_model_id", "dmga_model_status", "resource_parser_status", "scheduler", "resource_wall_limit_conflict", "queue_status", "cluster_name", "analysis_variant_name", "investigator_hash", "submitter_hash", "submitted_by_other", "gfac_id", "gfac_id_form", "is_airavata"]
+    ,"non_predictor_fields" : ["wall_limit_status", "us_revision", "us_build_date", "us_build_status", "us_build_token", "collector_host", "xml_has_s_grid_points", "xml_has_ff0_grid_points", "xml_has_uniform_grid", "xml_has_fit_mb_select", "xml_has_rotorspeed", "xml_has_duration", "xml_speedstep_blocks", "edited_data_id", "edited_data_reported", "edited_data_report_count", "mc_models_parsed", "mc_analytes", "mc_s_rel_sd_median", "mc_s_rel_sd_max", "model_variance", "model_variance_max", "model_variance_sd", "model_count", "requested_partition", "submitTime", "startTime", "endTime", "updateTime", "CPUCount", "actual_master_groups", "result_completed", "request_xml_valid", "method_classification_status", "request_id", "result_id", "experiment_id", "metadata_format_version", "cg_model_id", "cg_model_status", "dmga_model_id", "dmga_model_status", "resource_parser_status", "scheduler", "resource_wall_limit_conflict", "queue_status", "cluster_name", "analysis_variant_name", "investigator_hash", "submitter_hash", "submitted_by_other", "gfac_id", "gfac_id_form", "is_airavata"]
 }        
