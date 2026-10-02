@@ -196,9 +196,10 @@ $template      = "$gridctl_dir/listen-config.php.template";
 $global_config = "$wwwpath/common/global_config.php";
 $breaker_dir   = "$us3_home/lims/etc/circuit-breaker";
 
-$failures = 0;
-$changes  = 0;
-$pending  = 0;
+$failures    = 0;
+$changes     = 0;
+$pending     = 0;
+$needs_input = 0;
 
 ## Backups go to a fixed, absolute location rather than wherever root happened to
 ## be when the script was started. The directory itself is created on first use,
@@ -212,12 +213,19 @@ function step( $title ) {
     headerline( $title );
 }
 
+## 'input' is a todo this script cannot carry out itself, because the value has to
+## come from an option. It counts toward the dry run's pending total like any other
+## todo, and separately toward $needs_input, which is the only thing that can still
+## be outstanding after --apply: every other todo is applied on the way past.
 function report( $status, $msg ) {
-    global $failures, $pending;
+    global $failures, $pending, $needs_input;
     if ( $status === 'FAIL' ) {
         $failures++;
     } elseif ( $status === 'todo' ) {
         $pending++;
+    } elseif ( $status === 'input' ) {
+        $pending++;
+        $needs_input++;
     }
     printf( "  [%-5s] %s\n", $status, $msg );
 }
@@ -1001,7 +1009,7 @@ if ( !array_key_exists( 'single_tenant_deployment', $gc ) ) {
                          'pass --single-tenant yes|no' );
     }
     if ( $value === null ) {
-        report( 'todo', "set \$single_tenant_deployment (pass --single-tenant yes|no)" );
+        report( 'input', "set \$single_tenant_deployment (pass --single-tenant yes|no)" );
     } else {
         report( 'todo', "set \$single_tenant_deployment = " . var_export( $value, true ) );
         $managed[] = '$single_tenant_deployment = ' . var_export( $value, true ) . ';';
@@ -1023,7 +1031,7 @@ if ( !isset( $gc[ 'default_local_cluster' ] ) || !isset( $active[ $gc[ 'default_
         fatal( "--local-cluster '$proposal' is not an active cluster (candidates: "
                . implode( ', ', array_keys( $active ) ) . ")" );
     } elseif ( $proposal === null ) {
-        report( 'todo', "set \$default_local_cluster (pass --local-cluster; candidates: " . implode( ', ', array_keys( $active ) ) . ")" );
+        report( 'input', "set \$default_local_cluster (pass --local-cluster; candidates: " . implode( ', ', array_keys( $active ) ) . ")" );
     } else {
         report( 'todo', "set \$default_local_cluster = '$proposal'" );
         $managed[] = '$default_local_cluster = ' . var_export( $proposal, true ) . ';';
@@ -1062,7 +1070,7 @@ foreach ( $active as $name => $c ) {
         }
     }
     if ( $value === null ) {
-        report( 'todo', "$name lacks env_script_lines (pass --env $name=... or --env $name=)" );
+        report( 'input', "$name lacks env_script_lines (pass --env $name=... or --env $name=)" );
     } else {
         report( 'todo', "set env_script_lines for $name" );
         $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = ' . php_string( $value ) . ';';
@@ -1362,8 +1370,9 @@ if ( !$apply ) {
 }
 if ( $failures ) {
     echo "$failures check(s) FAILED.\n";
-} elseif ( $apply && $pending ) {
-    echo "All checks passed, but $pending item(s) still need attention above.\n";
+} elseif ( $apply && $needs_input ) {
+    echo "All checks passed, but $needs_input setting(s) still need a value; see the"
+       . " [input] lines above and rerun with the option each one names.\n";
 } else {
     echo "All checks passed.\n";
 }
@@ -1371,12 +1380,17 @@ if ( $apply && $changes ) {
     ## The preflight required an idle host, so this is a start, not a restart, and
     ## it runs as us3: started as root the services would leave root-owned state.
     echo "\nFinish the upgrade in this order:\n"
-       . "  1. re-enable the LIMS cron entries that were commented out for the upgrade\n"
+       . "  1. re-enable the LIMS cron entries that were commented out for the upgrade,\n"
+       . "     but NOT any gridctl entry: step 6 removed those deliberately, because each\n"
+       . "     job's own jobmonitor now carries it to a terminal state. Re-enabling one\n"
+       . "     puts the sweep back and undoes part of this upgrade\n"
        . "  2. start the services as us3:   sudo -u us3 bash -c 'cd $us3bin && php services.php start'\n"
        . "  3. refresh the cluster health table once, so no cluster shows as stale:\n"
-       . "     sudo -u us3 php $gridctl_dir/cluster_status.php\n";
+       . "     sudo -u us3 php $gridctl_dir/cluster_status.php\n"
+       . "  4. confirm no gridctl entry came back:\n"
+       . "     crontab -l -u us3 | grep gridctl ; grep -r gridctl /etc/crontab /etc/cron.d\n";
 }
 ## A dry run with work outstanding is not a failure, so it exits 0. Under --apply
-## an outstanding item is work that was asked for and not done, so it exits
-## non-zero along with any real failure, which is what automation reads.
-exit( $failures || ( $apply && $pending ) ? 1 : 0 );
+## only an [input] item can still be outstanding: every other todo is carried out on
+## the way past, so counting those would make a successful upgrade exit non-zero.
+exit( $failures || ( $apply && $needs_input ) ? 1 : 0 );
