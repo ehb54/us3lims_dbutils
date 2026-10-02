@@ -222,6 +222,32 @@ if ( $checklog && $monitor ) {
     error_exit( "ERROR: --checklog and --monitor can not both be specified" );
 }
 
+## The running jobmonitors, keyed "db:gfacID" to pid.
+##
+## Read from "pid args" rather than fixed "ps -efww" columns. The old parse took
+## fields $10 and $11, which are the db and gfacID only when the command starts
+## at field 8. A monitor launched as "nice -15 php ..." (how local submission
+## started them before the Slurm change) shifts them, so the key became
+## "php:<path>", matched no row, and the job read as unmonitored: --restart then
+## started a second monitor for a job that already had one, and two monitors
+## import the same results twice.
+##
+## The pattern also has to match the launched form rather than anything merely
+## naming the script, so a grep or an editor on the file is not counted.
+function active_jobmonitors() {
+    $lines = [];
+    exec( 'ps -eo pid=,args=', $lines );
+    $active = [];
+    foreach ( $lines as $line ) {
+        if ( !preg_match( '#^\s*(\d+)\s+(?:\S*nice\s+-?\d+\s+)?\S*php[0-9.]*\s+'
+                          . '\S*jobmonitor/jobmonitor\.php\s+(\S+)\s+(\S+)#', $line, $m ) ) {
+            continue;
+        }
+        $active[ $m[ 2 ] . ':' . $m[ 3 ] ] = $m[ 1 ];
+    }
+    return $active;
+}
+
 function jm_only_report( $jm_active ) {
     $out = "";
     if ( count( $jm_active ) ) {
@@ -359,14 +385,7 @@ if ( $getpriorids ) {
 }
 
 if ( $running || $restart || $restart_only ) {
-    $jms = explode( "\n", trim( run_cmd( 'ps -efww | grep jobmonitor.php | grep -v grep | awk \'{ print $2 " " $10 " " $11 }\'' ) ) );
-    $jm_active = [];
-    foreach ( $jms as $v ) {
-        $jm_row = explode( " ", $v );
-        if ( count( $jm_row ) == 3 ) {
-            $jm_active[ $jm_row[1] . ":" . $jm_row[2] ] = $jm_row[0];
-        }
-    }
+    $jm_active = active_jobmonitors();
 
     open_db();
     $res = db_obj_result( $db_handle, "select * from gfac.analysis order by cluster,us3_db,gfacid", true, true );
