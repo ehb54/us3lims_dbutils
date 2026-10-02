@@ -569,7 +569,6 @@ function usmd_parse_jobfile( $jobfile ) {
     }
     if ( preg_match( '/^#PBS\s+-l\s+[^\r\n]*walltime=([0-9:]+)/mi', $jobfile, $m ) ) {
         $out["requested_wall_limit"] = usmd_parse_wall_seconds( $m[1] );
-        // Leave requested_wall_limit as before; the status code carries "no limit".
         if ( $out["requested_wall_limit"] === 0 ) {
             $out["evidence"]["explicit_unlimited"] = 1;
         }
@@ -596,7 +595,7 @@ function usmd_parse_jobfile( $jobfile ) {
     if ( preg_match( '/\bus_mpi_analysis\b[^\r\n]*\s-walltime\s+(\d+)/i', $jobfile, $m ) ) {
         /* The application consumes this value as minutes (max_walltime). */
         $out["evidence"]["application_wall_minutes"] = intval( $m[1] );
-        // 999999 minutes is the gateway's "no limit" sentinel, not a requested limit.
+        // 999999 minutes is the gateway's no-limit sentinel.
         if ( intval( $m[1] ) >= 999999 ) {
             $out["evidence"]["application_sentinel"] = 1;
         }
@@ -645,7 +644,7 @@ function usmd_parse_jobfile( $jobfile ) {
         }
         $out["requested_wall_limit"] = $seconds > 0 ? $seconds : null;
         if ($seconds === 0) {
-            // Slurm's -t 0 means no limit; keep that distinct from an absent directive.
+            // Slurm -t 0 means no limit.
             $out["evidence"]["explicit_unlimited"] = 1;
         }
         $out["scheduler_family"] = 'Slurm';
@@ -657,12 +656,7 @@ function usmd_parse_jobfile( $jobfile ) {
     return $out;
 }
 
-/*
- * Where the wall limit came from, as a numeric code:
- * 0 no jobfile, 1 unsupported format, 2 parsed without a limit directive,
- * 3 positive limit, 4 explicit no limit (-t 0 / walltime=0),
- * 5 only the application's 999999-minute no-limit sentinel.
- */
+// 0 no jobfile, 1 unsupported, 2 no limit directive, 3 limit, 4 explicit no limit, 5 sentinel only.
 function usmd_wall_limit_status( $parsed ) {
     $e = $parsed["evidence"];
     if ( $parsed["parser_status"] === "missing" ) {
@@ -680,15 +674,8 @@ function usmd_wall_limit_status( $parsed ) {
     return $parsed["parser_status"] === "unsupported-format" ? 1 : 2;
 }
 
-/*
- * UltraScan build that ran the job, from its stdout banner
- * ("Us_Mpi_Analysis 4.0.<rev> <YYYY-MM-DD>", written by programs/us_mpi_analysis/revision.sh).
- * The banner's version token (at most 40 characters) is kept in us_build_token.
- * The revision is read from 4.0.<rev> and from <version>-<tag>.<rev> (e.g. 4.1.0-dev.8910);
- * a bare git commit (CMake builds, admin/cmake/GenerateVersion.cmake) has no revision.
- * Status: 0 no stdout, 1 no banner, 2 revision and date, 3 revision only,
- * 4 git commit, 5 banner in another format.
- */
+// Build from the stdout banner "Us_Mpi_Analysis <version> <YYYY-MM-DD>".
+// Status: 0 no stdout, 1 no banner, 2 revision and date, 3 revision only, 4 git commit, 5 other.
 function usmd_collector_host() {
     $host = getenv( 'USLIMS_METADATA_HOST' );
     if ( $host === false || trim( $host ) === '' ) {
@@ -707,7 +694,7 @@ function usmd_parse_build( $stdout ) {
         return $out;
     }
     $out["us_build_token"] = substr( $m[1], 0, 40 );
-    // 4.0.<rev> (revision.sh) and 4.1.0-dev.<rev> (later builds) carry the same revision count.
+    // 4.0.<rev> and 4.1.0-dev.<rev> share one revision count.
     if ( preg_match( '/^\d+\.\d+\.(\d+)$/', $m[1], $r ) || preg_match( '/^\d+\.\d+\.\d+-[A-Za-z]+\.(\d+)$/', $m[1], $r ) ) {
         $out["us_revision"] = intval( $r[1] );
         if ( isset( $m[2] ) && $m[2] !== "" ) {
@@ -726,11 +713,7 @@ function usmd_parse_build( $stdout ) {
     return $out;
 }
 
-/*
- * Whether the generic flattening of the request XML carries each 2DSA repair
- * input, so information presence is measured on every database rather than a
- * one-database sample. Keys follow squash() over the normalized request XML.
- */
+// Whether the squashed request XML carries each 2DSA repair input.
 function usmd_xml_presence( $flat, $valid_xml ) {
     $patterns = [
         "xml_has_s_grid_points"   => '/^job\.jobParameters\.s_grid_points\./',
@@ -1314,9 +1297,7 @@ foreach ($use_dbs as $db) {
             // Verbatim companion to the mapped code: an unenumerated host maps
             // to null and would otherwise lose its identity.
             $values['cluster_name']=$base['job.cluster.@attributes.name']??null;
-            // The server this collector ran on. Databases on different servers can share a
-            // name and restart request IDs at 1 (Aalto, FAU), or be copies (LU); the host
-            // separates them when per-host CSVs are concatenated.
+            // Same-named databases on different servers can reuse request IDs.
             $values['collector_host']=usmd_collector_host();
             // Investigator is whose science this is, submitter is who pressed the
             // button; they differ often enough that both are kept.
