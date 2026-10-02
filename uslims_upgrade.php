@@ -657,6 +657,11 @@ report( 'ok', "no Airavata jobs in flight"
 ## Only a monitor from before the upgrade is a double-import risk: it holds no
 ## cleanup claim. Once the host is upgraded its monitors do, so an import in
 ## progress is ordinary operation and must not fail a rerun.
+##
+## This check cannot see a pre-upgrade import that is already under way: the old
+## cleanup deletes the gfac.analysis row before it writes the results and takes
+## no claim, so there is nothing left to find. Step 7's per-monitor check is the
+## real guard; this one is an early warning only.
 $monitors     = jobmonitors( marker_time( $marker_file ), $jm_error );
 $old_monitors = array_filter( $monitors, function ( $j ) { return $j[ 'old' ]; } );
 if ( $jm_error !== '' ) {
@@ -1192,10 +1197,22 @@ if ( $jm_error !== '' ) {
             if ( $status === null ) {
                 report( 'FAIL', "could not read gfac.analysis for job {$jm['gfacID']}: "
                                 . reason( mysqli_error( $gdb ) ) . "; pid $pid left alone" );
-            } elseif ( $status === '' || $status === 'SUBMITTED' || $status === 'RUNNING' ) {
-                ## '' is a row already removed by a finished cleanup: nothing
-                ## left to import, so the monitor is safe to replace.
+            } elseif ( $status === 'SUBMITTED' || $status === 'RUNNING' ) {
+                ## Still polling the cluster, so it has imported nothing yet.
                 $safe[ $pid ] = $jm;
+            } elseif ( $status === '' ) {
+                ## The row is gone but the monitor is alive, so it is importing
+                ## right now: cleanup deletes the gfac.analysis row before it
+                ## writes the results (cleanup_job.php deletes, then INSERTs
+                ## noise, pcsa_modelrecs, model, modelPerson and
+                ## HPCAnalysisResultData, then emails the user). Leaving it is
+                ## both safe and necessary. Safe because with no row neither the
+                ## sweep nor a respawned monitor will touch the job, so it cannot
+                ## double-import; necessary because killing it would leave a
+                ## partial import that nothing repairs: --restart respawns
+                ## nothing without a row, and the user is never emailed.
+                report( 'note', "job {$jm['gfacID']}: pre-upgrade monitor pid $pid is finishing its"
+                                . " import; left running" );
             } else {
                 report( 'FAIL', "job {$jm['gfacID']} is collecting or importing results (status $status);"
                                 . " pid $pid was left running. Rerun when it finishes" );
