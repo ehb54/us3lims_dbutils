@@ -359,7 +359,10 @@ function fix_crontab( $text ) {
         $seen[ $fixed ] = true;
         $out[] = $fixed;
     }
-    return implode( "\n", $out );
+    ## crontab(1) rejects a file whose last line has no newline, and the text
+    ## arrives without one: capture() builds it from exec()'s array form, which
+    ## drops the trailing newline. Normalize to exactly one.
+    return rtrim( implode( "\n", $out ), "\n" ) . "\n";
 }
 
 ## fix_crontab() rewrites only the gridctl_pro/dev references and collapses the
@@ -1116,7 +1119,8 @@ foreach ( $old_crons as $where => $text ) {
     if ( $where === 'us3' ) {
         ## Keep the old crontab under a name that says what it is.
         $saved = backup_path( 'us3.crontab' );
-        if ( file_put_contents( $saved, $text ) === false ) {
+        ## Same missing trailing newline: keep the backup loadable by "crontab -".
+        if ( file_put_contents( $saved, rtrim( $text, "\n" ) . "\n" ) === false ) {
             error_exit( "could not save the current us3 crontab to $saved" );
         }
         echo "Original us3 crontab backed up in to $saved\n";
