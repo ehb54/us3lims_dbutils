@@ -357,6 +357,20 @@ function fix_crontab( $text ) {
     return implode( "\n", $out );
 }
 
+## fix_crontab() rewrites only the gridctl_pro/dev references and collapses the
+## duplicate that leaves, so every other line must survive. /etc/crontab carries
+## the nightly backup ("cronic php .../uslims_daily_backup.php"), and a line lost
+## here would stop the backups without saying so.
+function crontab_lines_lost( $before, $after ) {
+    $expected = [];
+    foreach ( explode( "\n", $before ) as $line ) {
+        if ( trim( $line ) !== '' && !preg_match( '/gridctl_(pro|dev)\.php/', $line ) ) {
+            $expected[] = $line;
+        }
+    }
+    return array_values( array_diff( $expected, explode( "\n", $after ) ) );
+}
+
 ## Crontabs still calling the old controllers: us3's own, then system files.
 ## Keys are 'us3' or a file path. $error is set when us3's crontab could not be
 ## read at all, which is not the same as there being none.
@@ -1008,7 +1022,16 @@ foreach ( $old_crons as $where => $text ) {
         unlink( $tmp );
         if ( $rc === 0 ) {
             $changes++;
-            report( 'done', "us3 crontab updated" );
+            list( $now_tab, $rb_err, $rb_rc ) = capture( 'crontab -l -u us3' );
+            $lost = $rb_rc === 0 ? crontab_lines_lost( $text, $now_tab ) : [];
+            if ( $rb_rc !== 0 ) {
+                report( 'FAIL', "us3 crontab was written but could not be read back: " . reason( $rb_err ) );
+            } elseif ( $lost ) {
+                report( 'FAIL', "us3 crontab lost " . count( $lost ) . " unrelated line(s); the original is in"
+                                . " $saved: " . reason( implode( ' | ', $lost ) ) );
+            } else {
+                report( 'done', "us3 crontab updated, its other entries intact" );
+            }
         } else {
             report( 'FAIL', "us3 crontab was not updated (exit $rc): " . reason( $cwerr . ' ' . $o )
                             . "; the original is in $saved" );
@@ -1016,7 +1039,11 @@ foreach ( $old_crons as $where => $text ) {
     } else {
         ## A crontab is not PHP, so this write must not be lint-checked.
         write_file( $where, fix_crontab( $text ), false );
-        report( 'done', "$where updated (original in " . backup_path( $where ) . ")" );
+        $lost = crontab_lines_lost( $text, (string) @file_get_contents( $where ) );
+        report( $lost ? 'FAIL' : 'done',
+                $lost ? "$where lost " . count( $lost ) . " unrelated line(s); the original is in "
+                        . backup_path( $where ) . ": " . reason( implode( ' | ', $lost ) )
+                      : "$where updated, its other entries intact (original in " . backup_path( $where ) . ")" );
     }
 }
 if ( !$old_crons ) {
