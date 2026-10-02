@@ -40,7 +40,7 @@
    - moves an existing host to the Slurm submission contract; run as root after pulling common, every instance, gridctl and dbutils
      1. refuses to run while any Airavata job is in flight, while any job is collecting or importing results, or while any job holds a cleanup claim (step 7 replaces the jobmonitors, so a half-imported result must not be possible)
      2. rewrites listen-config.php from the gridctl template, carrying the site's values
-     3. sets the global_config.php settings the new code requires (queue time 0, tenant scope, local cluster, env_script_lines per cluster, single_node on one-node appliances)
+     3. deactivates cluster entries the Slurm code cannot submit to (metascheduler entries, and anything whose submittype is not slurm), then sets the global_config.php settings the new code requires (queue time 0, tenant scope, local cluster, env_script_lines per cluster, single_node on one-node appliances)
      4. records each cluster's host key and checks ssh for us3 and the web account (the PHP-FPM pool user); sets up the keys for the host's own cluster
      5. creates the shared circuit-breaker directory
      6. fixes crontabs (us3's, /etc/crontab, /etc/cron.d) that still call gridctl_pro.php / gridctl_dev.php

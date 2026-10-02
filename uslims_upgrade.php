@@ -689,6 +689,32 @@ $managed = [];     ## PHP assignments for the managed block, in order
 $clusters = is_array( $gc[ 'cluster_details' ] ?? null ) ? $gc[ 'cluster_details' ] : [];
 $active   = array_filter( $clusters, function ( $c ) { return is_array( $c ) && ( $c[ 'active' ] ?? false ); } );
 
+## Entries the Slurm code cannot submit to, left active from an older host: a
+## metascheduler entry (one that fans out to a list of clusters) or one named
+## for another scheduler. 'submittype' no longer exists in the submission code,
+## so an active 'pbs' or 'http' entry is now treated as though it were Slurm.
+## They are dropped from $active as well, so the checks below do not go looking
+## for env_script_lines, nodes or SSH on a cluster that is being retired.
+foreach ( $active as $name => $c ) {
+    $retired = null;
+    if ( isset( $c[ 'clusters' ] ) && is_array( $c[ 'clusters' ] ) ) {
+        $retired = "it is a metascheduler entry, fanning out to " . implode( ', ', $c[ 'clusters' ] );
+    } elseif ( isset( $c[ 'submittype' ] ) && strtolower( (string) $c[ 'submittype' ] ) !== 'slurm' ) {
+        $retired = "its submittype is '" . $c[ 'submittype' ] . "', which the Slurm code does not implement";
+    }
+    if ( $retired === null ) {
+        continue;
+    }
+    report( 'todo', "deactivate cluster '$name': $retired" );
+    $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'active\' ] = false;';
+    unset( $active[ $name ] );
+}
+if ( $active ) {
+    report( 'ok', count( $active ) . " active cluster(s) the Slurm code can use: " . implode( ', ', array_keys( $active ) ) );
+} else {
+    report( 'FAIL', "no active cluster is usable by the Slurm code; jobs would have nowhere to go" );
+}
+
 ## #864: queued jobs are never cancelled for waiting
 if ( (int) ( $gc[ 'global_max_queue_time_hours' ] ?? 24 ) !== 0 ) {
     report( 'todo', "set \$global_max_queue_time_hours = 0 (#864; currently " . ( $gc[ 'global_max_queue_time_hours' ] ?? 'unset' ) . ")" );
