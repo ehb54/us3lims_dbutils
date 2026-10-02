@@ -21,7 +21,7 @@ function instance_overlay( $instpath, $k ) {
 function returned_config( $path ) {
     static $cache = [];
     if ( !array_key_exists( $path, $cache ) ) {
-        $cache[ $path ] = is_readable( $path ) ? include $path : false;
+        $cache[ $path ] = is_readable( $path ) ? include $path : false; // NOSONAR include_once returns true, not the value, once the file is loaded
     }
     return $cache[ $path ];
 }

@@ -485,12 +485,14 @@ function owner_of( $stat ) {
 ## nothing here to find. Do not rely on it for that. Step 7's per-monitor check
 ## is the real guard.
 function import_blockers( $gdb, $us3_home ) {
-    $importing = "( status IS NULL OR status NOT IN ( 'SUBMITTED', 'RUNNING' ) )";
-    $res = mysqli_query( $gdb,
-        "SELECT SUM( $importing )                                        AS importing_total,
-                SUM( $importing AND time >= NOW() - INTERVAL 1 HOUR )    AS importing_now
-           FROM analysis
-          WHERE gfacID IS NOT NULL AND gfacID <> '' AND gfacID REGEXP '^[0-9]+$'" );
+    $res = mysqli_query( $gdb, <<<'SQL'
+SELECT SUM( status IS NULL OR status NOT IN ( 'SUBMITTED', 'RUNNING' ) )            AS importing_total,
+       SUM( ( status IS NULL OR status NOT IN ( 'SUBMITTED', 'RUNNING' ) )
+            AND time >= NOW() - INTERVAL 1 HOUR )                                     AS importing_now
+  FROM analysis
+ WHERE gfacID IS NOT NULL AND gfacID <> '' AND gfacID REGEXP '^[0-9]+$'
+SQL
+    );
     if ( !$res ) {
         return [ 'error' => mysqli_error( $gdb ) ?: 'the query failed' ];
     }
@@ -533,8 +535,8 @@ function write_marker( $path ) {
     if ( @file_put_contents( $path, time() . "\n" ) === false ) {
         return false;
     }
-    @chown( $path, 'us3' );
-    @chmod( $path, 0644 );
+    ## Only this script, run as root, reads it.
+    @chmod( $path, 0600 );
     return true;
 }
 
@@ -625,19 +627,20 @@ if ( !$gdb ) {
 ## finished, since the new code cannot run them. Terminal statuses are listed
 ## rather than active ones, so a status this script does not know about counts as
 ## in flight and errs toward refusing.
-$finished = [ 'COMPLETE', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA', 'ERROR',
-              'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ];
-$terminal = "'" . implode( "','", $finished ) . "'";
-
 ## A NULL or empty gfacID is a job that has no cluster id yet: it cannot be told
 ## apart from an Airavata job, so it is reported rather than assumed harmless.
-$active   = "( status IS NULL OR status NOT IN ( $terminal ) )";
-$named    = "gfacID IS NOT NULL AND gfacID <> ''";
-$res = mysqli_query( $gdb,
-    "SELECT SUM( $active AND $named AND gfacID NOT REGEXP '^[0-9]+\$' ) AS airavata_active,
-            SUM( $active AND NOT ( $named ) )                           AS unidentified_active,
-            SUM( $named AND gfacID NOT REGEXP '^[0-9]+\$' )             AS airavata_total
-       FROM analysis" );
+## A fixed query: "active" is any status outside the terminal list.
+$res = mysqli_query( $gdb, <<<'SQL'
+SELECT SUM( ( status IS NULL OR status NOT IN ( 'COMPLETE', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA',
+                                                 'ERROR', 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ) )
+            AND gfacID IS NOT NULL AND gfacID <> '' AND gfacID NOT REGEXP '^[0-9]+$' ) AS airavata_active,
+       SUM( ( status IS NULL OR status NOT IN ( 'COMPLETE', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA',
+                                                 'ERROR', 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ) )
+            AND ( gfacID IS NULL OR gfacID = '' ) )                                  AS unidentified_active,
+       SUM( gfacID IS NOT NULL AND gfacID <> '' AND gfacID NOT REGEXP '^[0-9]+$' )   AS airavata_total
+  FROM analysis
+SQL
+);
 if ( !$res ) {
     report( 'FAIL', "could not query gfac.analysis: " . mysqli_error( $gdb ) );
     error_exit( "the preflight check could not run; nothing was changed" );
