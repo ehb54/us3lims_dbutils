@@ -4,7 +4,7 @@
 #
 # Host configuration only. The stack code and the database schema are upgraded
 # separately; the code must already be in place, since step 2 reads gridctl's
-# template and step 8 installs dbutils' policy. Step 0 refuses to run otherwise.
+# template and step 7 installs dbutils' policy. Step 0 refuses to run otherwise.
 #
 # Dry run by default: every step reports what it found and what it would
 # change. --apply makes the changes, backing up each file first. Safe to rerun:
@@ -37,24 +37,27 @@ schema are upgraded separately, and the code must be upgraded first: pull common
 every instance, gridctl and dbutils to $required_version or newer, then run this as root.
 Step 0 refuses to go further while any checkout is older.
 
+The host must also be idle. Stop the services with "php services.php stop", let the
+queues drain, and comment out the LIMS cron entries first; step 1 checks all of this and
+refuses rather than work around a running system.
+
 Steps
 
 0 : every stack checkout is at $required_version or newer (read from each repository's VERSION)
-1 : preflight. Refuses to run while an Airavata job is in flight, while a job is
-    collecting or importing results, or while a job holds a cleanup claim
+1 : preflight. The host must be idle: us3-listen stopped, no jobmonitor, nothing from
+    /opt/ultrascan3/bin, no unfinished job in gfac.analysis, no cleanup claim, an empty
+    local Slurm queue, no other client running a statement on MariaDB, and the LIMS cron
+    entries commented out
 2 : rewrites listen-config.php from gridctl's template, carrying the site's values
 3 : deactivates clusters the Slurm code cannot submit to, then sets the global_config.php
     settings the new code requires (queue time, tenant scope, local cluster,
     env_script_lines per cluster, single_node on one-node appliances)
 4 : records each cluster's host key and checks ssh for us3 and the web account
 5 : creates the shared circuit-breaker directory
-6 : fixes crontabs still calling gridctl_pro.php / gridctl_dev.php
-7 : replaces jobmonitors started before the upgrade, which take no cleanup claim and
-    would import a job's results twice. One that is collecting or importing results is
-    left alone and reported
-8 : installs the Content-Security-Policy as Report-Only unless a policy is already
+6 : removes the gridctl cron entries (gridctl.php, and the gridctl_pro/dev names before it)
+7 : installs the Content-Security-Policy as Report-Only unless a policy is already
     configured; enforcing it is a later step
-9 : verifies the result
+8 : verifies the result
 
 Options
 
@@ -192,11 +195,6 @@ $gridctl_dir   = is_file( "$us3bin/gridctl/listen-config.php.template" ) ? "$us3
 $template      = "$gridctl_dir/listen-config.php.template";
 $global_config = "$wwwpath/common/global_config.php";
 $breaker_dir   = "$us3_home/lims/etc/circuit-breaker";
-## Stamped when this script replaces the jobmonitors. A monitor that started
-## before it is running pre-upgrade code. A file time on the monitor's own
-## source would be the obvious signal but is not dependable: "cp -p", "rsync -a"
-## or a checkout that preserves times would leave every monitor looking new.
-$marker_file   = "$us3_home/lims/etc/uslims_upgrade-applied";
 
 $failures = 0;
 $changes  = 0;
@@ -377,37 +375,47 @@ function run_as( $account, $cmd, &$output = null, &$errors = null ) {
     return $rc;
 }
 
-## gridctl.php replaces gridctl_pro.php and gridctl_dev.php and takes its own
-## lock, so a pro and dev pair collapses to one line.
-function fix_crontab( $text ) {
-    $seen = [];
-    $out  = [];
-    foreach ( explode( "\n", $text ) as $line ) {
-        $fixed = preg_replace( '/gridctl_(pro|dev)\.php/', 'gridctl.php', $line );
-        if ( $fixed !== $line && isset( $seen[ $fixed ] ) ) {
-            continue;
-        }
-        $seen[ $fixed ] = true;
-        $out[] = $fixed;
-    }
-    return implode( "\n", $out );
+## A cron line driving gridctl, under any of its names. A commented one counts
+## too: step 1 has the operator comment the LIMS entries out for the upgrade, so
+## skipping comments here would leave the entry behind for them to re-enable
+## afterwards, putting the sweep back.
+function gridctl_cron_line( $line ) {
+    return (bool) preg_match( '/gridctl(_pro|_dev)?\.php/', $line );
 }
 
-## fix_crontab() rewrites only the gridctl_pro/dev references and collapses the
-## duplicate that leaves, so every other line must survive. /etc/crontab carries
+## gridctl is no longer driven from cron at all: each job's own jobmonitor carries
+## it to a terminal state, so a periodic controller has nothing left to sweep.
+## The entries are removed rather than renamed to gridctl.php.
+function fix_crontab( $text ) {
+    $out = [];
+    foreach ( explode( "\n", $text ) as $line ) {
+        if ( gridctl_cron_line( $line ) ) {
+            continue;
+        }
+        $out[] = $line;
+    }
+    ## crontab(1) rejects a file whose last line has no newline. Normalize to one,
+    ## whatever the source did: capture()'s array form drops it, and an /etc file
+    ## may or may not have it.
+    return rtrim( implode( "\n", $out ), "\n" ) . "\n";
+}
+
+## fix_crontab() removes only the gridctl cron entries, so every other line must
+## survive. /etc/crontab carries
 ## the nightly backup ("cronic php .../uslims_daily_backup.php"), and a line lost
 ## here would stop the backups without saying so.
 function crontab_lines_lost( $before, $after ) {
     $expected = [];
     foreach ( explode( "\n", $before ) as $line ) {
-        if ( trim( $line ) !== '' && !preg_match( '/gridctl_(pro|dev)\.php/', $line ) ) {
+        if ( trim( $line ) !== '' && !gridctl_cron_line( $line ) ) {
             $expected[] = $line;
         }
     }
     return array_values( array_diff( $expected, explode( "\n", $after ) ) );
 }
 
-## Crontabs still calling the old controllers: us3's own, then system files.
+## Crontabs that still carry a gridctl entry, active or commented: us3's own,
+## then system files.
 ## Keys are 'us3' or a file path. $error is set when us3's crontab could not be
 ## read at all, which is not the same as there being none.
 function old_controller_crontabs( &$error = null ) {
@@ -423,8 +431,11 @@ function old_controller_crontabs( &$error = null ) {
         $tabs[ $file ] = is_file( $file ) ? (string) @file_get_contents( $file ) : '';
     }
     foreach ( $tabs as $where => $text ) {
-        if ( preg_match( '/gridctl_(pro|dev)\.php/', $text ) ) {
-            $found[ $where ] = $text;
+        foreach ( explode( "\n", $text ) as $line ) {
+            if ( gridctl_cron_line( $line ) ) {
+                $found[ $where ] = $text;
+                break;
+            }
         }
     }
     return $found;
@@ -512,23 +523,53 @@ function owner_of( $stat ) {
 ## block, 'stalled' is only worth reporting. An hour is the window
 ## cleanup_claim_acquire() itself treats as abandoned.
 ##
-## This cannot see a pre-upgrade import that is already under way: 4.2.0 deletes
-## the row before it writes the results and takes no claim, so by then there is
-## nothing here to find. Do not rely on it for that. Step 7's per-monitor check
-## is the real guard.
-function import_blockers( $gdb, $us3_home ) {
-    $res = mysqli_query( $gdb, <<<'SQL'
-SELECT SUM( status IS NULL OR status NOT IN ( 'SUBMITTED', 'RUNNING' ) )            AS importing_total,
-       SUM( ( status IS NULL OR status NOT IN ( 'SUBMITTED', 'RUNNING' ) )
-            AND time >= NOW() - INTERVAL 1 HOUR )                                     AS importing_now
-  FROM analysis
- WHERE gfacID IS NOT NULL AND gfacID <> '' AND gfacID REGEXP '^[0-9]+$'
-SQL
-    );
-    if ( !$res ) {
-        return [ 'error' => mysqli_error( $gdb ) ?: 'the query failed' ];
+## Running processes whose "pid args" line matches $regex, as [ pid => line ].
+## Returns null when the process list could not be read, which is not the same as
+## nothing matching. This script's own process and its parent are never included.
+function processes( $regex ) {
+    list( $out, $err, $rc ) = capture( 'ps -eo pid=,args=' );
+    if ( $rc !== 0 ) {
+        return null;
     }
-    $row    = mysqli_fetch_assoc( $res );
+    $mine  = [ getmypid(), posix_getppid() ];
+    $found = [];
+    foreach ( explode( "\n", $out ) as $line ) {
+        if ( !preg_match( $regex, $line, $m ) ) {
+            continue;
+        }
+        $pid = (int) $m[ 1 ];
+        if ( in_array( $pid, $mine, true ) ) {
+            continue;
+        }
+        $found[ $pid ] = trim( $line );
+    }
+    return $found;
+}
+
+## The running jobmonitors, each as [ pid, db, gfacID ]. $error is set when the
+## process list could not be read, which must not read as "none running".
+function jobmonitors( &$error = null ) {
+    $error = '';
+    ## Match the launched form only: a php binary followed by the monitor's own
+    ## path, then its two arguments. 4.2.0 starts it under "nice -15", which
+    ## execs php, so the process still shows php as argv[0]. A looser match would
+    ## catch anything merely naming the script.
+    $found = processes( '#^\s*(\d+)\s+\S*php[0-9.]*\s+\S*jobmonitor/jobmonitor\.php\s+(\S+)\s+(\S+)#' );
+    if ( $found === null ) {
+        $error = 'ps failed';
+        return [];
+    }
+    $jms = [];
+    foreach ( $found as $pid => $line ) {
+        preg_match( '#jobmonitor/jobmonitor\.php\s+(\S+)\s+(\S+)#', $line, $m );
+        $jms[ $pid ] = [ 'pid' => $pid, 'db' => $m[ 1 ], 'gfacID' => $m[ 2 ] ];
+    }
+    return $jms;
+}
+
+## Cleanup claims that are still live: taken within the hour, or whose owning
+## process is still alive. An older claim with a dead owner was abandoned.
+function cleanup_claims( $us3_home ) {
     $claims = [];
     foreach ( glob( "$us3_home/lims/etc/joblog/*/*/cleanup.claim" ) ?: [] as $claim ) {
         $owner = (int) @file_get_contents( "$claim/owner" );
@@ -537,93 +578,34 @@ SQL
             $claims[] = basename( dirname( $claim ) ) . ( $owner ? " (pid $owner)" : '' );
         }
     }
-    return [ 'error'   => '',
-             'now'     => (int) $row[ 'importing_now' ],
-             'stalled' => (int) $row[ 'importing_total' ] - (int) $row[ 'importing_now' ],
-             'claims'  => $claims ];
+    return $claims;
 }
 
-## The blocking half of import_blockers(), reported the same way in both places.
-function report_import_blockers( $b ) {
-    if ( $b[ 'now' ] ) {
-        report( 'FAIL', $b[ 'now' ] . " job(s) are collecting or importing results now"
-                        . " (gfac.analysis past SUBMITTED/RUNNING, touched within the hour)" );
+## LIMS cron entries that are still live, as [ where => lines ]. Keys are 'us3'
+## or a file path. An upgrade needs these commented out: left running, cron
+## restarts the listener or a controller partway through.
+function live_lims_crontabs() {
+    ## The LIMS scripts cron drives. gridctl_pro/dev are the pre-upgrade names.
+    $lims = '#(gridctl(_pro|_dev)?\.php|cluster_status\.php|update_notice\.php|listen\.php'
+            . '|jobmonitor\.php|uslims_daily_backup\.php|uslims_daily_rsync\.php|save-jobstats\.sh)#';
+    list( $us3_tab, $err, $rc ) = capture( 'crontab -l -u us3' );
+    $tabs = [ 'us3' => $rc === 0 ? $us3_tab : '' ];
+    foreach ( array_merge( [ '/etc/crontab' ], glob( '/etc/cron.d/*' ) ?: [] ) as $file ) {
+        $tabs[ $file ] = is_file( $file ) ? (string) @file_get_contents( $file ) : '';
     }
-    if ( $b[ 'claims' ] ) {
-        report( 'FAIL', count( $b[ 'claims' ] ) . " job(s) hold a cleanup claim: "
-                        . implode( ', ', $b[ 'claims' ] ) );
-    }
-}
-
-## When this script last replaced the jobmonitors, or null if it never has.
-function marker_time( $path ) {
-    $t = is_file( $path ) ? (int) trim( (string) @file_get_contents( $path ) ) : 0;
-    return $t > 0 ? $t : null;
-}
-
-## Stamp the marker. Written before the monitors are replaced, so the ones
-## restarted afterwards count as new and a rerun has nothing to do.
-function write_marker( $path ) {
-    if ( @file_put_contents( $path, time() . "\n" ) === false ) {
-        return false;
-    }
-    ## Only this script, run as root, reads it.
-    @chmod( $path, 0600 );
-    return true;
-}
-
-## The running jobmonitors, each as [ pid, db, gfacID, started, old ]. A monitor
-## is "old" when it started before this script last replaced the monitors, which
-## is what tells a pre-upgrade monitor from one the new code started: the old one
-## has no cleanup claim, the new one does. With no marker the upgrade has never
-## applied here, so every monitor predates it. $error is set when the process
-## list could not be read.
-function jobmonitors( $marker, &$error = null ) {
-    $error = '';
-    ## etimes is the process age in seconds, so now minus it is its start.
-    list( $out, $err, $rc ) = capture( "ps -eo pid=,etimes=,args=" );
-    if ( $rc !== 0 ) {
-        $error = $err !== '' ? $err : "ps exited $rc";
-        return [];
-    }
-    $now  = time();
-    $mine = [ getmypid(), posix_getppid() ];
-    $jms  = [];
-    foreach ( explode( "\n", $out ) as $line ) {
-        ## Match the launched form only: a php binary followed by the monitor's
-        ## own path, then its three arguments. 4.2.0 starts it under "nice -15",
-        ## which execs php, so the process still shows php as argv[0]. A looser
-        ## match would catch anything merely naming the script, and this step
-        ## kills as root.
-        if ( !preg_match( '#^\s*(\d+)\s+(\d+)\s+\S*php[0-9.]*\s+\S*jobmonitor/jobmonitor\.php\s+(\S+)\s+(\S+)#',
-                          $line, $m ) ) {
-            continue;
+    $live = [];
+    foreach ( $tabs as $where => $text ) {
+        foreach ( explode( "\n", $text ) as $line ) {
+            ## A commented entry is exactly what the operator is asked to leave.
+            if ( preg_match( '/^\s*#/', $line ) || trim( $line ) === '' ) {
+                continue;
+            }
+            if ( preg_match( $lims, $line ) ) {
+                $live[ $where ][] = trim( $line );
+            }
         }
-        $pid = (int) $m[ 1 ];
-        if ( in_array( $pid, $mine, true ) ) {
-            continue;
-        }
-        $started = $now - (int) $m[ 2 ];
-        $jms[ $pid ] = [ 'pid'     => $pid,
-                         'db'      => $m[ 3 ],
-                         'gfacID'  => $m[ 4 ],
-                         'started' => $started,
-                         'old'     => $marker === null ? true : $started < $marker ];
     }
-    return $jms;
-}
-
-## The gfac.analysis status of one monitor's job, '' when the row is gone (a
-## finished cleanup deletes it) and null when the query failed.
-function job_status( $gdb, $db, $gfacID ) {
-    $q = "SELECT status FROM analysis WHERE gfacID = '" . mysqli_real_escape_string( $gdb, $gfacID ) . "'"
-         . " AND us3_db = '" . mysqli_real_escape_string( $gdb, $db ) . "'";
-    $res = mysqli_query( $gdb, $q );
-    if ( !$res ) {
-        return null;
-    }
-    $row = mysqli_fetch_row( $res );
-    return $row === null ? '' : (string) $row[ 0 ];
+    return $live;
 }
 
 ## One line of a command's complaint, for a report() message.
@@ -691,9 +673,13 @@ if ( $stale ) {
 
 ## ------------------------------------------------------------- 1. preflight
 
-## After the upgrade nothing can monitor, fetch or finalize an Airavata job,
-## so every one must finish (or be cancelled) on the old code first.
-step( "1. Preflight: no job may be mid-import before the upgrade" );
+## An upgrade runs on an idle host, so every check below has to agree that
+## nothing is running. Handling live jobs was the earlier design; with the
+## gridctl.php sweep gone and no claimless pre-upgrade monitor left to guard
+## against, an idle host is the only state worth reasoning about, and it is the
+## state an operator can actually confirm. Nothing is changed until all of these
+## pass.
+step( "1. Preflight: the host must be idle" );
 
 if ( !is_file( $listen_config ) ) {
     error_exit( "cannot read $listen_config: no such file" );
@@ -710,88 +696,149 @@ $gdb = @mysqli_connect( $old_listen[ 'dbhost' ] ?? 'localhost',
 if ( !$gdb ) {
     error_exit( "cannot connect to the gfac database: " . mysqli_connect_error() );
 }
-## job_cleanup() deletes the analysis row once it has imported, so a row that is
-## still here is a job no cleanup has finished. Counting every Airavata row would
-## therefore refuse the upgrade over jobs that failed years ago and can never be
-## finished, since the new code cannot run them. Terminal statuses are listed
-## rather than active ones, so a status this script does not know about counts as
-## in flight and errs toward refusing.
-## A NULL or empty gfacID is a job that has no cluster id yet: it cannot be told
-## apart from an Airavata job, so it is reported rather than assumed harmless.
-## A fixed query: "active" is any status outside the terminal list.
+
+## Each failing check adds a line here; they are all reported before the script
+## stops, so one run tells the operator everything to quiet down.
+$busy = [];
+
+## -- the gridctl services. services.php manages listen only, so that is what
+## -- "stopped" means; the jobmonitors are checked separately below.
+$listeners = processes( '#^\s*(\d+)\s+\S*php[0-9.]*\s+\S*/listen\.php(\s|$)#' );
+if ( $listeners === null ) {
+    report( 'FAIL', "could not read the process list, so the host cannot be shown to be idle" );
+    $busy[] = 'process list unreadable';
+} elseif ( $listeners ) {
+    report( 'FAIL', "us3-listen is still running (pid " . implode( ', ', array_keys( $listeners ) )
+                    . "); stop it with: cd $us3bin && php services.php stop" );
+    $busy[] = 'us3-listen running';
+} else {
+    report( 'ok', "us3-listen is stopped" );
+}
+
+## -- jobmonitors. One per job on the new contract, none on an idle host.
+$monitors = jobmonitors( $jm_error );
+if ( $jm_error !== '' ) {
+    report( 'FAIL', "could not list the running jobmonitors: " . reason( $jm_error ) );
+    $busy[] = 'jobmonitors unreadable';
+} elseif ( $monitors ) {
+    foreach ( $monitors as $pid => $jm ) {
+        report( 'FAIL', "jobmonitor pid $pid is still running for job {$jm['gfacID']} ({$jm['db']})" );
+    }
+    $busy[] = count( $monitors ) . ' jobmonitor(s) running';
+} else {
+    report( 'ok', "no jobmonitor is running" );
+}
+
+## -- analysis binaries. A job running outside Slurm's view still writes results.
+$analysis = processes( '#^\s*(\d+)\s+/opt/ultrascan3/bin/#' );
+if ( $analysis ) {
+    report( 'FAIL', "an UltraScan binary is running from /opt/ultrascan3/bin (pid "
+                    . implode( ', ', array_keys( $analysis ) ) . ")" );
+    $busy[] = 'analysis binary running';
+} elseif ( $analysis !== null ) {
+    report( 'ok', "nothing is running from /opt/ultrascan3/bin" );
+}
+
+## -- gfac.analysis. A finished cleanup deletes the row, so any row outside the
+## -- terminal statuses is a job still in play. Terminal statuses are listed
+## -- rather than active ones, so a status this script does not know about counts
+## -- as busy and errs toward refusing.
 $res = mysqli_query( $gdb, <<<'SQL'
-SELECT SUM( ( status IS NULL OR status NOT IN ( 'COMPLETE', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA',
-                                                 'ERROR', 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ) )
-            AND gfacID IS NOT NULL AND gfacID <> '' AND gfacID NOT REGEXP '^[0-9]+$' ) AS airavata_active,
-       SUM( ( status IS NULL OR status NOT IN ( 'COMPLETE', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA',
-                                                 'ERROR', 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ) )
-            AND ( gfacID IS NULL OR gfacID = '' ) )                                  AS unidentified_active,
-       SUM( gfacID IS NOT NULL AND gfacID <> '' AND gfacID NOT REGEXP '^[0-9]+$' )   AS airavata_total
+SELECT COUNT(*) AS unfinished
   FROM analysis
+ WHERE status IS NULL
+    OR status NOT IN ( 'COMPLETE', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA',
+                       'ERROR', 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' )
 SQL
 );
 if ( !$res ) {
     report( 'FAIL', "could not query gfac.analysis: " . mysqli_error( $gdb ) );
-    error_exit( "the preflight check could not run; nothing was changed" );
-}
-$row       = mysqli_fetch_assoc( $res );
-$in_flight = (int) $row[ 'airavata_active' ];
-$unknown   = (int) $row[ 'unidentified_active' ];
-$history   = (int) $row[ 'airavata_total' ];
-
-if ( $in_flight || $unknown ) {
-    if ( $in_flight ) {
-        report( 'FAIL', "$in_flight Airavata job(s) still in flight in gfac.analysis" );
+    $busy[] = 'gfac.analysis unreadable';
+} else {
+    $unfinished = (int) mysqli_fetch_assoc( $res )[ 'unfinished' ];
+    if ( $unfinished ) {
+        report( 'FAIL', "$unfinished job(s) in gfac.analysis are not in a terminal status;"
+                        . " let them finish or cancel them, then rerun" );
+        $busy[] = "$unfinished unfinished job(s)";
+    } else {
+        report( 'ok', "no unfinished job in gfac.analysis" );
     }
-    if ( $unknown ) {
-        report( 'FAIL', "$unknown unfinished job(s) with no gfacID; they cannot be told apart from Airavata jobs" );
+}
+
+## -- cleanup claims. A live claim means a cleanup is mid-import.
+$claims = cleanup_claims( $us3_home );
+if ( $claims ) {
+    report( 'FAIL', count( $claims ) . " job(s) hold a cleanup claim: " . implode( ', ', $claims ) );
+    $busy[] = 'cleanup claim held';
+} else {
+    report( 'ok', "no job holds a cleanup claim" );
+}
+
+## -- the cluster's own queue. Only the local Slurm can be asked here: SSH to a
+## -- remote cluster is not set up until step 4, so a host whose clusters are all
+## -- remote is told to check them by hand rather than given a false pass.
+list( $sq_out, $sq_err, $sq_rc ) = capture( 'command -v squeue' );
+if ( $sq_rc !== 0 ) {
+    report( 'note', "squeue is not on this host, so its clusters could not be checked here;"
+                    . " confirm sinfo and squeue are idle on each cluster before continuing" );
+} else {
+    $rc = run_as( 'us3', 'squeue -h -o %i', $q_out, $q_err );
+    if ( $rc !== 0 ) {
+        report( 'FAIL', "squeue failed, so the local queue cannot be shown to be idle: "
+                        . reason( $q_err !== '' ? $q_err : $q_out ) );
+        $busy[] = 'squeue failed';
+    } elseif ( trim( $q_out ) !== '' ) {
+        $jobs = count( array_filter( explode( "\n", trim( $q_out ) ) ) );
+        report( 'FAIL', "$jobs job(s) are still in the local Slurm queue" );
+        $busy[] = "$jobs job(s) queued";
+    } else {
+        report( 'ok', "the local Slurm queue is empty" );
     }
-    error_exit( "let these jobs finish (or cancel them) on the current code, then rerun; nothing was changed" );
-}
-report( 'ok', "no Airavata jobs in flight"
-              . ( $history ? " ($history unfinished Airavata job(s) remain in gfac.analysis; the new code cannot run them, so they are left alone)" : "" ) );
-
-## Only a monitor from before the upgrade is a double-import risk: it holds no
-## cleanup claim. Once the host is upgraded its monitors do, so an import in
-## progress is ordinary operation and must not fail a rerun.
-##
-## This check cannot see a pre-upgrade import that is already under way: the old
-## cleanup deletes the gfac.analysis row before it writes the results and takes
-## no claim, so there is nothing left to find. Step 7's per-monitor check is the
-## real guard; this one is an early warning only.
-$monitors     = jobmonitors( marker_time( $marker_file ), $jm_error );
-$old_monitors = array_filter( $monitors, function ( $j ) { return $j[ 'old' ]; } );
-if ( $jm_error !== '' ) {
-    report( 'FAIL', "could not list the running jobmonitors: " . reason( $jm_error ) );
-    error_exit( "the preflight check could not run; nothing was changed" );
-}
-if ( !$old_monitors ) {
-    report( 'ok', count( $monitors ) . " jobmonitor(s) running, none from before the upgrade" );
 }
 
-$blockers = import_blockers( $gdb, $us3_home );
-if ( $blockers[ 'error' ] !== '' ) {
-    report( 'FAIL', "could not check for jobs mid-import: " . reason( $blockers[ 'error' ] ) );
-    error_exit( "the preflight check could not run; nothing was changed" );
+## -- other database clients. A sleeping connection is a pool, not a user; one
+## -- running a statement means the system is in use.
+$res = mysqli_query( $gdb, 'SHOW PROCESSLIST' );
+if ( !$res ) {
+    report( 'note', "could not list the database connections (" . reason( mysqli_error( $gdb ) )
+                    . "); confirm nobody is using MariaDB" );
+} else {
+    $others = [];
+    while ( $row = mysqli_fetch_assoc( $res ) ) {
+        if ( strcasecmp( (string) $row[ 'Command' ], 'Sleep' ) === 0 ) {
+            continue;
+        }
+        ## This script's own connection is running SHOW PROCESSLIST right now.
+        if ( stripos( (string) $row[ 'Info' ], 'PROCESSLIST' ) !== false ) {
+            continue;
+        }
+        $others[] = $row[ 'User' ] . '@' . preg_replace( '/:\d+$/', '', (string) $row[ 'Host' ] );
+    }
+    if ( $others ) {
+        report( 'FAIL', count( $others ) . " active database connection(s): "
+                        . implode( ', ', array_unique( $others ) ) );
+        $busy[] = 'database in use';
+    } else {
+        report( 'ok', "no other client is running a statement on MariaDB" );
+    }
 }
-## Step 7 enforces this per monitor; here it is an early warning, and it only
-## applies while a claimless monitor is still running.
-if ( $old_monitors && ( $blockers[ 'now' ] || $blockers[ 'claims' ] ) ) {
-    report_import_blockers( $blockers );
-    error_exit( "replacing the jobmonitors now could leave a half-imported result that is then"
-                . " imported again, and a monitor from before the upgrade takes no cleanup claim to"
-                . " prevent it.\n"
-                . "Wait for these to finish, then rerun; nothing was changed" );
+
+## -- the LIMS cron entries. Left live, cron restarts the very things above
+## -- partway through the upgrade.
+$live_crons = live_lims_crontabs();
+if ( $live_crons ) {
+    foreach ( $live_crons as $where => $lines ) {
+        report( 'FAIL', "$where still has " . count( $lines ) . " active LIMS cron entr"
+                        . ( count( $lines ) === 1 ? 'y' : 'ies' ) . ": " . reason( implode( ' | ', $lines ) ) );
+    }
+    $busy[] = 'LIMS cron entries active';
+} else {
+    report( 'ok', "no LIMS cron entry is active" );
 }
-if ( $old_monitors ) {
-    report( 'ok', "no job is collecting or importing results" );
-}
-if ( $old_monitors && $blockers[ 'stalled' ] ) {
-    ## Not blocking: these have not moved in over an hour, so waiting will not
-    ## clear them, but they are the rows to check first if an import looks wrong.
-    report( 'note', $blockers[ 'stalled' ] . " job(s) are past SUBMITTED/RUNNING but have not been"
-                    . " touched for over an hour; they look stalled rather than active, so they are not"
-                    . " blocking. Review them before trusting an import" );
+
+if ( $busy ) {
+    error_exit( "the host is not idle (" . implode( '; ', $busy ) . ").\n"
+                . "Quiet it down and rerun. Nothing was changed" );
 }
 
 ## ------------------------------------------------------------- 2. listen-config.php
@@ -1198,7 +1245,7 @@ if ( $cron_error !== '' ) {
 }
 foreach ( $old_crons as $where => $text ) {
     $label = $where === 'us3' ? 'us3 crontab' : $where;
-    report( 'todo', "$label: replace gridctl_pro.php / gridctl_dev.php with gridctl.php" );
+    report( 'todo', "$label: remove the gridctl cron entries; each job's jobmonitor finishes its own job now" );
     if ( !$apply || !confirm( "Update the $label?" ) ) {
         continue;
     }
@@ -1242,120 +1289,15 @@ foreach ( $old_crons as $where => $text ) {
     }
 }
 if ( !$old_crons ) {
-    report( 'ok', "no crontab entry calls gridctl_pro.php or gridctl_dev.php" );
+    report( 'ok', "no crontab drives gridctl" );
 }
 
-## ------------------------------------------------------------- 7. jobmonitors
-
-## A jobmonitor started before the upgrade runs the old code, which has no
-## cleanup claim: cleanup_claim_acquire() arrived with the Slurm change. The
-## claim therefore excludes nothing for it, and job_cleanup() imports with plain
-## INSERTs, so it can import a job's results a second time alongside the new
-## sweep. Restarting the services does not reach these processes, because
-## services.php manages listen only.
-step( "7. Jobmonitors from before the upgrade" );
-
-## Re-read the list: steps 2-6 stop for confirmations, so this is minutes after
-## the preflight and a job can have moved on since.
-$old_jms    = array_filter( jobmonitors( marker_time( $marker_file ), $jm_error ),
-                            function ( $j ) { return $j[ 'old' ]; } );
-$killed_jms = [];
-
-if ( $jm_error !== '' ) {
-    report( 'FAIL', "could not list the running jobmonitors: " . reason( $jm_error ) );
-} elseif ( !$old_jms ) {
-    ## The usual case on a rerun: nothing predates the upgrade, so nothing to do.
-    report( 'ok', "no jobmonitor from before the upgrade" );
-    if ( $apply && marker_time( $marker_file ) === null ) {
-        ## Nothing to replace, so stamp the marker now: without it a later run
-        ## would read an unstamped host as having only pre-upgrade monitors.
-        report( write_marker( $marker_file ) ? 'done' : 'FAIL', "recorded the upgrade in $marker_file" );
-        $changes++;
-    }
-} else {
-    report( 'todo', count( $old_jms ) . " jobmonitor(s) predate the upgrade and hold no cleanup claim; "
-                    . "replace them (pid " . implode( ', ', array_keys( $old_jms ) ) . ")" );
-    if ( $apply && confirm( "Replace " . count( $old_jms ) . " old jobmonitor(s)?" ) ) {
-        ## Stamp the marker before anything is replaced, so the monitors started
-        ## by the restart below count as new and a rerun has nothing to do. Any
-        ## monitor left running here started earlier, so it still reads as old.
-        if ( !write_marker( $marker_file ) ) {
-            fatal( "could not record the upgrade in $marker_file; no jobmonitor was touched" );
-        }
-        $changes++;
-
-        ## Check each monitor's own job, not the host as a whole: a monitor
-        ## still polling the cluster has imported nothing and is safe to
-        ## replace, while one that has moved on is mid-import and must be left
-        ## alone. Killing that one is the double import this guards against.
-        $safe = [];
-        foreach ( $old_jms as $pid => $jm ) {
-            $status = job_status( $gdb, $jm[ 'db' ], $jm[ 'gfacID' ] );
-            if ( $status === null ) {
-                report( 'FAIL', "could not read gfac.analysis for job {$jm['gfacID']}: "
-                                . reason( mysqli_error( $gdb ) ) . "; pid $pid left alone" );
-            } elseif ( $status === 'SUBMITTED' || $status === 'RUNNING' ) {
-                ## Still polling the cluster, so it has imported nothing yet.
-                $safe[ $pid ] = $jm;
-            } elseif ( $status === '' ) {
-                ## The row is gone but the monitor is alive, so it is importing
-                ## right now: the code it is running, 4.2.0's
-                ## jobmonitor/cleanup.php, deletes the gfac.analysis row (lines
-                ## 305/344) before it writes the results (455-571: noise,
-                ## pcsa_modelrecs, model, modelPerson, HPCAnalysisResultData)
-                ## and emails the user. The new code does the same in
-                ## jobmonitor/cleanup_job.php. Leaving it is
-                ## both safe and necessary. Safe because with no row neither the
-                ## sweep nor a respawned monitor will touch the job, so it cannot
-                ## double-import; necessary because killing it would leave a
-                ## partial import that nothing repairs: --restart respawns
-                ## nothing without a row, and the user is never emailed.
-                report( 'note', "job {$jm['gfacID']}: pre-upgrade monitor pid $pid is finishing its"
-                                . " import; left running" );
-            } else {
-                report( 'FAIL', "job {$jm['gfacID']} is collecting or importing results (status $status);"
-                                . " pid $pid was left running. Rerun when it finishes" );
-            }
-        }
-
-        foreach ( array_keys( $safe ) as $pid ) {
-            @posix_kill( $pid, SIGTERM );
-        }
-        ## jobmonitor installs no SIGTERM handler, so it ends at once; the wait
-        ## and the SIGKILL only cover a process that somehow ignores it.
-        if ( $safe ) {
-            sleep( 2 );
-            foreach ( array_keys( $safe ) as $pid ) {
-                if ( @posix_kill( $pid, 0 ) ) {
-                    @posix_kill( $pid, SIGKILL );
-                }
-            }
-            $killed_jms = array_keys( $safe );
-            $changes++;
-            report( 'done', count( $safe ) . " polling jobmonitor(s) stopped (pid "
-                            . implode( ', ', $killed_jms ) . ")" );
-            ## uslims_jobs.php respawns a monitor only for a gfac.analysis row
-            ## with no live monitor, and it must run as us3, which owns them.
-            ## jobmonitor double-forks and closes stdio, so this returns.
-            $jobs = __DIR__ . '/uslims_jobs.php';
-            if ( !is_file( $jobs ) ) {
-                report( 'FAIL', "cannot restart jobmonitors: $jobs not found" );
-            } else {
-                $rc = run_as( 'us3', escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( $jobs ) . ' --restart',
-                              $jm_out, $jm_err );
-                report( $rc === 0 ? 'done' : 'FAIL', "jobmonitors restarted under the new code"
-                        . ( $rc === 0 ? '' : " (exit $rc): " . reason( $jm_err !== '' ? $jm_err : $jm_out ) ) );
-            }
-        }
-    }
-}
-
-## ------------------------------------------------------------- 8. Content-Security-Policy
+## ------------------------------------------------------------- 7. Content-Security-Policy
 
 ## The pages are written for util/csp's policy. It goes in Report-Only, which
 ## blocks nothing and logs each violation through /csp-report.php; enforcing it is
 ## a later, deliberate change once that log is quiet (util/csp/README.md).
-step( "8. Content-Security-Policy (Report-Only)" );
+step( "7. Content-Security-Policy (Report-Only)" );
 
 $csp_policy = __DIR__ . '/util/csp/csp-report-only.conf';
 if ( is_dir( '/etc/httpd/conf.d' ) ) {
@@ -1406,9 +1348,9 @@ if ( $apache === null ) {
     }
 }
 
-## ------------------------------------------------------------- 9. verify
+## ------------------------------------------------------------- 8. verify
 
-step( "9. Verify" );
+step( "8. Verify" );
 
 ## These checks describe the upgraded host, so on a dry run they would all fail
 ## by construction. Their outcome is only meaningful once the changes are in.
@@ -1437,7 +1379,7 @@ if ( !$apply ) {
 
     ## Nothing should still reach the old controllers after step 6.
     $left = array_keys( old_controller_crontabs() );
-    report( $left ? 'FAIL' : 'ok', "no crontab calls gridctl_pro.php or gridctl_dev.php"
+    report( $left ? 'FAIL' : 'ok', "no crontab drives gridctl"
             . ( $left ? ': ' . implode( ', ', $left ) : '' ) );
 
     ## The gridctl probe above covers us3 reading listen-config.php; the web
@@ -1447,11 +1389,6 @@ if ( !$apply ) {
     report( $rc === 0 ? 'ok' : 'FAIL', "$web_user can read global_config.php"
             . ( $rc === 0 ? '' : ( $gc_stat ? ' (' . owner_of( $gc_stat ) . ')' : '' )
                                 . ' ' . reason( $g_err !== '' ? $g_err : $g_out ) ) );
-
-    ## Any pre-upgrade monitor still alive can still double-import.
-    $survivors = array_values( array_filter( $killed_jms, function ( $pid ) { return @posix_kill( $pid, 0 ); } ) );
-    report( $survivors ? 'FAIL' : 'ok', "no jobmonitor from before the upgrade is still running"
-            . ( $survivors ? ': pid ' . implode( ', ', $survivors ) : '' ) );
 
     $rc = run_as( $web_user, 'test -w ' . escapeshellarg( $breaker_dir ), $w_out, $w_err );
     report( $rc === 0 ? 'ok' : 'FAIL', "$web_user can write the breaker directory"
@@ -1466,16 +1403,23 @@ if ( !$apply ) {
 } else {
     echo "$changes change(s) made.\n";
 }
-echo $failures ? "$failures check(s) FAILED.\n" : "All checks passed.\n";
-if ( $apply && $changes ) {
-    echo "Restart the gridctl services: cd $us3bin && php services.php restart\n";
-    if ( !$killed_jms ) {
-        ## services.php does not manage jobmonitors, so say so rather than let
-        ## the line above read as covering them.
-        echo "Jobmonitors are separate processes: if any were running from before"
-           . " the upgrade, kill them and run " . __DIR__ . "/uslims_jobs.php --restart as us3.\n";
-    }
+if ( $failures ) {
+    echo "$failures check(s) FAILED.\n";
+} elseif ( $apply && $pending ) {
+    echo "All checks passed, but $pending item(s) still need attention above.\n";
+} else {
+    echo "All checks passed.\n";
 }
-## A dry run with work outstanding is not a failure, so it exits 0; only a real
-## problem exits non-zero, which is what automation reads.
-exit( $failures ? 1 : 0 );
+if ( $apply && $changes ) {
+    ## The preflight required an idle host, so this is a start, not a restart, and
+    ## it runs as us3: started as root the services would leave root-owned state.
+    echo "\nFinish the upgrade in this order:\n"
+       . "  1. re-enable the LIMS cron entries that were commented out for the upgrade\n"
+       . "  2. start the services as us3:   sudo -u us3 bash -c 'cd $us3bin && php services.php start'\n"
+       . "  3. refresh the cluster health table once, so no cluster shows as stale:\n"
+       . "     sudo -u us3 php $gridctl_dir/cluster_status.php\n";
+}
+## A dry run with work outstanding is not a failure, so it exits 0. Under --apply
+## an outstanding item is work that was asked for and not done, so it exits
+## non-zero along with any real failure, which is what automation reads.
+exit( $failures || ( $apply && $pending ) ? 1 : 0 );
