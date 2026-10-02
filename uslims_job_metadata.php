@@ -694,8 +694,8 @@ function usmd_parse_build( $stdout ) {
         return $out;
     }
     $out["us_build_token"] = substr( $m[1], 0, 40 );
-    // 4.0.<rev> and 4.1.0-dev.<rev> share one revision count.
-    if ( preg_match( '/^\d+\.\d+\.(\d+)$/', $m[1], $r ) || preg_match( '/^\d+\.\d+\.\d+-[A-Za-z]+\.(\d+)$/', $m[1], $r ) ) {
+    // 4.0.<rev>, 4.1.0.<rev> and 4.1.0-dev.<rev> share one revision count.
+    if ( preg_match( '/^\d+\.\d+\.(?:\d+\.)?(\d+)$/', $m[1], $r ) || preg_match( '/^\d+\.\d+\.\d+-[A-Za-z]+\.(\d+)$/', $m[1], $r ) ) {
         $out["us_revision"] = intval( $r[1] );
         if ( isset( $m[2] ) && $m[2] !== "" ) {
             $out["us_build_date"] = intval( $m[2] . $m[3] . $m[4] );
