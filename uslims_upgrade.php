@@ -37,9 +37,12 @@ schema are upgraded separately, and the code must be upgraded first: pull common
 every instance, gridctl and dbutils to $required_version or newer, then run this as root.
 Step 0 refuses to go further while any checkout is older.
 
-The host must also be idle. Stop the services with "php services.php stop", let the
-queues drain, and comment out the LIMS cron entries first; step 1 checks all of this and
-refuses rather than work around a running system.
+The host must also be idle, and the order matters: stop the services with
+"php services.php stop" BEFORE pulling the new code, while the host's own 4.2.0 copy can
+still read its own listen-config.php. Once the new code is in place services.php refuses a
+pre-upgrade config, and the listener has to be stopped with "systemctl stop us3-listen"
+instead. Then let the queues drain and comment out the LIMS cron entries. Step 1 checks all
+of this and refuses rather than work around a running system.
 
 Steps
 
@@ -716,8 +719,19 @@ if ( $listeners === null ) {
     report( 'FAIL', "could not read the process list, so the host cannot be shown to be idle" );
     $busy[] = 'process list unreadable';
 } elseif ( $listeners ) {
+    ## services.php loads gridctl_bootstrap.php, which refuses a pre-upgrade
+    ## listen-config.php. So on a host that still has the old config - which is
+    ## every host reaching this point before step 2 has run - the obvious
+    ## instruction does not work, and the operator has to stop the listener
+    ## without it. Name the right one for the config actually on the host.
+    $how = ( (int) ( $old_listen[ 'listen_config_version' ] ?? 0 ) >= 2 )
+         ? "cd $us3bin && php services.php stop"
+         : "systemctl stop us3-listen   (services.php cannot run yet: this host's"
+           . " listen-config.php is still the pre-upgrade format, which the new"
+           . " code refuses. Stopping the services before pulling the new code"
+           . " avoids this entirely)";
     report( 'FAIL', "us3-listen is still running (pid " . implode( ', ', array_keys( $listeners ) )
-                    . "); stop it with: cd $us3bin && php services.php stop" );
+                    . "); stop it with: $how" );
     $busy[] = 'us3-listen running';
 } else {
     report( 'ok', "us3-listen is stopped" );
