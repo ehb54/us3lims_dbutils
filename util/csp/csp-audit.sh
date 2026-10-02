@@ -26,13 +26,13 @@ usage() {
     awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
-if [ $# -eq 0 ]; then
+if [[ $# -eq 0 ]]; then
     usage
     exit 2
 fi
 
 for dir in "$@"; do
-    if [ ! -d "$dir" ]; then
+    if [[ ! -d "$dir" ]]; then
         echo "csp-audit: not a directory: $dir" >&2
         exit 2
     fi
@@ -49,9 +49,18 @@ sources() {
     find "$@" \( "${PRUNE[@]}" \) -prune -o -type f -name "$ext" -print
 }
 
+# Number of lines in "$1"; 0 when it is empty.
+count_lines() {
+    if [[ -n "$1" ]]; then
+        echo "$1" | wc -l | tr -d ' '
+    else
+        echo 0
+    fi
+}
+
 report() {
     local title="$1" advice="$2" count="$3" body="$4"
-    if [ "$count" -gt 0 ]; then
+    if [[ "$count" -gt 0 ]]; then
         echo "== $title: $count =="
         echo "$body" | sed 's|^|   |'
         echo "   -> $advice"
@@ -75,21 +84,21 @@ hits=$( echo "$hits" | xargs grep -nEIi "$HANDLERS" 2>/dev/null \
 # In .js, only markup built in strings counts; element.onclick = fn is allowed.
 js=$( sources '*.js' "$@" | xargs grep -nEIi "<[a-z][^>]*${HANDLERS}" 2>/dev/null )
 hits=$( printf '%s\n%s' "$hits" "$js" | sed '/^$/d' )
-n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
+n=$(count_lines "$hits")
 total=$(( total + n ))
 report "inline event handler attributes" \
        "move to a delegated listener keyed on a class or id" "$n" "$hits"
 
 hits=$( sources '*.php' "$@" ; sources '*.html' "$@" )
 hits=$( echo "$hits" | xargs grep -nIi '<script' 2>/dev/null | grep -vi 'src=' )
-n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
+n=$(count_lines "$hits")
 total=$(( total + n ))
 report "inline <script> blocks" \
        "move the body into a .js file and load it with <script src>" "$n" "$hits"
 
 hits=$( sources '*.php' "$@" ; sources '*.html' "$@" ; sources '*.js' "$@" )
 hits=$( echo "$hits" | xargs grep -nIEi "(href|action|src)\s*=\s*['\"]?javascript:" 2>/dev/null )
-n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
+n=$(count_lines "$hits")
 total=$(( total + n ))
 report "javascript: URLs" \
        "replace with a class and a delegated listener" "$n" "$hits"
@@ -97,7 +106,7 @@ report "javascript: URLs" \
 hits=$( sources '*.js' "$@" ; sources '*.php' "$@" )
 hits=$( echo "$hits" | xargs grep -nIE "\beval\s*\(|new Function\s*\(|set(Timeout|Interval)\s*\(\s*['\"]" 2>/dev/null \
         | grep -vE ':[0-9]+:\s*(//|\*)' )
-n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
+n=$(count_lines "$hits")
 total=$(( total + n ))
 report "eval / Function / string timers" \
        "rewrite without dynamic code; otherwise the policy needs 'unsafe-eval'" "$n" "$hits"
@@ -108,7 +117,7 @@ hits=$( sources '*.php' "$@" ; sources '*.html' "$@" )
 hits=$( echo "$hits" | xargs grep -nIEi "\bstyle\s*=\s*[\"']" 2>/dev/null )
 js=$( sources '*.js' "$@" | xargs grep -nIEi "<[a-z][^>]*\bstyle\s*=" 2>/dev/null )
 hits=$( printf '%s\n%s' "$hits" "$js" | sed '/^$/d' )
-n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
+n=$(count_lines "$hits")
 total=$(( total + n ))
 report "inline style= attributes" \
        "replace with a class in a stylesheet" "$n" "$hits"
@@ -121,7 +130,7 @@ hits=$( sources '*.php' "$@" ; sources '*.html' "$@" )
 hits=$( echo "$hits" | xargs grep -nIi '<style' 2>/dev/null \
         | grep -vE '^([^:]*:)?[0-9]+:[^<]*(//|#)[^<]*<style' \
         | grep -vE '~<style|<style\\b' )
-n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
+n=$(count_lines "$hits")
 total=$(( total + n ))
 report "inline <style> blocks" \
        "move into a .css file loaded via \$css" "$n" "$hits"
@@ -130,14 +139,14 @@ report "inline <style> blocks" \
 
 hits=$( sources '*.php' "$@" ; sources '*.html' "$@" )
 hits=$( echo "$hits" | xargs grep -nIEi "(src|data)\s*=\s*['\"]?(https?:)?//|<link[^>]*href\s*=\s*['\"]?(https?:)?//" 2>/dev/null )
-n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
+n=$(count_lines "$hits")
 total=$(( total + n ))
 report "cross-origin subresource loads" \
        "self-host the asset, or add the origin to the policy" "$n" "$hits"
 
 hits=$( sources '*.css' "$@" )
 hits=$( echo "$hits" | xargs grep -nIEi "@import\s+(url\(\s*)?['\"]?(https?:)?//|url\(\s*['\"]?(https?:)?//" 2>/dev/null )
-n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
+n=$(count_lines "$hits")
 total=$(( total + n ))
 report "cross-origin CSS imports / url()" \
        "self-host the asset, or add the origin to the policy" "$n" "$hits"
@@ -146,7 +155,7 @@ report "cross-origin CSS imports / url()" \
 
 hits=$( sources '*.php' "$@" ; sources '*.html' "$@" )
 hits=$( echo "$hits" | xargs grep -nIEi "<form[^>]*action\s*=\s*['\"]?(https?:)?//" 2>/dev/null )
-n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
+n=$(count_lines "$hits")
 total=$(( total + n ))
 report "forms posting to an absolute URL" \
        "use a relative action; form-action 'self' blocks it under any other host name" "$n" "$hits"
@@ -159,7 +168,7 @@ report "forms posting to an absolute URL" \
 # call, which looks exactly like a broken CSP conversion.
 hits=$( sources '*.js' "$@" )
 hits=$( echo "$hits" | xargs grep -nI '<?php\|<?=' 2>/dev/null )
-n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
+n=$(count_lines "$hits")
 total=$(( total + n ))
 report "PHP tags inside .js files" \
        "pass the value through a data- attribute instead" "$n" "$hits"
@@ -168,8 +177,8 @@ report "PHP tags inside .js files" \
 
 hits=$( sources '*.js' "$@" )
 hits=$( echo "$hits" | xargs grep -nI 'createObjectURL' 2>/dev/null )
-n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
-if [ "$n" -gt 0 ]; then
+n=$(count_lines "$hits")
+if [[ "$n" -gt 0 ]]; then
     echo "== blob: URL construction (policy input, not a source defect): $n =="
     echo "$hits" | sed 's|^|   |'
     echo "   -> blob: does not fall under 'self'.  Any img/object/fetch that"
@@ -180,7 +189,7 @@ fi
 
 # --- verdict ---------------------------------------------------------------
 
-if [ "$total" -eq 0 ]; then
+if [[ "$total" -eq 0 ]]; then
     echo "CLEAN: no violations of default-src 'self' found."
     exit 0
 fi
