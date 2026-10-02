@@ -744,18 +744,30 @@ if ( $analysis ) {
 ## -- rather than active ones, so a status this script does not know about counts
 ## -- as busy and errs toward refusing.
 $res = mysqli_query( $gdb, <<<'SQL'
-SELECT COUNT(*) AS unfinished
+SELECT SUM( status IS NULL
+            OR status NOT IN ( 'COMPLETE', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA',
+                               'ERROR', 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ) ) AS unfinished,
+       SUM( status IN ( 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ) )                  AS timed_out
   FROM analysis
- WHERE status IS NULL
-    OR status NOT IN ( 'COMPLETE', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA',
-                       'ERROR', 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' )
 SQL
 );
 if ( !$res ) {
     report( 'FAIL', "could not query gfac.analysis: " . mysqli_error( $gdb ) );
     $busy[] = 'gfac.analysis unreadable';
 } else {
-    $unfinished = (int) mysqli_fetch_assoc( $res )[ 'unfinished' ];
+    $row        = mysqli_fetch_assoc( $res );
+    $unfinished = (int) $row[ 'unfinished' ];
+    ## A *_TIMEOUT row is counted terminal here on purpose, but it is not a
+    ## finished job: its monitor is meant to re-enter the second window and
+    ## escalate it. On an idle host no monitor is running, and the old code could
+    ## not progress one anyway, so blocking on these would stop any host that has
+    ## ever stranded a job. They are reported instead, to be picked up afterwards.
+    if ( (int) $row[ 'timed_out' ] ) {
+        report( 'note', $row[ 'timed_out' ] . " job(s) are parked at SUBMIT_TIMEOUT, RUN_TIMEOUT or"
+                        . " DATA_TIMEOUT with no monitor. They do not block the upgrade; once it is"
+                        . " done, restart their monitors with uslims_jobs.php --restart as us3 so the"
+                        . " new code can finish or fail them" );
+    }
     if ( $unfinished ) {
         report( 'FAIL', "$unfinished job(s) in gfac.analysis are not in a terminal status;"
                         . " let them finish or cancel them, then rerun" );
