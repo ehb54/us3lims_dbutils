@@ -479,6 +479,11 @@ function owner_of( $stat ) {
 ## directory is a worker inside job_cleanup() right now. 'now' and 'claims'
 ## block, 'stalled' is only worth reporting. An hour is the window
 ## cleanup_claim_acquire() itself treats as abandoned.
+##
+## This cannot see a pre-upgrade import that is already under way: 4.2.0 deletes
+## the row before it writes the results and takes no claim, so by then there is
+## nothing here to find. Do not rely on it for that. Step 7's per-monitor check
+## is the real guard.
 function import_blockers( $gdb, $us3_home ) {
     $importing = "( status IS NULL OR status NOT IN ( 'SUBMITTED', 'RUNNING' ) )";
     $res = mysqli_query( $gdb,
@@ -1202,10 +1207,12 @@ if ( $jm_error !== '' ) {
                 $safe[ $pid ] = $jm;
             } elseif ( $status === '' ) {
                 ## The row is gone but the monitor is alive, so it is importing
-                ## right now: cleanup deletes the gfac.analysis row before it
-                ## writes the results (cleanup_job.php deletes, then INSERTs
-                ## noise, pcsa_modelrecs, model, modelPerson and
-                ## HPCAnalysisResultData, then emails the user). Leaving it is
+                ## right now: the code it is running, 4.2.0's
+                ## jobmonitor/cleanup.php, deletes the gfac.analysis row (lines
+                ## 305/344) before it writes the results (455-571: noise,
+                ## pcsa_modelrecs, model, modelPerson, HPCAnalysisResultData)
+                ## and emails the user. The new code does the same in
+                ## jobmonitor/cleanup_job.php. Leaving it is
                 ## both safe and necessary. Safe because with no row neither the
                 ## sweep nor a respawned monitor will touch the job, so it cannot
                 ## double-import; necessary because killing it would leave a
