@@ -6,9 +6,25 @@ $us3lims      = exec( "ls -d ~us3/lims" );
 $ll_base_dir  = "$us3lims/etc/joblog";
 $us3bin       = "$us3lims/bin";
 
+if ( !is_file( "$us3bin/listen-config.php" ) ) {
+    fwrite( STDERR, "no listen-config.php at $us3bin (is the us3 account present?)\n" );
+    exit( -1 );
+}
+
 include "$us3bin/listen-config.php";
 
-$global_config_file = $class_dir . "../global_config.php";
+if ( !isset( $class_dir ) || !strlen( $class_dir ) ) {
+    fwrite( STDERR, "$us3bin/listen-config.php does not set \$class_dir; update gridctl and rerun uslims_upgrade.php\n" );
+    exit( -1 );
+}
+
+## $class_dir may or may not carry a trailing slash
+$global_config_file = rtrim( $class_dir, '/' ) . "/../global_config.php";
+
+if ( !is_file( $global_config_file ) ) {
+    fwrite( STDERR, "no global_config.php at $global_config_file (from \$class_dir '$class_dir')\n" );
+    exit( -1 );
+}
 
 include $global_config_file;
 
