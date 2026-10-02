@@ -454,6 +454,49 @@ function owner_of( $stat ) {
            . ' ' . decoct( $stat[ 'mode' ] & 07777 );
 }
 
+## Jobs that must not have their monitor taken away. In gfac.analysis anything
+## past SUBMITTED/RUNNING is at or past job_cleanup()'s import, since "DATA"
+## means finished and waiting for its data to be collected; a cleanup.claim
+## directory is a worker inside job_cleanup() right now. 'now' and 'claims'
+## block, 'stalled' is only worth reporting. An hour is the window
+## cleanup_claim_acquire() itself treats as abandoned.
+function import_blockers( $gdb, $us3_home ) {
+    $importing = "( status IS NULL OR status NOT IN ( 'SUBMITTED', 'RUNNING' ) )";
+    $res = mysqli_query( $gdb,
+        "SELECT SUM( $importing )                                        AS importing_total,
+                SUM( $importing AND time >= NOW() - INTERVAL 1 HOUR )    AS importing_now
+           FROM analysis
+          WHERE gfacID IS NOT NULL AND gfacID <> '' AND gfacID REGEXP '^[0-9]+$'" );
+    if ( !$res ) {
+        return [ 'error' => mysqli_error( $gdb ) ?: 'the query failed' ];
+    }
+    $row    = mysqli_fetch_assoc( $res );
+    $claims = [];
+    foreach ( glob( "$us3_home/lims/etc/joblog/*/*/cleanup.claim" ) ?: [] as $claim ) {
+        $owner = (int) @file_get_contents( "$claim/owner" );
+        $age   = time() - (int) @filemtime( $claim );
+        if ( $age < 3600 || ( $owner && @posix_kill( $owner, 0 ) ) ) {
+            $claims[] = basename( dirname( $claim ) ) . ( $owner ? " (pid $owner)" : '' );
+        }
+    }
+    return [ 'error'   => '',
+             'now'     => (int) $row[ 'importing_now' ],
+             'stalled' => (int) $row[ 'importing_total' ] - (int) $row[ 'importing_now' ],
+             'claims'  => $claims ];
+}
+
+## The blocking half of import_blockers(), reported the same way in both places.
+function report_import_blockers( $b ) {
+    if ( $b[ 'now' ] ) {
+        report( 'FAIL', $b[ 'now' ] . " job(s) are collecting or importing results now"
+                        . " (gfac.analysis past SUBMITTED/RUNNING, touched within the hour)" );
+    }
+    if ( $b[ 'claims' ] ) {
+        report( 'FAIL', count( $b[ 'claims' ] ) . " job(s) hold a cleanup claim: "
+                        . implode( ', ', $b[ 'claims' ] ) );
+    }
+}
+
 ## One line of a command's complaint, for a report() message.
 function reason( $text ) {
     $text = trim( preg_replace( '/\s+/', ' ', (string) $text ) );
@@ -490,14 +533,7 @@ if ( !$gdb ) {
 $finished = [ 'COMPLETE', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA', 'ERROR',
               'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ];
 $terminal = "'" . implode( "','", $finished ) . "'";
-## A job is only safe to take a monitor away from while the cluster still has it.
-## Past that, "DATA" means "finished, waiting for its data to be collected", and
-## everything terminal is at or past job_cleanup()'s import. Killing a monitor
-## there can leave a half-imported result that the respawned monitor imports
-## again, and the old code holds no cleanup claim to prevent it.
-$watching = "status IN ( 'SUBMITTED', 'RUNNING' )";
-$importing = "( status IS NULL OR NOT ( $watching ) )";
-$numeric  = "gfacID REGEXP '^[0-9]+$'";
+
 ## A NULL or empty gfacID is a job that has no cluster id yet: it cannot be told
 ## apart from an Airavata job, so it is reported rather than assumed harmless.
 $active   = "( status IS NULL OR status NOT IN ( $terminal ) )";
@@ -505,11 +541,7 @@ $named    = "gfacID IS NOT NULL AND gfacID <> ''";
 $res = mysqli_query( $gdb,
     "SELECT SUM( $active AND $named AND gfacID NOT REGEXP '^[0-9]+\$' ) AS airavata_active,
             SUM( $active AND NOT ( $named ) )                           AS unidentified_active,
-            SUM( $named AND gfacID NOT REGEXP '^[0-9]+\$' )             AS airavata_total,
-            SUM( $named AND $numeric AND $importing
-                 AND time >= NOW() - INTERVAL 1 HOUR )                  AS importing_now,
-            SUM( $named AND $numeric AND $importing
-                 AND time <  NOW() - INTERVAL 1 HOUR )                  AS importing_stalled
+            SUM( $named AND gfacID NOT REGEXP '^[0-9]+\$' )             AS airavata_total
        FROM analysis" );
 if ( !$res ) {
     report( 'FAIL', "could not query gfac.analysis: " . mysqli_error( $gdb ) );
@@ -519,19 +551,6 @@ $row       = mysqli_fetch_assoc( $res );
 $in_flight = (int) $row[ 'airavata_active' ];
 $unknown   = (int) $row[ 'unidentified_active' ];
 $history   = (int) $row[ 'airavata_total' ];
-$importing_now     = (int) $row[ 'importing_now' ];
-$importing_stalled = (int) $row[ 'importing_stalled' ];
-
-## A claim directory on disk is a worker in job_cleanup() right now. An hour is
-## the window cleanup_claim_acquire() itself treats as abandoned.
-$claims = [];
-foreach ( glob( "$us3_home/lims/etc/joblog/*/*/cleanup.claim" ) ?: [] as $claim ) {
-    $owner = (int) @file_get_contents( "$claim/owner" );
-    $age   = time() - (int) @filemtime( $claim );
-    if ( $age < 3600 || ( $owner && @posix_kill( $owner, 0 ) ) ) {
-        $claims[] = basename( dirname( $claim ) ) . ( $owner ? " (pid $owner)" : '' );
-    }
-}
 
 if ( $in_flight || $unknown ) {
     if ( $in_flight ) {
@@ -546,25 +565,24 @@ report( 'ok', "no Airavata jobs in flight"
               . ( $history ? " ($history unfinished Airavata job(s) remain in gfac.analysis; the new code cannot run them, so they are left alone)" : "" ) );
 
 ## Step 7 replaces the jobmonitors, so nothing may be mid-import when it does.
-if ( $importing_now || $claims ) {
-    if ( $importing_now ) {
-        report( 'FAIL', "$importing_now job(s) are collecting or importing results now"
-                        . " (gfac.analysis past SUBMITTED/RUNNING, touched within the hour)" );
-    }
-    if ( $claims ) {
-        report( 'FAIL', count( $claims ) . " job(s) hold a cleanup claim: " . implode( ', ', $claims ) );
-    }
+$blockers = import_blockers( $gdb, $us3_home );
+if ( $blockers[ 'error' ] !== '' ) {
+    report( 'FAIL', "could not check for jobs mid-import: " . reason( $blockers[ 'error' ] ) );
+    error_exit( "the preflight check could not run; nothing was changed" );
+}
+if ( $blockers[ 'now' ] || $blockers[ 'claims' ] ) {
+    report_import_blockers( $blockers );
     error_exit( "replacing the jobmonitors now could leave a half-imported result that is then"
                 . " imported again, and the old code takes no cleanup claim to prevent it.\n"
                 . "Wait for these to finish, then rerun; nothing was changed" );
 }
 report( 'ok', "no job is collecting or importing results" );
-if ( $importing_stalled ) {
+if ( $blockers[ 'stalled' ] ) {
     ## Not blocking: these have not moved in over an hour, so waiting will not
     ## clear them, but they are the rows to check first if an import looks wrong.
-    report( 'note', "$importing_stalled job(s) are past SUBMITTED/RUNNING but have not been touched"
-                    . " for over an hour; they look stalled rather than active, so they are not blocking."
-                    . " Review them before trusting an import" );
+    report( 'note', $blockers[ 'stalled' ] . " job(s) are past SUBMITTED/RUNNING but have not been"
+                    . " touched for over an hour; they look stalled rather than active, so they are not"
+                    . " blocking. Review them before trusting an import" );
 }
 
 ## ------------------------------------------------------------- 2. listen-config.php
@@ -1016,6 +1034,19 @@ if ( $ps_rc !== 0 ) {
     report( 'todo', count( $old_jms ) . " jobmonitor(s) predate the upgrade and would double-import; "
                     . "kill them, then restart under the new code (pid " . implode( ', ', array_keys( $old_jms ) ) . ")" );
     if ( $apply && confirm( "Kill " . count( $old_jms ) . " old jobmonitor(s) and restart them under the new code?" ) ) {
+        ## The preflight is minutes old by now and a job can have reached the
+        ## import stage since, so check again before touching any process.
+        $again = import_blockers( $gdb, $us3_home );
+        if ( $again[ 'error' ] !== '' ) {
+            fatal( "could not re-check for jobs mid-import before replacing the jobmonitors: "
+                   . reason( $again[ 'error' ] ) . "; no jobmonitor was touched" );
+        }
+        if ( $again[ 'now' ] || $again[ 'claims' ] ) {
+            report_import_blockers( $again );
+            fatal( "a job reached the import stage since the preflight, so no jobmonitor was touched."
+                   . " Wait for it to finish and rerun: the earlier steps are already done and rerunning"
+                   . " them changes nothing" );
+        }
         foreach ( array_keys( $old_jms ) as $pid ) {
             @posix_kill( $pid, SIGTERM );
         }
