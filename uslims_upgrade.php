@@ -511,6 +511,65 @@ function report_import_blockers( $b ) {
     }
 }
 
+## The running jobmonitors, each as [ pid, db, gfacID, started, old ]. A monitor
+## is "old" when its process started before the monitor's own code was last
+## written, which is what tells a pre-upgrade monitor from one the new code
+## started: the old one has no cleanup claim, the new one does. $error is set
+## when the process list could not be read.
+function jobmonitors( $gridctl_dir, &$error = null ) {
+    $error = '';
+    $code  = "$gridctl_dir/jobmonitor/jobmonitor.php";
+    $mtime = @filemtime( $code );
+    if ( $mtime === false ) {
+        $error = "cannot stat $code";
+        return [];
+    }
+    ## etimes is the process age in seconds, so now minus it is its start.
+    list( $out, $err, $rc ) = capture( "ps -eo pid=,etimes=,args=" );
+    if ( $rc !== 0 ) {
+        $error = $err !== '' ? $err : "ps exited $rc";
+        return [];
+    }
+    $now  = time();
+    $mine = [ getmypid(), posix_getppid() ];
+    $jms  = [];
+    foreach ( explode( "\n", $out ) as $line ) {
+        ## Match the launched form only: a php binary followed by the monitor's
+        ## own path, then its three arguments. 4.2.0 starts it under "nice -15",
+        ## which execs php, so the process still shows php as argv[0]. A looser
+        ## match would catch anything merely naming the script, and this step
+        ## kills as root.
+        if ( !preg_match( '#^\s*(\d+)\s+(\d+)\s+\S*php[0-9.]*\s+\S*jobmonitor/jobmonitor\.php\s+(\S+)\s+(\S+)#',
+                          $line, $m ) ) {
+            continue;
+        }
+        $pid = (int) $m[ 1 ];
+        if ( in_array( $pid, $mine, true ) ) {
+            continue;
+        }
+        $started = $now - (int) $m[ 2 ];
+        $jms[ $pid ] = [ 'pid'     => $pid,
+                         'db'      => $m[ 3 ],
+                         'gfacID'  => $m[ 4 ],
+                         'started' => $started,
+                         'old'     => $started < $mtime ];
+    }
+    return $jms;
+}
+
+## The gfac.analysis status of one monitor's job, '' when the row is gone (a
+## finished cleanup deletes it) and null when the query failed.
+function job_status( $gdb, $db, $gfacID ) {
+    $q = "SELECT status FROM analysis WHERE gfacID = '" . mysqli_real_escape_string( $gdb, $gfacID ) . "'"
+         . " AND us3_db = '" . mysqli_real_escape_string( $gdb, $db ) . "'";
+    $res = mysqli_query( $gdb, $q );
+    if ( !$res ) {
+        return null;
+    }
+    $row = mysqli_fetch_row( $res );
+    return $row === null ? '' : (string) $row[ 0 ];
+}
+
 ## One line of a command's complaint, for a report() message.
 function reason( $text ) {
     $text = trim( preg_replace( '/\s+/', ' ', (string) $text ) );
@@ -578,20 +637,37 @@ if ( $in_flight || $unknown ) {
 report( 'ok', "no Airavata jobs in flight"
               . ( $history ? " ($history unfinished Airavata job(s) remain in gfac.analysis; the new code cannot run them, so they are left alone)" : "" ) );
 
-## Step 7 replaces the jobmonitors, so nothing may be mid-import when it does.
+## Only a monitor from before the upgrade is a double-import risk: it holds no
+## cleanup claim. Once the host is upgraded its monitors do, so an import in
+## progress is ordinary operation and must not fail a rerun.
+$monitors     = jobmonitors( $gridctl_dir, $jm_error );
+$old_monitors = array_filter( $monitors, function ( $j ) { return $j[ 'old' ]; } );
+if ( $jm_error !== '' ) {
+    report( 'FAIL', "could not list the running jobmonitors: " . reason( $jm_error ) );
+    error_exit( "the preflight check could not run; nothing was changed" );
+}
+if ( !$old_monitors ) {
+    report( 'ok', count( $monitors ) . " jobmonitor(s) running, none from before the upgrade" );
+}
+
 $blockers = import_blockers( $gdb, $us3_home );
 if ( $blockers[ 'error' ] !== '' ) {
     report( 'FAIL', "could not check for jobs mid-import: " . reason( $blockers[ 'error' ] ) );
     error_exit( "the preflight check could not run; nothing was changed" );
 }
-if ( $blockers[ 'now' ] || $blockers[ 'claims' ] ) {
+## Step 7 enforces this per monitor; here it is an early warning, and it only
+## applies while a claimless monitor is still running.
+if ( $old_monitors && ( $blockers[ 'now' ] || $blockers[ 'claims' ] ) ) {
     report_import_blockers( $blockers );
     error_exit( "replacing the jobmonitors now could leave a half-imported result that is then"
-                . " imported again, and the old code takes no cleanup claim to prevent it.\n"
+                . " imported again, and a monitor from before the upgrade takes no cleanup claim to"
+                . " prevent it.\n"
                 . "Wait for these to finish, then rerun; nothing was changed" );
 }
-report( 'ok', "no job is collecting or importing results" );
-if ( $blockers[ 'stalled' ] ) {
+if ( $old_monitors ) {
+    report( 'ok', "no job is collecting or importing results" );
+}
+if ( $old_monitors && $blockers[ 'stalled' ] ) {
     ## Not blocking: these have not moved in over an hour, so waiting will not
     ## clear them, but they are the rows to check first if an import looks wrong.
     report( 'note', $blockers[ 'stalled' ] . " job(s) are past SUBMITTED/RUNNING but have not been"
@@ -1060,68 +1136,69 @@ if ( !$old_crons ) {
 ## services.php manages listen only.
 step( "7. Jobmonitors from before the upgrade" );
 
-list( $ps_out, $ps_err, $ps_rc ) = capture( "ps -eo pid=,args=" );
-$old_jms = [];
-$mine    = [ getmypid(), posix_getppid() ];
-foreach ( explode( "\n", $ps_out ) as $line ) {
-    ## Match the launched form only: a php binary followed by the monitor's own
-    ## path ("/usr/bin/php .../jobmonitor/jobmonitor.php <db> <gfacID> <id>").
-    ## A looser match would also catch anything that merely names the script on
-    ## its command line, such as a grep or a shell, and this step kills as root.
-    if ( !preg_match( '#^\s*(\d+)\s+(\S*php[0-9.]*)\s+(\S*jobmonitor/jobmonitor\.php)(\s|$)#', $line, $m ) ) {
-        continue;
-    }
-    $pid = (int) $m[ 1 ];
-    if ( in_array( $pid, $mine, true ) ) {
-        continue;
-    }
-    $old_jms[ $pid ] = trim( substr( $line, strlen( $m[ 1 ] ) + 1 ) );
-}
+## Re-read the list: steps 2-6 stop for confirmations, so this is minutes after
+## the preflight and a job can have moved on since.
+$old_jms    = array_filter( jobmonitors( $gridctl_dir, $jm_error ),
+                            function ( $j ) { return $j[ 'old' ]; } );
 $killed_jms = [];
 
-if ( $ps_rc !== 0 ) {
-    report( 'FAIL', "could not list processes (exit $ps_rc): " . reason( $ps_err ) );
+if ( $jm_error !== '' ) {
+    report( 'FAIL', "could not list the running jobmonitors: " . reason( $jm_error ) );
 } elseif ( !$old_jms ) {
-    report( 'ok', "no jobmonitor is running" );
+    ## The usual case on a rerun: nothing predates the upgrade, so nothing to do.
+    report( 'ok', "no jobmonitor from before the upgrade" );
 } else {
-    report( 'todo', count( $old_jms ) . " jobmonitor(s) predate the upgrade and would double-import; "
-                    . "kill them, then restart under the new code (pid " . implode( ', ', array_keys( $old_jms ) ) . ")" );
-    if ( $apply && confirm( "Kill " . count( $old_jms ) . " old jobmonitor(s) and restart them under the new code?" ) ) {
-        ## The preflight is minutes old by now and a job can have reached the
-        ## import stage since, so check again before touching any process.
-        $again = import_blockers( $gdb, $us3_home );
-        if ( $again[ 'error' ] !== '' ) {
-            fatal( "could not re-check for jobs mid-import before replacing the jobmonitors: "
-                   . reason( $again[ 'error' ] ) . "; no jobmonitor was touched" );
-        }
-        if ( $again[ 'now' ] || $again[ 'claims' ] ) {
-            report_import_blockers( $again );
-            fatal( "a job reached the import stage since the preflight, so no jobmonitor was touched."
-                   . " Wait for it to finish and rerun: the earlier steps are already done and rerunning"
-                   . " them changes nothing" );
-        }
-        foreach ( array_keys( $old_jms ) as $pid ) {
-            @posix_kill( $pid, SIGTERM );
-        }
-        ## Give them a moment to finish the statement they are on, then insist.
-        sleep( 5 );
-        foreach ( array_keys( $old_jms ) as $pid ) {
-            if ( @posix_kill( $pid, 0 ) ) {
-                @posix_kill( $pid, SIGKILL );
+    report( 'todo', count( $old_jms ) . " jobmonitor(s) predate the upgrade and hold no cleanup claim; "
+                    . "replace them (pid " . implode( ', ', array_keys( $old_jms ) ) . ")" );
+    if ( $apply && confirm( "Replace " . count( $old_jms ) . " old jobmonitor(s)?" ) ) {
+        ## Check each monitor's own job, not the host as a whole: a monitor
+        ## still polling the cluster has imported nothing and is safe to
+        ## replace, while one that has moved on is mid-import and must be left
+        ## alone. Killing that one is the double import this guards against.
+        $safe = [];
+        foreach ( $old_jms as $pid => $jm ) {
+            $status = job_status( $gdb, $jm[ 'db' ], $jm[ 'gfacID' ] );
+            if ( $status === null ) {
+                report( 'FAIL', "could not read gfac.analysis for job {$jm['gfacID']}: "
+                                . reason( mysqli_error( $gdb ) ) . "; pid $pid left alone" );
+            } elseif ( $status === '' || $status === 'SUBMITTED' || $status === 'RUNNING' ) {
+                ## '' is a row already removed by a finished cleanup: nothing
+                ## left to import, so the monitor is safe to replace.
+                $safe[ $pid ] = $jm;
+            } else {
+                report( 'FAIL', "job {$jm['gfacID']} is collecting or importing results (status $status);"
+                                . " pid $pid was left running. Rerun when it finishes" );
             }
         }
-        $killed_jms = array_keys( $old_jms );
-        $changes++;
-        ## uslims_jobs.php respawns a monitor only for a job that still needs
-        ## one, and it must run as us3, which owns them.
-        $jobs = __DIR__ . '/uslims_jobs.php';
-        if ( !is_file( $jobs ) ) {
-            report( 'FAIL', "cannot restart jobmonitors: $jobs not found" );
-        } else {
-            $rc = run_as( 'us3', escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( $jobs ) . ' --restart',
-                          $jm_out, $jm_err );
-            report( $rc === 0 ? 'done' : 'FAIL', "jobmonitors restarted under the new code"
-                    . ( $rc === 0 ? '' : " (exit $rc): " . reason( $jm_err !== '' ? $jm_err : $jm_out ) ) );
+
+        foreach ( array_keys( $safe ) as $pid ) {
+            @posix_kill( $pid, SIGTERM );
+        }
+        ## jobmonitor installs no SIGTERM handler, so it ends at once; the wait
+        ## and the SIGKILL only cover a process that somehow ignores it.
+        if ( $safe ) {
+            sleep( 2 );
+            foreach ( array_keys( $safe ) as $pid ) {
+                if ( @posix_kill( $pid, 0 ) ) {
+                    @posix_kill( $pid, SIGKILL );
+                }
+            }
+            $killed_jms = array_keys( $safe );
+            $changes++;
+            report( 'done', count( $safe ) . " polling jobmonitor(s) stopped (pid "
+                            . implode( ', ', $killed_jms ) . ")" );
+            ## uslims_jobs.php respawns a monitor only for a gfac.analysis row
+            ## with no live monitor, and it must run as us3, which owns them.
+            ## jobmonitor double-forks and closes stdio, so this returns.
+            $jobs = __DIR__ . '/uslims_jobs.php';
+            if ( !is_file( $jobs ) ) {
+                report( 'FAIL', "cannot restart jobmonitors: $jobs not found" );
+            } else {
+                $rc = run_as( 'us3', escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( $jobs ) . ' --restart',
+                              $jm_out, $jm_err );
+                report( $rc === 0 ? 'done' : 'FAIL', "jobmonitors restarted under the new code"
+                        . ( $rc === 0 ? '' : " (exit $rc): " . reason( $jm_err !== '' ? $jm_err : $jm_out ) ) );
+            }
         }
     }
 }
