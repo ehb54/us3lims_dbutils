@@ -161,6 +161,11 @@ $gridctl_dir   = is_file( "$us3bin/gridctl/listen-config.php.template" ) ? "$us3
 $template      = "$gridctl_dir/listen-config.php.template";
 $global_config = "$wwwpath/common/global_config.php";
 $breaker_dir   = "$us3_home/lims/etc/circuit-breaker";
+## Stamped when this script replaces the jobmonitors. A monitor that started
+## before it is running pre-upgrade code. A file time on the monitor's own
+## source would be the obvious signal but is not dependable: "cp -p", "rsync -a"
+## or a checkout that preserves times would leave every monitor looking new.
+$marker_file   = "$us3_home/lims/etc/uslims_upgrade-applied";
 
 $failures = 0;
 $changes  = 0;
@@ -511,19 +516,31 @@ function report_import_blockers( $b ) {
     }
 }
 
-## The running jobmonitors, each as [ pid, db, gfacID, started, old ]. A monitor
-## is "old" when its process started before the monitor's own code was last
-## written, which is what tells a pre-upgrade monitor from one the new code
-## started: the old one has no cleanup claim, the new one does. $error is set
-## when the process list could not be read.
-function jobmonitors( $gridctl_dir, &$error = null ) {
-    $error = '';
-    $code  = "$gridctl_dir/jobmonitor/jobmonitor.php";
-    $mtime = @filemtime( $code );
-    if ( $mtime === false ) {
-        $error = "cannot stat $code";
-        return [];
+## When this script last replaced the jobmonitors, or null if it never has.
+function marker_time( $path ) {
+    $t = is_file( $path ) ? (int) trim( (string) @file_get_contents( $path ) ) : 0;
+    return $t > 0 ? $t : null;
+}
+
+## Stamp the marker. Written before the monitors are replaced, so the ones
+## restarted afterwards count as new and a rerun has nothing to do.
+function write_marker( $path ) {
+    if ( @file_put_contents( $path, time() . "\n" ) === false ) {
+        return false;
     }
+    @chown( $path, 'us3' );
+    @chmod( $path, 0644 );
+    return true;
+}
+
+## The running jobmonitors, each as [ pid, db, gfacID, started, old ]. A monitor
+## is "old" when it started before this script last replaced the monitors, which
+## is what tells a pre-upgrade monitor from one the new code started: the old one
+## has no cleanup claim, the new one does. With no marker the upgrade has never
+## applied here, so every monitor predates it. $error is set when the process
+## list could not be read.
+function jobmonitors( $marker, &$error = null ) {
+    $error = '';
     ## etimes is the process age in seconds, so now minus it is its start.
     list( $out, $err, $rc ) = capture( "ps -eo pid=,etimes=,args=" );
     if ( $rc !== 0 ) {
@@ -552,7 +569,7 @@ function jobmonitors( $gridctl_dir, &$error = null ) {
                          'db'      => $m[ 3 ],
                          'gfacID'  => $m[ 4 ],
                          'started' => $started,
-                         'old'     => $started < $mtime ];
+                         'old'     => $marker === null ? true : $started < $marker ];
     }
     return $jms;
 }
@@ -640,7 +657,7 @@ report( 'ok', "no Airavata jobs in flight"
 ## Only a monitor from before the upgrade is a double-import risk: it holds no
 ## cleanup claim. Once the host is upgraded its monitors do, so an import in
 ## progress is ordinary operation and must not fail a rerun.
-$monitors     = jobmonitors( $gridctl_dir, $jm_error );
+$monitors     = jobmonitors( marker_time( $marker_file ), $jm_error );
 $old_monitors = array_filter( $monitors, function ( $j ) { return $j[ 'old' ]; } );
 if ( $jm_error !== '' ) {
     report( 'FAIL', "could not list the running jobmonitors: " . reason( $jm_error ) );
@@ -1138,7 +1155,7 @@ step( "7. Jobmonitors from before the upgrade" );
 
 ## Re-read the list: steps 2-6 stop for confirmations, so this is minutes after
 ## the preflight and a job can have moved on since.
-$old_jms    = array_filter( jobmonitors( $gridctl_dir, $jm_error ),
+$old_jms    = array_filter( jobmonitors( marker_time( $marker_file ), $jm_error ),
                             function ( $j ) { return $j[ 'old' ]; } );
 $killed_jms = [];
 
@@ -1147,10 +1164,24 @@ if ( $jm_error !== '' ) {
 } elseif ( !$old_jms ) {
     ## The usual case on a rerun: nothing predates the upgrade, so nothing to do.
     report( 'ok', "no jobmonitor from before the upgrade" );
+    if ( $apply && marker_time( $marker_file ) === null ) {
+        ## Nothing to replace, so stamp the marker now: without it a later run
+        ## would read an unstamped host as having only pre-upgrade monitors.
+        report( write_marker( $marker_file ) ? 'done' : 'FAIL', "recorded the upgrade in $marker_file" );
+        $changes++;
+    }
 } else {
     report( 'todo', count( $old_jms ) . " jobmonitor(s) predate the upgrade and hold no cleanup claim; "
                     . "replace them (pid " . implode( ', ', array_keys( $old_jms ) ) . ")" );
     if ( $apply && confirm( "Replace " . count( $old_jms ) . " old jobmonitor(s)?" ) ) {
+        ## Stamp the marker before anything is replaced, so the monitors started
+        ## by the restart below count as new and a rerun has nothing to do. Any
+        ## monitor left running here started earlier, so it still reads as old.
+        if ( !write_marker( $marker_file ) ) {
+            fatal( "could not record the upgrade in $marker_file; no jobmonitor was touched" );
+        }
+        $changes++;
+
         ## Check each monitor's own job, not the host as a whole: a monitor
         ## still polling the cluster has imported nothing and is safe to
         ## replace, while one that has moved on is mid-import and must be left
