@@ -683,11 +683,14 @@ function usmd_wall_limit_status( $parsed ) {
 /*
  * UltraScan build that ran the job, from its stdout banner
  * ("Us_Mpi_Analysis 4.0.<rev> <YYYY-MM-DD>", written by programs/us_mpi_analysis/revision.sh).
+ * The banner's version token (at most 40 characters) is kept in us_build_token.
+ * The revision is read from 4.0.<rev> and from <version>-<tag>.<rev> (e.g. 4.1.0-dev.8910);
+ * a bare git commit (CMake builds, admin/cmake/GenerateVersion.cmake) has no revision.
  * Status: 0 no stdout, 1 no banner, 2 revision and date, 3 revision only,
- * 4 banner in another format (e.g. a git revision from the CMake build).
+ * 4 git commit, 5 banner in another format.
  */
 function usmd_parse_build( $stdout ) {
-    $out = [ "us_revision" => null, "us_build_date" => null, "us_build_status" => 0 ];
+    $out = [ "us_revision" => null, "us_build_date" => null, "us_build_token" => null, "us_build_status" => 0 ];
     if ( $stdout === null || trim( $stdout ) === "" ) {
         return $out;
     }
@@ -695,7 +698,9 @@ function usmd_parse_build( $stdout ) {
         $out["us_build_status"] = 1;
         return $out;
     }
-    if ( preg_match( '/^\d+\.\d+\.(\d+)$/', $m[1], $r ) ) {
+    $out["us_build_token"] = substr( $m[1], 0, 40 );
+    // 4.0.<rev> (revision.sh) and 4.1.0-dev.<rev> (later builds) carry the same revision count.
+    if ( preg_match( '/^\d+\.\d+\.(\d+)$/', $m[1], $r ) || preg_match( '/^\d+\.\d+\.\d+-[A-Za-z]+\.(\d+)$/', $m[1], $r ) ) {
         $out["us_revision"] = intval( $r[1] );
         if ( isset( $m[2] ) && $m[2] !== "" ) {
             $out["us_build_date"] = intval( $m[2] . $m[3] . $m[4] );
@@ -705,7 +710,11 @@ function usmd_parse_build( $stdout ) {
         }
         return $out;
     }
-    $out["us_build_status"] = 4;
+    if ( preg_match( '/^[0-9a-f]{7,40}$/', $m[1] ) ) {
+        $out["us_build_status"] = 4;
+        return $out;
+    }
+    $out["us_build_status"] = 5;
     return $out;
 }
 
