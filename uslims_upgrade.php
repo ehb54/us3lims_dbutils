@@ -420,7 +420,8 @@ function old_controller_crontabs( &$error = null ) {
     if ( $rc !== 0 && !preg_match( '/no crontab for/i', $err ) ) {
         $error = $err;
     }
-    $tabs  = [ 'us3' => $us3_tab ];
+    ## capture() drops the final newline, and crontab rejects a file without one.
+    $tabs  = [ 'us3' => $us3_tab === '' ? '' : rtrim( $us3_tab, "\n" ) . "\n" ];
     foreach ( array_merge( [ '/etc/crontab' ], glob( '/etc/cron.d/*' ) ?: [] ) as $file ) {
         $tabs[ $file ] = is_file( $file ) ? (string) @file_get_contents( $file ) : '';
     }
