@@ -114,7 +114,13 @@ report "inline style= attributes" \
        "replace with a class in a stylesheet" "$n" "$hits"
 
 hits=$( sources '*.php' "$@" ; sources '*.html' "$@" )
-hits=$( echo "$hits" | xargs grep -nIi '<style' 2>/dev/null )
+# Drop two kinds of mention that are not an inline block: the tag named in a
+# comment, and the tag inside a regex (a '~' delimiter before it, or a '\b'
+# after it) such as the preg_replace that strips style blocks. A quote before
+# '<style' is not excluded, so echo "<style>" is still reported.
+hits=$( echo "$hits" | xargs grep -nIi '<style' 2>/dev/null \
+        | grep -vE '^([^:]*:)?[0-9]+:[^<]*(//|#)[^<]*<style' \
+        | grep -vE '~<style|<style\\b' )
 n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
 total=$(( total + n ))
 report "inline <style> blocks" \
@@ -130,7 +136,7 @@ report "cross-origin subresource loads" \
        "self-host the asset, or add the origin to the policy" "$n" "$hits"
 
 hits=$( sources '*.css' "$@" )
-hits=$( echo "$hits" | xargs grep -nIEi "@import|url\(\s*['\"]?(https?:)?//" 2>/dev/null )
+hits=$( echo "$hits" | xargs grep -nIEi "@import\s+(url\(\s*)?['\"]?(https?:)?//|url\(\s*['\"]?(https?:)?//" 2>/dev/null )
 n=$( [ -n "$hits" ] && echo "$hits" | wc -l | tr -d ' ' || echo 0 )
 total=$(( total + n ))
 report "cross-origin CSS imports / url()" \
