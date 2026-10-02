@@ -2,6 +2,10 @@
 
 # Upgrade an existing LIMS host to the Slurm submission contract.
 #
+# Host configuration only. The stack code and the database schema are upgraded
+# separately; the code must already be in place, since step 2 reads gridctl's
+# template and step 8 installs dbutils' policy. Step 0 refuses to run otherwise.
+#
 # Dry run by default: every step reports what it found and what it would
 # change. --apply makes the changes, backing up each file first. Safe to rerun:
 # a step that is already done reports "ok" and changes nothing.
@@ -19,11 +23,38 @@ require_once "utility.php";
 ## Report failed connections and queries as values, not exceptions (PHP 8.1+)
 mysqli_report( MYSQLI_REPORT_OFF );
 
+## The release every stack checkout must be at before this host can be upgraded.
+$required_version = "4.3.0";
+
 $notes = <<<__EOD
 usage: $self {options}
 
 Upgrade this host to the Slurm submission contract (gridctl#33, common#24, dbinst#57).
 Without --apply nothing is changed; each step reports what it would do.
+
+This script changes only this host's configuration. The stack code and the database
+schema are upgraded separately, and the code must be upgraded first: pull common,
+every instance, gridctl and dbutils to $required_version or newer, then run this as root.
+Step 0 refuses to go further while any checkout is older.
+
+Steps
+
+0 : every stack checkout is at $required_version or newer (read from each repository's VERSION)
+1 : preflight. Refuses to run while an Airavata job is in flight, while a job is
+    collecting or importing results, or while a job holds a cleanup claim
+2 : rewrites listen-config.php from gridctl's template, carrying the site's values
+3 : deactivates clusters the Slurm code cannot submit to, then sets the global_config.php
+    settings the new code requires (queue time, tenant scope, local cluster,
+    env_script_lines per cluster, single_node on one-node appliances)
+4 : records each cluster's host key and checks ssh for us3 and the web account
+5 : creates the shared circuit-breaker directory
+6 : fixes crontabs still calling gridctl_pro.php / gridctl_dev.php
+7 : replaces jobmonitors started before the upgrade, which take no cleanup claim and
+    would import a job's results twice. One that is collecting or importing results is
+    left alone and reported
+8 : installs the Content-Security-Policy as Report-Only unless a policy is already
+    configured; enforcing it is a later step
+9 : verifies the result
 
 Options
 
@@ -601,6 +632,63 @@ function job_status( $gdb, $db, $gfacID ) {
 function reason( $text ) {
     $text = trim( preg_replace( '/\s+/', ' ', (string) $text ) );
     return $text === '' ? '' : ( strlen( $text ) > 200 ? substr( $text, 0, 197 ) . '...' : $text );
+}
+
+## ------------------------------------------------------------- 0. stack code
+
+## Every later step assumes the new code is already deployed: step 2 carries the
+## site's values into gridctl's template, step 8 installs dbutils' policy, and the
+## web code has to be able to submit through Slurm. Checking first means a stale
+## checkout is reported before anything on the host has been changed, rather than
+## failing partway through.
+step( "0. Stack code is $required_version or newer" );
+
+## Each repository records its release in a VERSION file at its root. 4.2.0
+## carried one too, so a missing file is an unrecognized checkout, not an old one.
+function repo_version( $dir ) {
+    $file = "$dir/VERSION";
+    if ( !is_file( $file ) ) {
+        return null;
+    }
+    $text = trim( (string) @file_get_contents( $file ) );
+    return $text === '' ? null : $text;
+}
+
+## "4.3.0-dev" is the 4.3.0 contract, but version_compare() ranks a -dev suffix
+## below the release, so compare the numeric part only.
+function version_at_least( $version, $minimum ) {
+    return version_compare( rtrim( preg_replace( '/[^0-9.].*$/', '', trim( $version ) ), '.' ),
+                            $minimum, '>=' );
+}
+
+$stack = [ 'gridctl' => $gridctl_dir,
+           'dbutils' => __DIR__,
+           'common'  => "$wwwpath/common",
+           'webinfo' => "$wwwpath/uslims3" ];
+## newinst's create_instance.php clones dbinst once per instance, so every
+## instance docroot is its own checkout and is upgraded on its own.
+foreach ( glob( "$wwwpath/uslims3/*/VERSION" ) ?: [] as $version_file ) {
+    $dir = dirname( $version_file );
+    $stack[ basename( $dir ) ] = $dir;
+}
+
+$stale = [];
+foreach ( $stack as $label => $dir ) {
+    $version = repo_version( $dir );
+    if ( $version === null ) {
+        report( 'FAIL', "$label ($dir) has no readable VERSION; cannot tell which release is deployed" );
+        $stale[] = $label;
+    } elseif ( !version_at_least( $version, $required_version ) ) {
+        report( 'FAIL', "$label ($dir) is $version" );
+        $stale[] = $label;
+    } else {
+        report( 'ok', "$label is $version" );
+    }
+}
+if ( $stale ) {
+    error_exit( "pull " . implode( ', ', $stale ) . " to $required_version or newer, then rerun."
+                . "\nThe code and the database schema are upgraded separately; this script only"
+                . " changes this host's configuration. Nothing was changed" );
 }
 
 ## ------------------------------------------------------------- 1. preflight
