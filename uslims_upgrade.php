@@ -1314,12 +1314,15 @@ if ( $active ) {
     report( 'FAIL', "no active cluster is usable by the Slurm code; jobs would have nowhere to go" );
 }
 
-## #864: queued jobs are never cancelled for waiting
-if ( (int) ( $gc[ 'global_max_queue_time_hours' ] ?? 24 ) !== 0 ) {
-    report( 'todo', "set \$global_max_queue_time_hours = 0 (#864; currently " . ( $gc[ 'global_max_queue_time_hours' ] ?? 'unset' ) . ")" );
-    $managed[] = '$global_max_queue_time_hours = 0;';
-} else {
-    report( 'ok', "\$global_max_queue_time_hours is 0" );
+## A job is never cancelled for elapsed time alone: whether to kill one is the
+## submitter's decision, and a missed status update is not evidence of a hang.
+foreach ( array( 'global_max_queue_time_hours', 'global_max_run_time_hours' ) as $timer ) {
+    if ( (int) ( $gc[ $timer ] ?? 24 ) !== 0 ) {
+        report( 'todo', "set \$$timer = 0 (currently " . ( $gc[ $timer ] ?? 'unset' ) . "); a job is left for its submitter to cancel" );
+        $managed[] = "\$$timer = 0;";
+    } else {
+        report( 'ok', "\$$timer is 0" );
+    }
 }
 
 ## Tenant scope: unset reads as single tenant; set it explicitly either way
@@ -1571,6 +1574,9 @@ foreach ( $active as $name => $c ) {
     foreach ( $accounts as $account => $entry ) {
         $known  = $entry[ 'dir' ] . "/.ssh/known_hosts";
         $lookup = $port === 22 ? $ssh_host : "[$ssh_host]:$port";
+        ## Changes proposed but not yet made. They explain a failing ssh test, which
+        ## is why a dry run reports one rather than a FAIL.
+        $pending = array();
         list( $o, $ferr, $found ) = capture( 'ssh-keygen -F ' . escapeshellarg( $lookup ) . ' -f ' . escapeshellarg( $known ) );
         if ( $found !== 0 && $ferr !== '' && !preg_match( '/No such file or directory/', $ferr ) ) {
             ## An unreadable known_hosts is not the same as a missing entry.
@@ -1599,6 +1605,7 @@ foreach ( $active as $name => $c ) {
             }
             report( 'todo', "$name: record $ssh_host's host key for $account:\n            "
                             . implode( "\n            ", explode( "\n", $fp ) ) );
+            $pending[ 'host key' ] = true;
             if ( $apply && confirm_host_keys( "Do these fingerprints match $ssh_host's real host keys?" ) ) {
                 $dir = dirname( $known );
                 if ( !is_dir( $dir ) && !@mkdir( $dir, 0700, true ) ) {
@@ -1616,6 +1623,9 @@ foreach ( $active as $name => $c ) {
                 }
                 $owned = chown( $dir, $account ) && chown( $known, $account )
                          && chgrp( $known, $entry[ 'gid' ] ) && chmod( $dir, 0700 ) && chmod( $known, 0600 );
+                if ( $owned ) {
+                    unset( $pending[ 'host key' ] );
+                }
                 $changes++;
                 report( $owned ? 'done' : 'FAIL',
                         $owned ? "$name: $ssh_host's host key recorded for $account (previous $known in $saved)"
@@ -1625,18 +1635,32 @@ foreach ( $active as $name => $c ) {
         $rc  = run_as( $account, $ssh, $ssh_out, $ssh_err );
         if ( $rc !== 0 && $name === $host_cluster ) {
             report( 'todo', "$name: authorize $account's key for $login on this host" );
+            $pending[ 'authorized key' ] = true;
             if ( $apply && confirm( "Set up $account's SSH key for $login?" ) ) {
                 if ( authorize_local_key( $account, $entry, explode( '@', $login )[ 0 ] ) ) {
                     $changes++;
                     $rc = run_as( $account, $ssh, $ssh_out, $ssh_err );
+                    if ( $rc === 0 ) {
+                        unset( $pending[ 'authorized key' ] );
+                    }
                     report( $rc === 0 ? 'done' : 'FAIL', "$name: $account's key authorized for $login" );
                 } else {
                     report( 'FAIL', "$name: could not authorize $account's key for $login" );
                 }            }
         }
-        report( $rc === 0 ? 'ok' : 'FAIL', "$name: $account can ssh to $login"
-                . ( $rc === 0 ? '' : " (exit $rc: install the account's key, including for the host itself) "
-                                     . reason( $ssh_err !== '' ? $ssh_err : $ssh_out ) ) );
+        if ( $rc !== 0 && $pending ) {
+            ## The test cannot pass before the changes just proposed are made, so a
+            ## dry run on a host that has never had the key reports the consequence
+            ## of its own todos. Reported as a FAIL it made every such run exit 1,
+            ## which left a genuine FAIL indistinguishable.
+            report( 'todo', "$name: $account can ssh to $login once the "
+                            . implode( ' and ', array_keys( $pending ) ) . " above "
+                            . ( count( $pending ) > 1 ? 'are' : 'is' ) . " in place" );
+        } else {
+            report( $rc === 0 ? 'ok' : 'FAIL', "$name: $account can ssh to $login"
+                    . ( $rc === 0 ? '' : " (exit $rc: install the account's key, including for the host itself) "
+                                         . reason( $ssh_err !== '' ? $ssh_err : $ssh_out ) ) );
+        }
     }
 }
 
@@ -1775,6 +1799,25 @@ if ( !$apply ) {
     $rc = run_as( $web_user, 'test -w ' . escapeshellarg( $breaker_dir ), $w_out, $w_err );
     report( $rc === 0 ? 'ok' : 'FAIL', "$web_user can write the breaker directory"
             . ( $rc === 0 ? '' : ' ' . reason( $w_err !== '' ? $w_err : $w_out ) ) );
+
+    ## Where the web account is not us3, submit_slurm.php launches the jobmonitor
+    ## through 'sudo -u us3 /usr/bin/php', so the submission succeeds and the job
+    ## then goes unmonitored if no sudoers rule allows it.
+    if ( $web_user !== 'us3' ) {
+        $monitor = "$us3_home/lims/bin/jobmonitor/jobmonitor.php";
+        ## -l asks whether the command is permitted without running it: starting a
+        ## real monitor here would be a side effect, and a NOPASSWD rule is matched
+        ## against the command, so a cheaper stand-in would not prove anything.
+        $rc = run_as( $web_user, 'sudo -n -l -u us3 /usr/bin/php ' . escapeshellarg( $monitor ),
+                      $s_out, $s_err );
+        if ( $rc === 0 ) {
+            report( 'ok', "$web_user may launch the jobmonitor as us3" );
+        } else {
+            report( 'FAIL', "$web_user is not permitted 'sudo -u us3 /usr/bin/php $monitor', so submissions"
+                            . " would succeed and then go unmonitored; add a NOPASSWD sudoers rule for"
+                            . " that command. " . reason( $s_err !== '' ? $s_err : $s_out ) );
+        }
+    }
 
     ## The sizing gate refuses a submission outright, so a cluster can pass every
     ## check above and still take no jobs. These are that gate's own conditions
