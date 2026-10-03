@@ -30,12 +30,21 @@ $notes = <<<__EOD
 usage: $self {options}
 
 Upgrade this host to the Slurm submission contract (gridctl#33, common#24, dbinst#57).
-Without --apply nothing is changed; each step reports what it would do.
+Without --apply nothing is changed; each step reports what it would do. Run with --check
+for that dry run; with no options at all this help is printed instead.
 
 This script changes only this host's configuration. The stack code and the database
 schema are upgraded separately, and the code must be upgraded first: pull common,
 every instance, gridctl and dbutils to $required_version or newer, then run this as root.
 Step 0 refuses to go further while any checkout is older.
+
+Pull the code in one step, not per use:
+
+    php uslims_git_info.php --update-pull all
+
+"--update-pull util" alone upgrades dbutils and leaves gridctl and common behind, which
+is the state step 0 exists to refuse: this script would otherwise rewrite an old-code
+host from its old template. Pull everything, then rerun this script.
 
 The host must also be idle, and the order matters: stop the services with
 "php services.php stop" BEFORE pulling the new code, while the host's own 4.2.0 copy can
@@ -46,13 +55,15 @@ of this and refuses rather than work around a running system.
 
 Steps
 
-0 : every stack checkout is at $required_version or newer (read from each repository's VERSION)
+0 : every stack checkout is at $required_version or newer (read from each repository's VERSION),
+    and gridctl carries the version-2 artifacts the later steps need
 1 : preflight. The host must be idle: us3-listen stopped, no jobmonitor, nothing from
     /opt/ultrascan3/bin, no unfinished job in gfac.analysis, no cleanup claim, an empty
-    local Slurm queue, no other client running a statement on MariaDB, and the LIMS cron
-    entries commented out
+    local Slurm queue with no node running work, no other client running a statement on
+    MariaDB, nobody else logged in, and the LIMS cron entries commented out
 2 : rewrites listen-config.php from gridctl's template, carrying the site's values
-3 : deactivates clusters the Slurm code cannot submit to, then sets the global_config.php
+3 : deactivates clusters the Slurm code cannot submit to, or with --convert-http converts
+    the national HPC ones to SSH instead, then sets the global_config.php
     settings the new code requires (queue time, tenant scope, local cluster,
     env_script_lines per cluster, single_node on one-node appliances)
 4 : records each cluster's host key and checks ssh for us3 and the web account
@@ -60,17 +71,41 @@ Steps
 6 : removes the gridctl cron entries (gridctl.php, and the gridctl_pro/dev names before it)
 7 : installs the Content-Security-Policy as Report-Only unless a policy is already
     configured; enforcing it is a later step
-8 : verifies the result
+8 : verifies the result, including that every active cluster passes the submission
+    sizing gate rather than refusing every job
+
+Undoing it
+
+Every file this script rewrites is copied first, and so is every file it appends to;
+both go to one timestamped directory, named when the run starts and again at the end.
+To roll back, with the services stopped:
+
+  1. copy global_config.php and listen-config.php back from that directory;
+  2. copy known_hosts and authorized_keys back, or delete them where the backup is
+     recorded as "(did not exist)";
+  3. restore the LIMS cron entries, including the gridctl entry step 6 removed, if
+     you are going back to a release that still expects the sweep;
+  4. the circuit-breaker directory can stay: an unused one changes nothing.
+
+There is nothing to undo in the database: this script does not touch the schema or
+any job row.
 
 Options
 
 --help                       : print this information and exit
+--check                      : dry run: report what would change, change nothing
 --apply                      : make the changes (each changed file is backed up first)
 --yes                        : accept the proposed value wherever one can be proposed.
                                Settings with no value to propose are reported instead of
                                asked for, so --apply --yes never waits for input.
 --accept-host-keys           : trust the host keys this script fetches, without review.
                                Only for a network you already trust: --yes does not imply it.
+--convert-http               : convert the national HPC entries (submittype 'http', left over
+                               from Airavata) to the SSH shape in global_config.php.template,
+                               and activate their cluster_config.php probes. Without this they
+                               are deactivated, which is the default. A converted entry stays
+                               inactive until its env_script_lines are supplied: only the
+                               cluster can say what those are.
 --www path                   : web root (default $wwwpath)
 --web-user name              : account the web code runs as (default: the PHP-FPM pool user, else apache, else www-data)
 --env cluster=lines          : env_script_lines for a cluster ('' for none); sets or changes it; repeatable
@@ -81,6 +116,14 @@ __EOD;
 
 $u_argv = $argv;
 array_shift( $u_argv );
+
+## A bare invocation used to start a dry run, which reads as "it did nothing" to an
+## operator expecting the upgrade. Print the help and exit non-zero instead, so a
+## dry run is always asked for explicitly.
+if ( !count( $u_argv ) ) {
+    echo $notes;
+    exit( 1 );
+}
 
 ## An option's value, or a clear error. Without this a trailing "--www" would
 ## silently leave $wwwpath empty and look for /common/global_config.php.
@@ -98,6 +141,7 @@ $web_user      = '';
 $env_values    = [];
 $local_cluster = null;
 $single_tenant = null;
+$convert_http  = false;
 
 while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     $opt = array_shift( $u_argv );
@@ -105,6 +149,10 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--help":
             echo $notes;
             exit;
+        case "--check":
+            ## The default already, but an operator has to be able to ask for it:
+            ## a bare invocation prints the help rather than running anything.
+            break;
         case "--apply":
             $apply = true;
             break;
@@ -113,6 +161,9 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             break;
         case "--accept-host-keys":
             $accept_keys = true;
+            break;
+        case "--convert-http":
+            $convert_http = true;
             break;
         case "--www":
             $wwwpath = rtrim( opt_value( $u_argv, $opt ), '/' );
@@ -257,6 +308,31 @@ function ensure_backup_dir() {
 ## Where backup_file() puts a copy of $path, and a place to save other originals.
 function backup_path( $name ) {
     return ensure_backup_dir() . '/' . basename( $name );
+}
+
+## A copy of a file this script appends to, taken once per file, so the append can
+## be undone. write_file() already backs up what it rewrites; the ssh files are
+## appended to instead, and were the one change with nothing to roll back to.
+## $label rather than backup_path(): two accounts each have a known_hosts, and
+## keying on the basename alone would have one overwrite the other.
+function backup_append_target( $path, $label ) {
+    global $append_backups;
+
+    if ( !isset( $append_backups ) ) {
+        $append_backups = [];
+    }
+    if ( array_key_exists( $path, $append_backups ) ) {
+        return $append_backups[ $path ];
+    }
+
+    ## Absent is a restorable state too: rollback means deleting the file.
+    if ( !is_file( $path ) ) {
+        return $append_backups[ $path ] = '(did not exist)';
+    }
+
+    $dest = ensure_backup_dir() . '/' . $label;
+
+    return $append_backups[ $path ] = @copy( $path, $dest ) ? $dest : '';
 }
 
 ## Run a command, keeping its stderr separate from its stdout. Returns
@@ -464,8 +540,23 @@ function authorize_local_key( $account, $entry, $login_user ) {
         return false;
     }
     $pub  = trim( (string) file_get_contents( "$key.pub" ) );
+
+    ## The web account needs to run squeue/sbatch/scancel, so a forced command is
+    ## not available, but nothing needs a tty, forwarding or a tunnel: remote_exec
+    ## runs "ssh -n -o BatchMode=yes". Without these an unrestricted key in us3's
+    ## authorized_keys is a general-purpose login for whatever runs as the web
+    ## account. Spelled out rather than OpenSSH 7.2's "restrict", which an older
+    ## sshd rejects outright, taking the whole key line with it.
+    if ( $account !== $login_user ) {
+        $pub = 'no-agent-forwarding,no-port-forwarding,no-pty,no-user-rc,no-X11-forwarding '
+               . $pub;
+    }
+
     $auth = $login[ 'dir' ] . '/.ssh/authorized_keys';
     if ( strpos( (string) @file_get_contents( $auth ), $pub ) === false ) {
+        if ( backup_append_target( $auth, "authorized_keys.$login_user" ) === '' ) {
+            return false;
+        }
         @mkdir( dirname( $auth ), 0700, true );
         file_put_contents( $auth, "$pub\n", FILE_APPEND );
         chown( dirname( $auth ), $login_user );
@@ -478,6 +569,61 @@ function authorize_local_key( $account, $entry, $login_user ) {
 ## A PHP string literal on one line, so each managed setting is one line.
 function php_string( $value ) {
     return '"' . addcslashes( $value, "\\\"\$\n\r\t" ) . '"';
+}
+
+## A value as PHP source. Strings go through php_string() so embedded newlines stay
+## readable in the managed block; everything else is var_export's own form.
+function php_value( $value ) {
+    return is_string( $value ) ? php_string( $value ) : var_export( $value, true );
+}
+
+## The deployed global_config.php.template's entry for one cluster, or null with a
+## reason. The template is the reference shape for a national HPC cluster reached
+## over SSH, and it ships with the common checkout, so it is on the host already.
+function template_cluster( $name, &$why = null ) {
+    static $entries = null;
+    global $wwwpath;
+
+    if ( $entries === null ) {
+        $file = "$wwwpath/common/global_config.php.template";
+        if ( !is_file( $file ) ) {
+            $entries = [ '__why' => "no template at $file" ];
+        } else {
+            $vars = config_vars( $file, $read_why );
+            $entries = ( $vars === null || !is_array( $vars[ 'cluster_details' ] ?? null ) )
+                     ? [ '__why' => "the template could not be read: " . reason( $read_why ) ]
+                     : $vars[ 'cluster_details' ];
+        }
+    }
+    if ( isset( $entries[ '__why' ] ) ) {
+        $why = $entries[ '__why' ];
+        return null;
+    }
+    if ( !is_array( $entries[ $name ] ?? null ) ) {
+        $why = "the template has no '$name' entry";
+        return null;
+    }
+    $why = '';
+    return $entries[ $name ];
+}
+
+## What still stands between a converted entry and activation. env_script_lines is
+## the one the cluster alone can answer: the template carries a TODO for the clusters
+## whose module names were never confirmed.
+function conversion_blockers( $want, $have ) {
+    $blockers = [];
+    $env      = (string) ( $want[ 'env_script_lines' ] ?? ( $have[ 'env_script_lines' ] ?? '' ) );
+    if ( trim( $env ) === '' ) {
+        $blockers[] = "env_script_lines is empty, so no modules would be loaded";
+    } elseif ( stripos( $env, 'TODO' ) !== false ) {
+        $blockers[] = "env_script_lines still carries the template's TODO; ask the cluster"
+                      . " for its module lines";
+    }
+    if ( trim( (string) ( $want[ 'login' ] ?? ( $have[ 'login' ] ?? '' ) ) ) === '' ) {
+        $blockers[] = "no login account";
+    }
+    $blockers[] = "SSH keys and an account on the cluster stay an operator step";
+    return $blockers;
 }
 
 ## The managed block's assignments keyed by their target, e.g. '$default_local_cluster'.
@@ -677,9 +823,50 @@ foreach ( $stack as $label => $dir ) {
     }
 }
 if ( $stale ) {
-    error_exit( "pull " . implode( ', ', $stale ) . " to $required_version or newer, then rerun."
+    error_exit( "pull " . implode( ', ', $stale ) . " to $required_version or newer, then rerun:"
+                . "\n    cd " . __DIR__ . " && php uslims_git_info.php --update-pull all"
+                . "\nUse 'all' rather than a single use: pulling util alone leaves gridctl and"
+                . " common behind, which is the state this check refuses."
                 . "\nThe code and the database schema are upgraded separately; this script only"
                 . " changes this host's configuration. Nothing was changed" );
+}
+
+## A VERSION file is a claim; these are the artifacts the rest of the script needs.
+## Old gridctl ships a listen-config template too, so test the contract rather than
+## trust the version string: the bootstrap and helper the version-2 config relies on,
+## and a template that actually declares version 2.
+$missing = [];
+foreach ( [ 'gridctl_bootstrap.php', 'listen_functions.php' ] as $artifact ) {
+    if ( is_file( "$gridctl_dir/$artifact" ) ) {
+        report( 'ok', "gridctl has $artifact" );
+    } else {
+        report( 'FAIL', "gridctl ($gridctl_dir) has no $artifact" );
+        $missing[] = $artifact;
+    }
+}
+$template_version = 0;
+if ( !is_file( $template ) ) {
+    report( 'FAIL', "no listen-config template at $template" );
+    $missing[] = basename( $template );
+} else {
+    if ( preg_match( '/^\s*\$listen_config_version\s*=\s*(\d+)/m',
+                     (string) @file_get_contents( $template ), $m ) ) {
+        $template_version = (int) $m[ 1 ];
+    }
+    if ( $template_version >= 2 ) {
+        report( 'ok', "the listen-config template is version $template_version" );
+    } else {
+        report( 'FAIL', "the listen-config template at $template declares version "
+                        . ( $template_version ?: 'none' ) . ", not 2" );
+        $missing[] = basename( $template );
+    }
+}
+if ( $missing ) {
+    error_exit( "gridctl is not the $required_version contract: " . implode( ', ', $missing )
+                . ". A VERSION file alone is not enough, so check the checkout at $gridctl_dir"
+                . " is the upgraded one:"
+                . "\n    cd " . __DIR__ . " && php uslims_git_info.php --update-pull all"
+                . "\nNothing was changed" );
 }
 
 ## ------------------------------------------------------------- 1. preflight
@@ -828,6 +1015,41 @@ if ( $sq_rc !== 0 ) {
     } else {
         report( 'ok', "the local Slurm queue is empty" );
     }
+    ## squeue says nothing about work already placed on a node, so ask sinfo for the
+    ## node states too. allocated/mixed/completing mean a job is on the node.
+    $rc = run_as( 'us3', 'sinfo -h -o "%n %T"', $si_out, $si_err );
+    if ( $rc !== 0 ) {
+        report( 'note', "sinfo failed, so the node states could not be checked ("
+                        . reason( $si_err !== '' ? $si_err : $si_out )
+                        . "); confirm sinfo is idle before continuing" );
+    } else {
+        $working = [];
+        $degraded = [];
+        foreach ( explode( "\n", trim( $si_out ) ) as $line ) {
+            if ( !preg_match( '/^(\S+)\s+(\S+)/', trim( $line ), $m ) ) {
+                continue;
+            }
+            ## Strip the state's flag suffixes: "mixed*", "idle~", "allocated$".
+            $state = strtolower( rtrim( $m[ 2 ], '*~#$@+' ) );
+            if ( in_array( $state, [ 'allocated', 'mixed', 'completing' ], true ) ) {
+                $working[] = "{$m[1]} ($state)";
+            } elseif ( !in_array( $state, [ 'idle', 'reserved' ], true ) ) {
+                $degraded[] = "{$m[1]} ($state)";
+            }
+        }
+        if ( $working ) {
+            report( 'FAIL', count( $working ) . " node(s) still running work: "
+                            . implode( ', ', $working ) );
+            $busy[] = count( $working ) . ' node(s) busy';
+        } else {
+            report( 'ok', "sinfo reports no node running work" );
+        }
+        ## Not a reason to refuse: a drained node runs nothing. Worth saying, because
+        ## it changes what the host can do after the upgrade.
+        if ( $degraded ) {
+            report( 'note', "node(s) not available: " . implode( ', ', $degraded ) );
+        }
+    }
 }
 
 ## -- other database clients. A sleeping connection is a pool, not a user; one
@@ -854,6 +1076,42 @@ if ( !$res ) {
         $busy[] = 'database in use';
     } else {
         report( 'ok', "no other client is running a statement on MariaDB" );
+    }
+}
+
+## -- other people on the host. The operator's own session is excluded, found from
+## -- this process's controlling terminal, so the check cannot fail on itself.
+$own_tty = function_exists( 'posix_ttyname' ) ? @posix_ttyname( STDIN ) : false;
+$own_tty = is_string( $own_tty ) ? preg_replace( '#^/dev/#', '', $own_tty ) : '';
+list( $who_out, $who_err, $who_rc ) = capture( 'who' );
+if ( $who_rc !== 0 ) {
+    report( 'note', "could not list the logged-in users ("
+                    . reason( $who_err !== '' ? $who_err : $who_out )
+                    . "); confirm nobody else is on this host" );
+} else {
+    $sessions = [];
+    foreach ( explode( "\n", trim( $who_out ) ) as $line ) {
+        if ( !preg_match( '/^(\S+)\s+(\S+)/', trim( $line ), $m ) ) {
+            continue;
+        }
+        if ( $own_tty !== '' && $m[ 2 ] === $own_tty ) {
+            continue;
+        }
+        $sessions[] = "{$m[1]} on {$m[2]}";
+    }
+    if ( $sessions && $own_tty === '' ) {
+        ## Without our own terminal there is no way to tell the operator's session
+        ## apart from anyone else's, and refusing here would refuse every run from a
+        ## pipe or a wrapper. Report the sessions and let the operator judge.
+        report( 'note', count( $sessions ) . " login session(s) found, and this session's"
+                        . " terminal could not be identified, so one of them may be this one: "
+                        . implode( ', ', $sessions ) );
+    } elseif ( $sessions ) {
+        report( 'FAIL', count( $sessions ) . " other login session(s): "
+                        . implode( ', ', $sessions ) );
+        $busy[] = 'other users logged in';
+    } else {
+        report( 'ok', "nobody else is logged in" );
     }
 }
 
@@ -985,8 +1243,10 @@ $active   = array_filter( $clusters, function ( $c ) { return is_array( $c ) && 
 ## so an active 'pbs' or 'http' entry is now treated as though it were Slurm.
 ## They are dropped from $active as well, so the checks below do not go looking
 ## for env_script_lines, nodes or SSH on a cluster that is being retired.
+$converted = [];
 foreach ( $active as $name => $c ) {
     $retired = null;
+    $is_http = isset( $c[ 'submittype' ] ) && strtolower( (string) $c[ 'submittype' ] ) === 'http';
     if ( isset( $c[ 'clusters' ] ) && is_array( $c[ 'clusters' ] ) ) {
         $retired = "it is a metascheduler entry, fanning out to " . implode( ', ', $c[ 'clusters' ] );
     } elseif ( isset( $c[ 'submittype' ] ) && strtolower( (string) $c[ 'submittype' ] ) !== 'slurm' ) {
@@ -995,7 +1255,56 @@ foreach ( $active as $name => $c ) {
     if ( $retired === null ) {
         continue;
     }
-    report( 'todo', "deactivate cluster '$name': $retired" );
+    ## A national HPC entry is an Airavata leftover, not a dead cluster: the cluster
+    ## is still there and still wanted, it just has to be reached over SSH now. With
+    ## --convert-http it is rewritten into the template's SSH shape instead of being
+    ## deactivated. It stays inactive either way, because only the cluster itself can
+    ## say what its env_script_lines are, so going live is a later operator step.
+    if ( $is_http && $convert_http ) {
+        $want = template_cluster( $name, $tpl_why );
+        if ( $want === null ) {
+            report( 'todo', "deactivate cluster '$name': it is an 'http' entry and "
+                            . reason( $tpl_why ) . ", so there is nothing to convert it to" );
+            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'active\' ] = false;';
+            unset( $active[ $name ] );
+            continue;
+        }
+        $changed = [];
+        foreach ( $want as $key => $value ) {
+            ## active is handled below, deliberately: conversion never activates.
+            if ( $key === 'active' ) {
+                continue;
+            }
+            if ( array_key_exists( $key, $c ) && $c[ $key ] === $value ) {
+                continue;
+            }
+            $changed[] = $key;
+            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ '
+                       . var_export( $key, true ) . ' ] = ' . php_value( $value ) . ';';
+        }
+        ## submittype is what marks it as an Airavata entry. The submission code no
+        ## longer reads it, but leaving 'http' there invites the next reader to think
+        ## the entry still goes through a gateway.
+        if ( ( $c[ 'submittype' ] ?? '' ) !== 'slurm' ) {
+            $changed[] = 'submittype';
+            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'submittype\' ] = \'slurm\';';
+        }
+        if ( !empty( $c[ 'active' ] ) ) {
+            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'active\' ] = false;';
+        }
+        report( 'todo', "convert cluster '$name' to SSH ("
+                        . ( $changed ? implode( ', ', $changed ) : 'already matches the template' )
+                        . "), left inactive" );
+        $blockers = conversion_blockers( $want, $c );
+        if ( $blockers ) {
+            report( 'note', "'$name' cannot be activated yet: " . implode( '; ', $blockers ) );
+        }
+        $converted[] = $name;
+        unset( $active[ $name ] );
+        continue;
+    }
+    report( 'todo', "deactivate cluster '$name': $retired"
+                    . ( $is_http ? " (pass --convert-http to convert it to SSH instead)" : '' ) );
     $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'active\' ] = false;';
     unset( $active[ $name ] );
 }
@@ -1126,11 +1435,33 @@ foreach ( $active as $name => $c ) {
         report( 'todo', "set single_node for $name (its queue has one node)" );
         $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'single_node\' ] = true;';
     }
+    ## jobsubmit.php refuses every job on a single_node cluster whose maxproc exceeds
+    ## ppn, or whose ppn is unusable, so enforce maxproc <= ppn <= CPUs rather than
+    ## only lowering what is already above the CPU count. Values are resolved first so
+    ## a key two rules both lower is still proposed once.
+    $want = [];
     foreach ( [ 'ppn', 'ppbj', 'maxproc' ] as $key ) {
-        if ( isset( $c[ $key ] ) && (int) $c[ $key ] > $cpus ) {
-            report( 'todo', "set $key for $name to $cpus, the CPUs on its one node (currently {$c[$key]})" );
-            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ ' . var_export( $key, true ) . ' ] = ' . $cpus . ';';
+        $want[ $key ] = isset( $c[ $key ] ) ? (int) $c[ $key ] : null;
+        if ( $want[ $key ] !== null && $want[ $key ] > $cpus ) {
+            $want[ $key ] = $cpus;
         }
+    }
+    if ( $want[ 'ppn' ] === null || $want[ 'ppn' ] < 1 ) {
+        $want[ 'ppn' ] = $cpus;
+    }
+    if ( $want[ 'maxproc' ] !== null && $want[ 'maxproc' ] > $want[ 'ppn' ] ) {
+        $want[ 'maxproc' ] = $want[ 'ppn' ];
+    }
+    foreach ( $want as $key => $value ) {
+        $now = isset( $c[ $key ] ) ? (int) $c[ $key ] : null;
+        if ( $value === null || $value === $now ) {
+            continue;
+        }
+        report( 'todo', "set $key for $name to $value (currently "
+                        . ( $now === null ? 'unset' : $now )
+                        . "; one node with $cpus CPUs, and a single_node cluster needs"
+                        . " maxproc <= ppn <= CPUs or it refuses every job)" );
+        $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ ' . var_export( $key, true ) . ' ] = ' . $value . ';';
     }
 }
 
@@ -1158,6 +1489,53 @@ if ( $managed && $apply && confirm( "Write these settings to $global_config?" ) 
     report( 'done', "$global_config updated (original in " . backup_path( $global_config ) . ")" );
 }
 
+## A converted cluster's health probe. cluster_status.php skips an entry whose
+## 'active' is not true, so a converted cluster stays invisible in the web tier
+## until its probe is on. The probe is also how an operator confirms SSH works
+## before activating submission, which is why it is turned on while the
+## global_config entry is still inactive.
+if ( $converted ) {
+    $cluster_config = "$us3bin/cluster_config.php";
+    if ( !is_file( $cluster_config ) ) {
+        report( 'note', "no $cluster_config, so no status probe could be activated for "
+                        . implode( ', ', $converted ) );
+    } else {
+        $cc_text = (string) file_get_contents( $cluster_config );
+        $turned  = [];
+        $absent  = [];
+        foreach ( $converted as $name ) {
+            ## Only this entry's own 'active' line: the match is anchored on the key
+            ## and stops at the end of its array literal.
+            $pattern = '/(' . preg_quote( "'$name'", '/' ) . '\s*=>\s*\[)([^\]]*?)(\x27active\x27\s*=>\s*)false/s';
+            if ( !preg_match( '/' . preg_quote( "'$name'", '/' ) . '\s*=>\s*\[/', $cc_text ) ) {
+                $absent[] = $name;
+                continue;
+            }
+            $replaced = preg_replace( $pattern, '${1}${2}${3}true', $cc_text, 1, $count );
+            if ( $replaced !== null && $count ) {
+                $cc_text  = $replaced;
+                $turned[] = $name;
+            }
+        }
+        if ( $absent ) {
+            report( 'note', "$cluster_config has no entry for " . implode( ', ', $absent )
+                            . "; add one from " . basename( $cluster_config ) . ".template"
+                            . " or the cluster will never be probed" );
+        }
+        if ( !$turned ) {
+            report( 'ok', "every converted cluster's status probe is already active" );
+        } else {
+            report( 'todo', "activate the status probe for " . implode( ', ', $turned )
+                            . " in $cluster_config" );
+            if ( $apply && confirm( "Activate those status probes in $cluster_config?" ) ) {
+                write_file( $cluster_config, $cc_text );
+                report( 'done', "$cluster_config updated (original in "
+                                . backup_path( $cluster_config ) . ")" );
+            }
+        }
+    }
+}
+
 ## ------------------------------------------------------------- 4. SSH
 
 step( "4. SSH host keys and access (StrictHostKeyChecking=yes is the default)" );
@@ -1170,9 +1548,29 @@ foreach ( $active as $name => $c ) {
         report( 'FAIL', "$name has no 'name'" );
         continue;
     }
-    foreach ( [ 'us3' => $us3_entry, $web_user => $web_entry ] as $account => $entry ) {
+    ## The key has to be recorded for the host ssh actually connects to, which is
+    ## the login's host part and not always the cluster's 'name': the template's
+    ## expanse entries are name expanse.sdsc.edu, login us3@login.expanse.sdsc.edu,
+    ## and the appliance nodes are name us3iab-node0.localhost, login us3@us3iab-node0.
+    ## Recording 'name' leaves StrictHostKeyChecking=yes rejecting every connection.
+    $ssh_host = strpos( $login, '@' ) !== false
+              ? substr( $login, strrpos( $login, '@' ) + 1 )
+              : $login;
+    if ( $ssh_host !== $host ) {
+        report( 'note', "$name: ssh connects to $ssh_host, not the entry's name $host;"
+                        . " the host key is recorded for $ssh_host" );
+    }
+    ## On an Ansible-built host php-fpm runs as us3, so the two accounts are one and
+    ## the web-to-us3 key would be a key authorizing us3 to reach itself: no access
+    ## is gained and an unnecessary key is the kind of thing nobody later dares
+    ## remove. array_unique keyed on the account name, so the loop runs once there.
+    $accounts = [ 'us3' => $us3_entry ];
+    if ( $web_user !== 'us3' ) {
+        $accounts[ $web_user ] = $web_entry;
+    }
+    foreach ( $accounts as $account => $entry ) {
         $known  = $entry[ 'dir' ] . "/.ssh/known_hosts";
-        $lookup = $port === 22 ? $host : "[$host]:$port";
+        $lookup = $port === 22 ? $ssh_host : "[$ssh_host]:$port";
         list( $o, $ferr, $found ) = capture( 'ssh-keygen -F ' . escapeshellarg( $lookup ) . ' -f ' . escapeshellarg( $known ) );
         if ( $found !== 0 && $ferr !== '' && !preg_match( '/No such file or directory/', $ferr ) ) {
             ## An unreadable known_hosts is not the same as a missing entry.
@@ -1180,9 +1578,9 @@ foreach ( $active as $name => $c ) {
             continue;
         }
         if ( $found !== 0 ) {
-            list( $keys, $kerr, $krc ) = capture( 'ssh-keyscan -p ' . $port . ' ' . escapeshellarg( $host ) );
+            list( $keys, $kerr, $krc ) = capture( 'ssh-keyscan -p ' . $port . ' ' . escapeshellarg( $ssh_host ) );
             if ( trim( $keys ) === '' ) {
-                report( 'FAIL', "$name: no host key could be fetched from $host:$port (exit $krc): " . reason( $kerr ) );
+                report( 'FAIL', "$name: no host key could be fetched from $ssh_host:$port (exit $krc): " . reason( $kerr ) );
                 continue;
             }
             ## Fingerprint the keys just fetched, rather than fetching a second
@@ -1196,26 +1594,31 @@ foreach ( $active as $name => $c ) {
             list( $fp, $fperr, $fprc ) = capture( 'ssh-keygen -lf ' . escapeshellarg( $keyfile ) );
             @unlink( $keyfile );
             if ( $fprc !== 0 ) {
-                report( 'FAIL', "$name: could not fingerprint $host's host keys: " . reason( $fperr ) );
+                report( 'FAIL', "$name: could not fingerprint $ssh_host's host keys: " . reason( $fperr ) );
                 continue;
             }
-            report( 'todo', "$name: record $host's host key for $account:\n            "
+            report( 'todo', "$name: record $ssh_host's host key for $account:\n            "
                             . implode( "\n            ", explode( "\n", $fp ) ) );
-            if ( $apply && confirm_host_keys( "Do these fingerprints match $host's real host keys?" ) ) {
+            if ( $apply && confirm_host_keys( "Do these fingerprints match $ssh_host's real host keys?" ) ) {
                 $dir = dirname( $known );
                 if ( !is_dir( $dir ) && !@mkdir( $dir, 0700, true ) ) {
                     report( 'FAIL', "$name: could not create $dir" );
                     continue;
                 }
+                $saved = backup_append_target( $known, "known_hosts.$account" );
+                if ( $saved === '' ) {
+                    report( 'FAIL', "$name: could not back up $known, so the append was not made" );
+                    continue;
+                }
                 if ( file_put_contents( $known, $keys . "\n", FILE_APPEND ) === false ) {
-                    report( 'FAIL', "$name: could not append $host's host key to $known" );
+                    report( 'FAIL', "$name: could not append $ssh_host's host key to $known" );
                     continue;
                 }
                 $owned = chown( $dir, $account ) && chown( $known, $account )
                          && chgrp( $known, $entry[ 'gid' ] ) && chmod( $dir, 0700 ) && chmod( $known, 0600 );
                 $changes++;
                 report( $owned ? 'done' : 'FAIL',
-                        $owned ? "$name: $host's host key recorded for $account"
+                        $owned ? "$name: $ssh_host's host key recorded for $account (previous $known in $saved)"
                                : "$name: $known was written but its owner or mode could not be set" );            }
         }
         $ssh = "ssh -n -p $port -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes " . escapeshellarg( $login ) . " true";
@@ -1372,6 +1775,77 @@ if ( !$apply ) {
     $rc = run_as( $web_user, 'test -w ' . escapeshellarg( $breaker_dir ), $w_out, $w_err );
     report( $rc === 0 ? 'ok' : 'FAIL', "$web_user can write the breaker directory"
             . ( $rc === 0 ? '' : ' ' . reason( $w_err !== '' ? $w_err : $w_out ) ) );
+
+    ## The sizing gate refuses a submission outright, so a cluster can pass every
+    ## check above and still take no jobs. These are that gate's own conditions
+    ## (web/common/class/jobsubmit.php resource_plan()), applied per active cluster
+    ## and read back from the written config rather than from what step 3 proposed.
+    $final = config_vars( $global_config, $f_why );
+    if ( $final === null ) {
+        report( 'FAIL', "cannot re-read global_config.php to check the sizing gate: "
+                        . reason( $f_why ) );
+    } else {
+        $final_clusters = is_array( $final[ 'cluster_details' ] ?? null )
+                        ? $final[ 'cluster_details' ] : [];
+        $refused = [];
+        $checked = 0;
+        foreach ( $final_clusters as $name => $c ) {
+            if ( !is_array( $c ) || !( $c[ 'active' ] ?? false ) ) {
+                continue;
+            }
+            $checked++;
+            $ppn     = (int) ( $c[ 'ppn' ] ?? 0 );
+            $maxproc = max( 0, (int) ( $c[ 'maxproc' ] ?? 0 ) );
+            if ( $ppn < 1 ) {
+                $refused[] = "$name has no usable tasks-per-node capacity (ppn $ppn)";
+            } elseif ( !empty( $c[ 'single_node' ] ) && $maxproc > $ppn ) {
+                $refused[] = "$name is single_node with maxproc $maxproc over ppn $ppn";
+            }
+        }
+        ## An active cluster with no active probe writes no cluster_status row, and the
+        ## web tier treats a cluster with no row as down. So the two files have to
+        ## agree, or submission is enabled on a cluster nobody can select. This is the
+        ## state an operator lands in after activating a converted national HPC entry
+        ## in global_config.php alone.
+        $cc_file = "$us3bin/cluster_config.php";
+        $cc_vars = is_file( $cc_file ) ? config_vars( $cc_file, $cc_read_why ) : null;
+        if ( $cc_vars === null ) {
+            report( 'note', is_file( $cc_file )
+                            ? "could not read $cc_file (" . reason( $cc_read_why )
+                              . "), so the probes could not be checked against the active clusters"
+                            : "no $cc_file, so no cluster has a status probe" );
+        } else {
+            $probes  = is_array( $cc_vars[ 'cluster_configuration' ] ?? null )
+                     ? $cc_vars[ 'cluster_configuration' ] : [];
+            $unprobed = [];
+            foreach ( $final_clusters as $name => $c ) {
+                if ( !is_array( $c ) || !( $c[ 'active' ] ?? false ) ) {
+                    continue;
+                }
+                if ( !is_array( $probes[ $name ] ?? null ) ) {
+                    $unprobed[] = "$name has no entry in cluster_config.php";
+                } elseif ( empty( $probes[ $name ][ 'active' ] ) ) {
+                    $unprobed[] = "$name has an inactive status probe";
+                } elseif ( trim( (string) ( $probes[ $name ][ 'status' ] ?? '' ) ) === '' ) {
+                    $unprobed[] = "$name has an active probe with no status command";
+                }
+            }
+            if ( $unprobed ) {
+                report( 'FAIL', "active cluster(s) the web tier will grey out, because nothing"
+                                . " writes their cluster_status row: " . implode( '; ', $unprobed ) );
+            } else {
+                report( 'ok', "every active cluster has an active status probe" );
+            }
+        }
+
+        if ( $refused ) {
+            report( 'FAIL', "cluster(s) would refuse every job: " . implode( '; ', $refused ) );
+        } elseif ( $checked === 0 ) {
+            report( 'note', "no active cluster to check against the submission sizing gate" );
+        } else {
+            report( 'ok', "all $checked active cluster(s) pass the submission sizing gate" );
+        }
+    }
 }
 
 echo "\n";
@@ -1391,6 +1865,11 @@ if ( $failures ) {
     echo "All checks passed.\n";
 }
 if ( $apply && $changes ) {
+    global $util_backup_dir;
+    if ( isset( $util_backup_dir ) && strlen( $util_backup_dir ) ) {
+        echo "\nOriginals of every file changed or appended to: $util_backup_dir\n"
+           . "See \"Undoing it\" in --help before rolling any of it back.\n";
+    }
     ## The preflight required an idle host, so this is a start, not a restart, and
     ## it runs as us3: started as root the services would leave root-owned state.
     echo "\nFinish the upgrade in this order:\n"
