@@ -228,6 +228,18 @@ if ( $checklog && $monitor ) {
 ## fields $10 and $11, which are the db and gfacID only when the command starts
 ## at field 8. A monitor launched as "nice -15 php ..." (how local submission
 ## started them before the Slurm change) shifts them, so the key became
+## Every cleanup finalizing marker under the job log tree. Mirrors
+## jobmonitor/cleanup.php's cleanup_job_dir(), which is per database and job.
+function finalizing_markers() {
+    global $ll_base_dir;
+
+    $base = ( isset( $ll_base_dir ) && $ll_base_dir != "" )
+            ? $ll_base_dir
+            : ( exec( "ls -d ~us3/lims" ) . "/etc/joblog" );
+
+    return glob( "$base/*/*/finalizing" ) ?: [];
+}
+
 ## "php:<path>", matched no row, and the job read as unmonitored: --restart then
 ## started a second monitor for a job that already had one, and two monitors
 ## import the same results twice.
@@ -477,6 +489,46 @@ if ( $running || $restart || $restart_only ) {
         exit;
     }
     
+    ## A worker killed between deleting the gfac.analysis row and writing the
+    ## final stage status leaves no row, so nothing above will restart a monitor
+    ## for it and the stage sits at 'running'. cleanup leaves a marker across that
+    ## span; a marker with no row means the worker died in it.
+    foreach ( finalizing_markers() as $marker ) {
+        $info = json_decode( (string) @file_get_contents( $marker ), true );
+        if ( !is_array( $info ) || empty( $info[ 'us3_db' ] ) || empty( $info[ 'gfacID' ] ) ) {
+            echo "ignoring unreadable finalizing marker $marker\n";
+            continue;
+        }
+        $gfacid = $info[ 'gfacID' ];
+        $res    = db_obj_result( $db_handle,
+            "select count(*) as n from gfac.analysis where gfacID='"
+            . mysqli_real_escape_string( $db_handle, $gfacid ) . "'", false, true );
+        if ( $res !== false && (int) $res->{"n"} > 0 ) {
+            ## The row is back, or was never deleted: the monitor restart above
+            ## owns this job, so leave the marker to that run.
+            continue;
+        }
+        $id = (int) ( $info[ 'autoflowAnalysisID' ] ?? 0 );
+        if ( $id <= 0 ) {
+            echo "finalizing marker for $gfacid has no autoflowAnalysisID; removing it\n";
+            @unlink( $marker );
+            continue;
+        }
+        $message = "Results handling did not finish: the worker stopped after the job"
+                 . " record was removed. Check the job log for $gfacid and resubmit if"
+                 . " the results are missing.";
+        $query = "UPDATE " . mysqli_real_escape_string( $db_handle, $info[ 'us3_db' ] )
+               . ".autoflowAnalysis SET status='FAILED', statusMsg='"
+               . mysqli_real_escape_string( $db_handle, $message ) . "'"
+               . " WHERE autoflowAnalysisID=$id AND status NOT IN ('FAILED','COMPLETE')";
+        if ( mysqli_query( $db_handle, $query ) === false ) {
+            echo "could not close out stage $id for $gfacid: " . mysqli_error( $db_handle ) . "\n";
+            continue;
+        }
+        echo "closed out stage $id for $gfacid, whose results handling was interrupted\n";
+        @unlink( $marker );
+    }
+
     if ( !count( $jm_restart_db ) ) {
         echo "no gfac.analysis found that need restarting\n";
         exit;
