@@ -69,9 +69,7 @@ Steps
 4 : records each cluster's host key and checks ssh for us3 and the web account
 5 : creates the shared circuit-breaker directory
 6 : removes the gridctl cron entries (gridctl.php, and the gridctl_pro/dev names before it)
-7 : installs the Content-Security-Policy as Report-Only unless a policy is already
-    configured; enforcing it is a later step
-8 : verifies the result, including that every active cluster passes the submission
+7 : verifies the result, including that every active cluster passes the submission
     sizing gate rather than refusing every job
 
 Undoing it

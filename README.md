@@ -40,14 +40,13 @@
    - moves an existing host to the Slurm submission contract; run as root after pulling common, every instance, gridctl and dbutils
    - host configuration only: the stack code and the database schema are upgraded separately, and the code must be in place first
      0. checks that every stack checkout is at 4.3.0 or newer, read from each repository's VERSION, and refuses to go further while one is older (each instance docroot is its own dbinst clone, so each is checked on its own)
-     1. refuses to run while any Airavata job is in flight, while any job is collecting or importing results, or while any job holds a cleanup claim (step 7 replaces the jobmonitors, so a half-imported result must not be possible)
+     1. refuses to run unless the host is idle: us3-listen stopped, no jobmonitor and no unfinished gfac.analysis row, no cleanup claim, an empty local Slurm queue, no node allocated, no other client on MariaDB, nobody else logged in, and the LIMS cron entries commented out; every failing check is reported before it stops
      2. rewrites listen-config.php from the gridctl template, carrying the site's values
-     3. deactivates cluster entries the Slurm code cannot submit to (metascheduler entries, and anything whose submittype is not slurm), then sets the global_config.php settings the new code requires (queue time 0, tenant scope, local cluster, env_script_lines per cluster, single_node on one-node appliances)
+     3. deactivates cluster entries the Slurm code cannot submit to (metascheduler entries, and anything whose submittype is not slurm), or with --convert-http converts the national HPC entries left over from Airavata to the template's SSH shape and activates their status probes, then sets the global_config.php settings the new code requires (both stall timers 0, tenant scope, local cluster, env_script_lines per cluster, and single_node with maxproc <= ppn <= CPUs on one-node appliances)
      4. records each cluster's host key and checks ssh for us3 and the web account (the PHP-FPM pool user); sets up the keys for the host's own cluster
      5. creates the shared circuit-breaker directory
-     6. fixes crontabs (us3's, /etc/crontab, /etc/cron.d) that still call gridctl_pro.php / gridctl_dev.php
-     7. replaces jobmonitors started before the upgrade, which take no cleanup claim and would import a job's results twice; a monitor is only replaced while its own job is still polling the cluster, and one that is collecting or importing results is left alone and reported. Which monitors predate the upgrade is read from a marker this script writes (lims/etc/uslims_upgrade-applied), not from a file time, so a deployment that preserves timestamps cannot hide them
-     8. verifies the result
+     6. removes the gridctl cron entries from the crontabs (us3's, /etc/crontab, /etc/cron.d), under gridctl.php and the gridctl_pro/dev names before it, since each job's jobmonitor now carries it to a terminal state
+     7. verifies the result
    - dry run by default; ```php uslims_upgrade.php --apply``` makes the changes, backing up each file first; safe to rerun
  - uslims_git_info.php
    - for all expected and discovered repos, reports path, url, branch, use, rev#, rev date, local changes, and deltas
