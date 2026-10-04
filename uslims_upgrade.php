@@ -246,6 +246,8 @@ $listen_config = "$us3bin/listen-config.php";
 $gridctl_dir   = is_file( "$us3bin/gridctl/listen-config.php.template" ) ? "$us3bin/gridctl" : $us3bin;
 $template      = "$gridctl_dir/listen-config.php.template";
 $global_config = "$wwwpath/common/global_config.php";
+## The default only. remote_exec reads $global_circuit_breaker_dir first, so this
+## is re-resolved from the config once that file has been read, below.
 $breaker_dir   = "$us3_home/lims/etc/circuit-breaker";
 
 $failures    = 0;
@@ -1229,6 +1231,18 @@ if ( !is_file( $global_config ) ) {
 $gc = config_vars( $global_config, $why );
 if ( $gc === null ) {
     error_exit( "cannot read $global_config: " . reason( $why ) );
+}
+
+## The breaker directory belongs to remote_exec, which reads
+## $global_circuit_breaker_dir and only falls back to us3's home. Recomputing the
+## default here would create one directory and verify it while the web tier and
+## the daemons used another: step 5 would report it created, step 8 would report
+## it writable, and neither statement would be about the directory in use.
+$configured_breaker = isset( $gc[ 'global_circuit_breaker_dir' ] )
+                      ? trim( (string) $gc[ 'global_circuit_breaker_dir' ] ) : '';
+if ( $configured_breaker !== '' ) {
+    $breaker_dir = rtrim( $configured_breaker, '/' );
+    report( 'note', "global_config.php sets the breaker directory to $breaker_dir" );
 }
 
 $managed = [];     ## PHP assignments for the managed block, in order
