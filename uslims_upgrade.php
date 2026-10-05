@@ -109,6 +109,11 @@ Options
 --env cluster=lines          : env_script_lines for a cluster ('' for none); sets or changes it; repeatable
 --local-cluster name         : cluster used for GUI requests naming 'localhost'; sets or changes it
 --single-tenant yes|no       : yes on an appliance (one institution), no on a shared host; sets or changes it
+--activate cluster[,cluster] : bring a converted entry live: sets active=true in global_config.php and
+                               turns on its cluster_config.php probe, together, once its env_script_lines
+                               are real and ssh to it succeeds. Still 'http', already active, no usable
+                               env_script_lines, or ssh failing are each reported and nothing is changed
+                               for that entry.
 
 __EOD;
 
@@ -140,6 +145,7 @@ $env_values    = [];
 $local_cluster = null;
 $single_tenant = null;
 $convert_http  = false;
+$activate_want = [];
 
 while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     $opt = array_shift( $u_argv );
@@ -190,6 +196,18 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             $local_cluster = opt_value( $u_argv, $opt );
             if ( $local_cluster === '' ) {
                 error_exit( "--local-cluster needs a cluster name" );
+            }
+            break;
+        case "--activate":
+            $names = opt_value( $u_argv, $opt );
+            if ( trim( $names ) === '' ) {
+                error_exit( "--activate needs at least one cluster name" );
+            }
+            foreach ( explode( ',', $names ) as $one ) {
+                $one = trim( $one );
+                if ( $one !== '' ) {
+                    $activate_want[] = $one;
+                }
             }
             break;
         case "--single-tenant":
@@ -899,9 +917,12 @@ if ( !$gdb ) {
 ## stops, so one run tells the operator everything to quiet down.
 $busy = [];
 
-## -- the gridctl services. services.php manages listen only, so that is what
-## -- "stopped" means; the jobmonitors are checked separately below.
-$listeners = processes( '#^\s*(\d+)\s+\S*php[0-9.]*\s+\S*/listen\.php(\s|$)#' );
+## -- the gridctl services. services.php start() launches listen, submitctl
+## -- and esign directly, plus manage-us3-pipe as listen's own child; checking
+## -- only listen.php let any of the other three still be running (confirmed:
+## -- a container with just submitctl.php up passed this and the upgrade
+## -- applied). The jobmonitors are checked separately below.
+$listeners = processes( '#^\s*(\d+)\s+\S*php[0-9.]*\s+\S*/(listen|manage-us3-pipe|submitctl|esign)\.php(\s|$)#' );
 if ( $listeners === null ) {
     report( 'FAIL', "could not read the process list, so the host cannot be shown to be idle" );
     $busy[] = 'process list unreadable';
@@ -917,11 +938,11 @@ if ( $listeners === null ) {
            . " listen-config.php is still the pre-upgrade format, which the new"
            . " code refuses. Stopping the services before pulling the new code"
            . " avoids this entirely)";
-    report( 'FAIL', "us3-listen is still running (pid " . implode( ', ', array_keys( $listeners ) )
-                    . "); stop it with: $how" );
-    $busy[] = 'us3-listen running';
+    report( 'FAIL', "a gridctl service is still running (pid "
+                    . implode( ', ', array_keys( $listeners ) ) . "); stop it with: $how" );
+    $busy[] = 'gridctl service running';
 } else {
-    report( 'ok', "us3-listen is stopped" );
+    report( 'ok', "no gridctl service (listen, manage-us3-pipe, submitctl, esign) is running" );
 }
 
 ## -- jobmonitors. One per job on the new contract, none on an idle host.
@@ -1480,6 +1501,62 @@ foreach ( $active as $name => $c ) {
     }
 }
 
+## --activate: bring a converted entry live. Checked here, not folded into the
+## conversion loop above, because activation is a separate operator decision
+## that can come any number of runs later, once the cluster has actually
+## supplied its env_script_lines and SSH has been set up by hand (neither of
+## which this script can do for a cluster that isn't in $active yet).
+$activated = [];
+foreach ( $activate_want as $name ) {
+    $c = $clusters[ $name ] ?? null;
+    if ( !is_array( $c ) ) {
+        report( 'FAIL', "--activate: '$name' is not a cluster entry in $global_config" );
+        continue;
+    }
+    if ( !empty( $c[ 'active' ] ) ) {
+        report( 'ok', "--activate: '$name' is already active" );
+        continue;
+    }
+    if ( strtolower( (string) ( $c[ 'submittype' ] ?? '' ) ) !== 'slurm' ) {
+        report( 'FAIL', "--activate: '$name' is still submittype '"
+                        . ( $c[ 'submittype' ] ?? '' ) . "'; convert it first with --convert-http" );
+        continue;
+    }
+    ## --env on this run wins over whatever is already on disk, same as the
+    ## env_script_lines check active clusters get above.
+    $env = isset( $env_values[ $name ] ) ? str_replace( '\n', "\n", $env_values[ $name ] )
+         : (string) ( $c[ 'env_script_lines' ] ?? '' );
+    if ( trim( $env ) === '' ) {
+        report( 'input', "--activate: '$name' has no env_script_lines yet (pass --env $name=...)" );
+        continue;
+    }
+    if ( stripos( $env, 'TODO' ) !== false ) {
+        report( 'input', "--activate: '$name' still carries the template's env_script_lines TODO;"
+                        . " ask the cluster for its module lines (--env $name=...)" );
+        continue;
+    }
+    $login = $c[ 'login' ] ?? ( 'us3@' . ( $c[ 'name' ] ?? '' ) );
+    $port  = (int) ( $c[ 'sshport' ] ?? 22 );
+    $ssh   = "ssh -n -p $port -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes "
+           . escapeshellarg( $login ) . " true";
+    $rc    = run_as( 'us3', $ssh, $ssh_out, $ssh_err );
+    if ( $rc !== 0 ) {
+        report( 'todo', "--activate: '$name' does not yet ssh as us3 to $login (exit $rc): "
+                        . reason( $ssh_err !== '' ? $ssh_err : $ssh_out )
+                        . "; set up the key, as step 4 would for an active cluster" );
+        continue;
+    }
+    if ( $env !== ( $c[ 'env_script_lines' ] ?? '' ) ) {
+        $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = '
+                   . php_string( $env ) . ';';
+    }
+    $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'active\' ] = true;';
+    report( 'todo', "activate '$name' (env_script_lines is real, ssh to $login succeeds): sets"
+                    . " active = true in $global_config and turns on its status probe in"
+                    . " cluster_config.php" );
+    $activated[] = $name;
+}
+
 if ( $managed && $apply && confirm( "Write these settings to $global_config?" ) ) {
     $begin = "## BEGIN uslims_upgrade.php settings (rerun the script rather than editing by hand)";
     $end   = "## END uslims_upgrade.php settings";
@@ -1504,21 +1581,23 @@ if ( $managed && $apply && confirm( "Write these settings to $global_config?" ) 
     report( 'done', "$global_config updated (original in " . backup_path( $global_config ) . ")" );
 }
 
-## A converted cluster's health probe. cluster_status.php skips an entry whose
-## 'active' is not true, so a converted cluster stays invisible in the web tier
-## until its probe is on. The probe is also how an operator confirms SSH works
-## before activating submission, which is why it is turned on while the
-## global_config entry is still inactive.
-if ( $converted ) {
+## A newly-activated cluster's health probe, turned on together with the
+## global_config.php change above rather than at conversion time: a probe that
+## comes on while the entry is still inactive and unreachable tries an ssh
+## login every 12 minutes to a centre with no key installed yet, which is
+## exactly what intrusion detection there is tuned to notice. cluster_status.php
+## also skips an entry whose 'active' is not true, so there is nothing to gain
+## by turning the probe on first.
+if ( $activated ) {
     $cluster_config = "$us3bin/cluster_config.php";
     if ( !is_file( $cluster_config ) ) {
         report( 'note', "no $cluster_config, so no status probe could be activated for "
-                        . implode( ', ', $converted ) );
+                        . implode( ', ', $activated ) );
     } else {
         $cc_text = (string) file_get_contents( $cluster_config );
         $turned  = [];
         $absent  = [];
-        foreach ( $converted as $name ) {
+        foreach ( $activated as $name ) {
             ## Only this entry's own 'active' line: the match is anchored on the key
             ## and stops at the end of its array literal.
             $pattern = '/(' . preg_quote( "'$name'", '/' ) . '\s*=>\s*\[)([^\]]*?)(\x27active\x27\s*=>\s*)false/s';
@@ -1538,7 +1617,7 @@ if ( $converted ) {
                             . " or the cluster will never be probed" );
         }
         if ( !$turned ) {
-            report( 'ok', "every converted cluster's status probe is already active" );
+            report( 'ok', "every cluster being activated already has its status probe on" );
         } else {
             report( 'todo', "activate the status probe for " . implode( ', ', $turned )
                             . " in $cluster_config" );
@@ -1587,8 +1666,11 @@ foreach ( $active as $name => $c ) {
         $known  = $entry[ 'dir' ] . "/.ssh/known_hosts";
         $lookup = $port === 22 ? $ssh_host : "[$ssh_host]:$port";
         ## Changes proposed but not yet made. They explain a failing ssh test, which
-        ## is why a dry run reports one rather than a FAIL.
-        $pending = array();
+        ## is why a dry run reports one rather than a FAIL. Named apart from the
+        ## global $pending counter report() increments: this used to be called
+        ## $pending too, which clobbered that counter with an array the moment
+        ## this line ran, corrupting every report() call afterward.
+        $ssh_pending = array();
         list( $o, $ferr, $found ) = capture( 'ssh-keygen -F ' . escapeshellarg( $lookup ) . ' -f ' . escapeshellarg( $known ) );
         if ( $found !== 0 && $ferr !== '' && !preg_match( '/No such file or directory/', $ferr ) ) {
             ## An unreadable known_hosts is not the same as a missing entry.
@@ -1617,7 +1699,7 @@ foreach ( $active as $name => $c ) {
             }
             report( 'todo', "$name: record $ssh_host's host key for $account:\n            "
                             . implode( "\n            ", explode( "\n", $fp ) ) );
-            $pending[ 'host key' ] = true;
+            $ssh_pending[ 'host key' ] = true;
             if ( $apply && confirm_host_keys( "Do these fingerprints match $ssh_host's real host keys?" ) ) {
                 $dir = dirname( $known );
                 if ( !is_dir( $dir ) && !@mkdir( $dir, 0700, true ) ) {
@@ -1636,7 +1718,7 @@ foreach ( $active as $name => $c ) {
                 $owned = chown( $dir, $account ) && chown( $known, $account )
                          && chgrp( $known, $entry[ 'gid' ] ) && chmod( $dir, 0700 ) && chmod( $known, 0600 );
                 if ( $owned ) {
-                    unset( $pending[ 'host key' ] );
+                    unset( $ssh_pending[ 'host key' ] );
                 }
                 $changes++;
                 report( $owned ? 'done' : 'FAIL',
@@ -1647,27 +1729,27 @@ foreach ( $active as $name => $c ) {
         $rc  = run_as( $account, $ssh, $ssh_out, $ssh_err );
         if ( $rc !== 0 && $name === $host_cluster ) {
             report( 'todo', "$name: authorize $account's key for $login on this host" );
-            $pending[ 'authorized key' ] = true;
+            $ssh_pending[ 'authorized key' ] = true;
             if ( $apply && confirm( "Set up $account's SSH key for $login?" ) ) {
                 if ( authorize_local_key( $account, $entry, explode( '@', $login )[ 0 ] ) ) {
                     $changes++;
                     $rc = run_as( $account, $ssh, $ssh_out, $ssh_err );
                     if ( $rc === 0 ) {
-                        unset( $pending[ 'authorized key' ] );
+                        unset( $ssh_pending[ 'authorized key' ] );
                     }
                     report( $rc === 0 ? 'done' : 'FAIL', "$name: $account's key authorized for $login" );
                 } else {
                     report( 'FAIL', "$name: could not authorize $account's key for $login" );
                 }            }
         }
-        if ( $rc !== 0 && $pending ) {
+        if ( $rc !== 0 && $ssh_pending ) {
             ## The test cannot pass before the changes just proposed are made, so a
             ## dry run on a host that has never had the key reports the consequence
             ## of its own todos. Reported as a FAIL it made every such run exit 1,
             ## which left a genuine FAIL indistinguishable.
             report( 'todo', "$name: $account can ssh to $login once the "
-                            . implode( ' and ', array_keys( $pending ) ) . " above "
-                            . ( count( $pending ) > 1 ? 'are' : 'is' ) . " in place" );
+                            . implode( ' and ', array_keys( $ssh_pending ) ) . " above "
+                            . ( count( $ssh_pending ) > 1 ? 'are' : 'is' ) . " in place" );
         } else {
             report( $rc === 0 ? 'ok' : 'FAIL', "$name: $account can ssh to $login"
                     . ( $rc === 0 ? '' : " (exit $rc: install the account's key, including for the host itself) "
