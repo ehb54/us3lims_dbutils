@@ -1533,27 +1533,39 @@ foreach ( $active as $name => $c ) {
         report( 'todo', "set single_node for $name (its queue has one node)" );
         $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'single_node\' ] = true;';
     }
-    ## jobsubmit.php refuses every job on a single_node cluster whose maxproc exceeds
-    ## ppn, or whose ppn is unusable, so enforce maxproc <= ppn <= CPUs rather than
-    ## only lowering what is already above the CPU count. Values are resolved first so
-    ## a key two rules both lower is still proposed once.
-    $want = [];
-    foreach ( [ 'ppn', 'ppbj', 'maxproc' ] as $key ) {
-        $want[ $key ] = isset( $c[ $key ] ) ? (int) $c[ $key ] : null;
-        if ( $want[ $key ] !== null && $want[ $key ] > $cpus ) {
-            $want[ $key ] = $cpus;
-        }
+    ## jobsubmit.php refuses every job on a single_node cluster whose maxproc
+    ## exceeds ppn, or whose ppn is unusable, so that invariant still holds. But
+    ## 4.2.0 hard-coded ppn 16 for GA/DMGA on an appliance regardless of the
+    ## node's real core count, oversubscribing a smaller node on purpose: capping
+    ## ppn (and so maxproc) at the CPU count dropped GA to that many tasks, which
+    ## is not an acceptable regression. ppn and maxproc float up to 16 (or the
+    ## CPU count, if that is higher); they are never lowered toward it, since a
+    ## site that set them higher made that choice deliberately.
+    $ga_floor = max( $cpus, 16 );
+    $want     = [];
+    $want[ 'ppbj' ] = isset( $c[ 'ppbj' ] ) ? (int) $c[ 'ppbj' ] : null;
+    ## ppbj sizes 2DSA/PCSA, which the GA floor above does not concern: kept at
+    ## the real CPU count, lowered when it is over, same as before.
+    if ( $want[ 'ppbj' ] !== null && $want[ 'ppbj' ] > $cpus ) {
+        $want[ 'ppbj' ] = $cpus;
     }
-    if ( $want[ 'ppn' ] === null || $want[ 'ppn' ] < 1 ) {
-        $want[ 'ppn' ] = $cpus;
+    $want[ 'ppn' ] = isset( $c[ 'ppn' ] ) ? (int) $c[ 'ppn' ] : null;
+    if ( $want[ 'ppn' ] === null || $want[ 'ppn' ] < $ga_floor ) {
+        $want[ 'ppn' ] = $ga_floor;
     }
-    if ( $want[ 'maxproc' ] !== null && $want[ 'maxproc' ] > $want[ 'ppn' ] ) {
+    $want[ 'maxproc' ] = isset( $c[ 'maxproc' ] ) ? (int) $c[ 'maxproc' ] : null;
+    if ( $want[ 'maxproc' ] === null || $want[ 'maxproc' ] < $ga_floor ) {
+        $want[ 'maxproc' ] = $ga_floor;
+    }
+    ## Still never above ppn: that part of the original invariant stands.
+    if ( $want[ 'maxproc' ] > $want[ 'ppn' ] ) {
         $want[ 'maxproc' ] = $want[ 'ppn' ];
     }
-    ## ppbj (processes per batch job) is the per-dataset sizing maxproc never
-    ## touches, but it faces the same single_node ceiling: jobsubmit.php's gate
-    ## refuses 2DSA/PCSA just as it would GA/DMGA if ppbj alone were left over
-    ## ppn, which lowering only maxproc never catches.
+    ## ppbj (processes per batch job) faces the same ceiling: jobsubmit.php's
+    ## gate refuses 2DSA/PCSA just as it would GA/DMGA if ppbj alone were left
+    ## over ppn. With ppn now floored at $ga_floor >= $cpus >= ppbj, this should
+    ## never fire, but it is kept as the invariant's own guarantee rather than
+    ## one that merely happens to hold given the values above.
     if ( $want[ 'ppbj' ] !== null && $want[ 'ppbj' ] > $want[ 'ppn' ] ) {
         $want[ 'ppbj' ] = $want[ 'ppn' ];
     }
@@ -1565,7 +1577,8 @@ foreach ( $active as $name => $c ) {
         report( 'todo', "set $key for $name to $value (currently "
                         . ( $now === null ? 'unset' : $now )
                         . "; one node with $cpus CPUs, and a single_node cluster needs"
-                        . " maxproc <= ppn <= CPUs or it refuses every job)" );
+                        . " maxproc <= ppn, with ppn and maxproc at least "
+                        . "$ga_floor so GA keeps its process count)" );
         $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ ' . var_export( $key, true ) . ' ] = ' . $value . ';';
     }
 }
