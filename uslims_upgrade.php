@@ -807,10 +807,10 @@ function reason( $text ) {
 ## ------------------------------------------------------------- 0. stack code
 
 ## Every later step assumes the new code is already deployed: step 2 carries the
-## site's values into gridctl's template, step 8 installs dbutils' policy, and the
-## web code has to be able to submit through Slurm. Checking first means a stale
-## checkout is reported before anything on the host has been changed, rather than
-## failing partway through.
+## site's values into gridctl's template, and the web code has to be able to
+## submit through Slurm. Checking first means a stale checkout is reported
+## before anything on the host has been changed, rather than failing partway
+## through.
 step( "0. Stack code is $required_version or newer" );
 
 ## Each repository records its release in a VERSION file at its root. 4.2.0
@@ -1319,7 +1319,7 @@ if ( $gc === null ) {
 ## The breaker directory belongs to remote_exec, which reads
 ## $global_circuit_breaker_dir and only falls back to us3's home. Recomputing the
 ## default here would create one directory and verify it while the web tier and
-## the daemons used another: step 5 would report it created, step 8 would report
+## the daemons used another: step 5 would report it created, step 7 would report
 ## it writable, and neither statement would be about the directory in use.
 $configured_breaker = isset( $gc[ 'global_circuit_breaker_dir' ] )
                       ? trim( (string) $gc[ 'global_circuit_breaker_dir' ] ) : '';
@@ -1960,8 +1960,20 @@ if ( !$apply ) {
                                 . ' ' . reason( $g_err !== '' ? $g_err : $g_out ) ) );
 
     $rc = run_as( $web_user, 'test -w ' . escapeshellarg( $breaker_dir ), $w_out, $w_err );
-    report( $rc === 0 ? 'ok' : 'FAIL', "$web_user can write the breaker directory"
-            . ( $rc === 0 ? '' : ' ' . reason( $w_err !== '' ? $w_err : $w_out ) ) );
+    if ( $rc !== 0 ) {
+        ## test -w prints nothing on failure, so $w_err/$w_out are usually empty
+        ## and the real cause is left unsaid. A failed stat means $web_user cannot
+        ## even see the directory, which is an ancestor not being traversable
+        ## (missing execute permission on it), not $breaker_dir's own mode.
+        $stat_rc = run_as( $web_user, 'stat ' . escapeshellarg( $breaker_dir ), $stat_out, $stat_err );
+        $why     = $stat_rc !== 0
+                 ? "an ancestor directory of $breaker_dir is not traversable for $web_user"
+                   . " (missing execute permission), not just $breaker_dir itself"
+                 : ( $w_err !== '' ? $w_err : $w_out );
+        report( 'FAIL', "$web_user can write the breaker directory " . reason( $why ) );
+    } else {
+        report( 'ok', "$web_user can write the breaker directory" );
+    }
 
     ## Where the web account is not us3, submit_slurm.php launches the jobmonitor
     ## through 'sudo -u us3 /usr/bin/php', so the submission succeeds and the job
@@ -2083,6 +2095,11 @@ if ( $apply && $changes ) {
         echo "\nOriginals of every file changed or appended to: $util_backup_dir\n"
            . "See \"Undoing it\" in --help before rolling any of it back.\n";
     }
+}
+## Gated on no FAILs, not just on something having changed: printing "start the
+## services" after a FAIL told the operator to bring the host back up with a
+## check still failing, as though the run had finished cleanly.
+if ( $apply && $changes && !$failures ) {
     ## The preflight required an idle host, so this is a start, not a restart, and
     ## it runs as us3: started as root the services would leave root-owned state.
     echo "\nFinish the upgrade in this order:\n"
