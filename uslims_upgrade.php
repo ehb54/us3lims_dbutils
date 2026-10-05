@@ -272,6 +272,11 @@ $failures    = 0;
 $changes     = 0;
 $pending     = 0;
 $needs_input = 0;
+## Incremented whenever an --apply run's confirm() or confirm_host_keys() is
+## answered no (or, for the latter, cannot be asked at all): a todo that was
+## reachable but not carried out, which an [input] item is not the only way
+## to leave behind.
+$declined    = 0;
 
 ## Backups go to a fixed, absolute location rather than wherever root happened to
 ## be when the script was started. The directory itself is created on first use,
@@ -425,19 +430,27 @@ function ask_yn( $question, $hint = 'rerun with --yes to accept' ) {
 }
 
 function confirm( $question ) {
-    global $assume_yes;
-    return $assume_yes || ask_yn( $question );
+    global $assume_yes, $apply, $declined;
+    $answer = $assume_yes || ask_yn( $question );
+    if ( !$answer && $apply ) {
+        $declined++;
+    }
+    return $answer;
 }
 
 ## Trusting a freshly scanned host key is not something --yes should decide: it
 ## would turn StrictHostKeyChecking=yes back into accept-new. Unattended runs
 ## report the fingerprints instead, and install nothing.
 function confirm_host_keys( $question ) {
-    global $accept_keys;
+    global $accept_keys, $apply, $declined;
     if ( $accept_keys ) {
         return true;
     }
-    return interactive() ? ask_yn( $question, 'rerun with --accept-host-keys to trust it' ) : false;
+    $answer = interactive() ? ask_yn( $question, 'rerun with --accept-host-keys to trust it' ) : false;
+    if ( !$answer && $apply ) {
+        $declined++;
+    }
+    return $answer;
 }
 
 ## Write a file after backing up the original. Rewriting an existing file
@@ -1024,17 +1037,21 @@ if ( $sq_rc !== 0 ) {
     report( 'note', "squeue is not on this host, so its clusters could not be checked here;"
                     . " confirm sinfo and squeue are idle on each cluster before continuing" );
 } else {
-    $rc = run_as( 'us3', 'squeue -h -o %i', $q_out, $q_err );
+    ## -u us3: this is asking whether US3'S queue is idle, not whether the whole
+    ## Slurm installation is. Unfiltered, any other account's jobs on a shared
+    ## local Slurm failed this check for work that has nothing to do with the
+    ## upgrade.
+    $rc = run_as( 'us3', 'squeue -h -u us3 -o %i', $q_out, $q_err );
     if ( $rc !== 0 ) {
-        report( 'FAIL', "squeue failed, so the local queue cannot be shown to be idle: "
+        report( 'FAIL', "squeue failed, so us3's queue cannot be shown to be idle: "
                         . reason( $q_err !== '' ? $q_err : $q_out ) );
         $busy[] = 'squeue failed';
     } elseif ( trim( $q_out ) !== '' ) {
         $jobs = count( array_filter( explode( "\n", trim( $q_out ) ) ) );
-        report( 'FAIL', "$jobs job(s) are still in the local Slurm queue" );
+        report( 'FAIL', "$jobs us3 job(s) are still in the local Slurm queue" );
         $busy[] = "$jobs job(s) queued";
     } else {
-        report( 'ok', "the local Slurm queue is empty" );
+        report( 'ok', "us3's local Slurm queue is empty" );
     }
     ## squeue says nothing about work already placed on a node, so ask sinfo for the
     ## node states too. allocated/mixed/completing mean a job is on the node.
@@ -1059,9 +1076,18 @@ if ( $sq_rc !== 0 ) {
             }
         }
         if ( $working ) {
-            report( 'FAIL', count( $working ) . " node(s) still running work: "
-                            . implode( ', ', $working ) );
-            $busy[] = count( $working ) . ' node(s) busy';
+            ## sinfo has no per-user filter: a node it calls busy may be running
+            ## someone else's job, not us3's. On a known-shared host that is
+            ## routine and not this upgrade's business; on a single-tenant
+            ## appliance there is no "someone else", so it still blocks.
+            if ( $single_tenant === false ) {
+                report( 'note', count( $working ) . " node(s) running work, on a shared cluster where that"
+                                . " may not be us3's: " . implode( ', ', $working ) );
+            } else {
+                report( 'FAIL', count( $working ) . " node(s) still running work: "
+                                . implode( ', ', $working ) );
+                $busy[] = count( $working ) . ' node(s) busy';
+            }
         } else {
             report( 'ok', "sinfo reports no node running work" );
         }
@@ -1075,6 +1101,23 @@ if ( $sq_rc !== 0 ) {
 
 ## -- other database clients. A sleeping connection is a pool, not a user; one
 ## -- running a statement means the system is in use.
+##
+## Without PROCESS (or SUPER), SHOW PROCESSLIST shows only this connection's
+## own account's threads: on a roles host the web tier connects as a
+## different account (us3php, not gfac), so this check would see nobody else
+## and report 'ok' while blind to them. Checked here rather than assumed, so
+## that is a 'note' to verify by hand instead of a silent false negative.
+$has_process_priv = false;
+$grants = mysqli_query( $gdb, 'SHOW GRANTS' );
+if ( $grants ) {
+    while ( $row = mysqli_fetch_row( $grants ) ) {
+        if ( preg_match( '/\b(PROCESS|SUPER|ALL PRIVILEGES)\b/i', (string) ( $row[ 0 ] ?? '' ) ) ) {
+            $has_process_priv = true;
+            break;
+        }
+    }
+}
+
 $res = mysqli_query( $gdb, 'SHOW PROCESSLIST' );
 if ( !$res ) {
     report( 'note', "could not list the database connections (" . reason( mysqli_error( $gdb ) )
@@ -1095,6 +1138,11 @@ if ( !$res ) {
         report( 'FAIL', count( $others ) . " active database connection(s): "
                         . implode( ', ', array_unique( $others ) ) );
         $busy[] = 'database in use';
+    } elseif ( !$has_process_priv ) {
+        report( 'note', "no other '" . ( $old_listen[ 'guser' ] ?? 'gfac' ) . "' connection is running a"
+                        . " statement, but this account has no PROCESS privilege, so a connection under"
+                        . " a different account (the web tier's, for example) would not show up here;"
+                        . " confirm nobody else is using MariaDB by hand" );
     } else {
         report( 'ok', "no other client is running a statement on MariaDB" );
     }
@@ -1120,13 +1168,22 @@ if ( $who_rc !== 0 ) {
         }
         $sessions[] = "{$m[1]} on {$m[2]}";
     }
-    if ( $sessions && $own_tty === '' ) {
-        ## Without our own terminal there is no way to tell the operator's session
-        ## apart from anyone else's, and refusing here would refuse every run from a
-        ## pipe or a wrapper. Report the sessions and let the operator judge.
-        report( 'note', count( $sessions ) . " login session(s) found, and this session's"
-                        . " terminal could not be identified, so one of them may be this one: "
-                        . implode( ', ', $sessions ) );
+    ## tmux and screen give each pane its own pty, and sudo with use_pty gives
+    ## the elevated process a new one too, so $own_tty can be real and still not
+    ## be the pty who(1) reports for this same login: the exclusion above then
+    ## matches nothing, and the operator's own session falls through to
+    ## $sessions as if it were someone else's.
+    $indirect_pty = getenv( 'TMUX' ) !== false || getenv( 'STY' ) !== false || getenv( 'SUDO_USER' ) !== false;
+    if ( $sessions && ( $own_tty === '' || $indirect_pty ) ) {
+        ## Without a terminal we can trust to be this session's own, there is no
+        ## way to tell the operator's session apart from anyone else's, and
+        ## refusing here would refuse every run from a pipe, a wrapper, tmux,
+        ## screen or sudo. Report the sessions and let the operator judge.
+        report( 'note', count( $sessions ) . " login session(s) found" . ( $indirect_pty
+                        ? ", and this session is running under tmux, screen or sudo, where the"
+                          . " controlling terminal is not reliably this login's own"
+                        : ", and this session's terminal could not be identified" )
+                        . ", so one of them may be this one: " . implode( ', ', $sessions ) );
     } elseif ( $sessions ) {
         report( 'FAIL', count( $sessions ) . " other login session(s): "
                         . implode( ', ', $sessions ) );
@@ -1995,9 +2052,16 @@ if ( !$apply ) {
 }
 if ( $failures ) {
     echo "$failures check(s) FAILED.\n";
-} elseif ( $apply && $needs_input ) {
-    echo "All checks passed, but $needs_input setting(s) still need a value; see the"
-       . " [input] lines above and rerun with the option each one names.\n";
+} elseif ( $apply && ( $needs_input || $declined ) ) {
+    echo "All checks passed, but ";
+    if ( $needs_input ) {
+        echo "$needs_input setting(s) still need a value; see the [input] lines above"
+           . " and rerun with the option each one names.\n";
+    }
+    if ( $declined ) {
+        echo ( $needs_input ? "Also, " : '' ) . "$declined change(s) were declined and so were not"
+           . " made; see the confirmations above and rerun to decide them again.\n";
+    }
 } else {
     echo "All checks passed.\n";
 }
@@ -2020,7 +2084,8 @@ if ( $apply && $changes ) {
        . "  4. confirm no gridctl entry came back:\n"
        . "     crontab -l -u us3 | grep gridctl ; grep -r gridctl /etc/crontab /etc/cron.d\n";
 }
-## A dry run with work outstanding is not a failure, so it exits 0. Under --apply
-## only an [input] item can still be outstanding: every other todo is carried out on
-## the way past, so counting those would make a successful upgrade exit non-zero.
-exit( $failures || ( $apply && $needs_input ) ? 1 : 0 );
+## A dry run with work outstanding is not a failure, so it exits 0. Under --apply,
+## an [input] item is one thing that can still be outstanding; a confirm() the
+## operator answered no to is another, and both leave real work undone, so both
+## have to fail the exit code or a declined change looks like a clean run.
+exit( $failures || ( $apply && ( $needs_input || $declined ) ) ? 1 : 0 );
