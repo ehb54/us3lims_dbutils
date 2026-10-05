@@ -240,6 +240,21 @@ function finalizing_markers() {
     return glob( "$base/*/*/finalizing" ) ?: [];
 }
 
+## Is a finalizing marker's own worker still alive? A marker is only evidence
+## of a crash once its process is actually gone; closing out a stage while the
+## worker that wrote the marker is still mid-import fails a job that was never
+## unhealthy, just slow.
+function marker_process_alive( $pid ) {
+    $pid = (int) $pid;
+    if ( $pid <= 0 ) {
+        return false;
+    }
+    if ( function_exists( 'posix_kill' ) ) {
+        return @posix_kill( $pid, 0 );
+    }
+    return file_exists( "/proc/$pid" );
+}
+
 ## "php:<path>", matched no row, and the job read as unmonitored: --restart then
 ## started a second monitor for a job that already had one, and two monitors
 ## import the same results twice.
@@ -400,6 +415,68 @@ if ( $running || $restart || $restart_only ) {
     $jm_active = active_jobmonitors();
 
     open_db();
+
+    if ( $restart || $restart_only ) {
+        ## A worker killed between deleting the gfac.analysis row and writing the
+        ## final stage status leaves no row, so nothing below will restart a
+        ## monitor for it and the stage sits at 'running'. cleanup leaves a marker
+        ## across that span; a marker with no row means the worker died in it.
+        ##
+        ## Run before the gfac.analysis select below, not after: that select
+        ## returns false, not an empty result, when the table has no rows (the
+        ## usual state on a quiet host after a crash), and the code that used to
+        ## follow it there exited on that before ever reaching this loop.
+        foreach ( finalizing_markers() as $marker ) {
+            $info = json_decode( (string) @file_get_contents( $marker ), true );
+            if ( !is_array( $info ) || empty( $info[ 'us3_db' ] ) || empty( $info[ 'gfacID' ] ) ) {
+                echo "ignoring unreadable finalizing marker $marker\n";
+                continue;
+            }
+            $gfacid = $info[ 'gfacID' ];
+            ## Still running is not the same as abandoned: a marker is only
+            ## evidence of a crash once the process that wrote it is gone. Without
+            ## this, --restart during a live import closed out a job that was
+            ## simply slow, not unhealthy.
+            if ( marker_process_alive( $info[ 'pid' ] ?? 0 ) ) {
+                echo "finalizing marker for $gfacid belongs to pid {$info['pid']}, which is"
+                   . " still running; leaving it alone\n";
+                continue;
+            }
+            $res = db_obj_result( $db_handle,
+                "select count(*) as n from gfac.analysis where gfacID='"
+                . mysqli_real_escape_string( $db_handle, $gfacid ) . "'", false, true );
+            if ( $res !== false && (int) $res->{"n"} > 0 ) {
+                ## The row is back, or was never deleted: the monitor restart below
+                ## owns this job, so leave the marker to that run.
+                continue;
+            }
+            ## autoflowAnalysis's key is requestID (with currentGfacID as a guard
+            ## against a reused gfacID), not autoflowAnalysisID: matching on the
+            ## wrong column either touched no row or the wrong one.
+            $reqid = (int) ( $info[ 'requestID' ] ?? 0 );
+            if ( $reqid <= 0 ) {
+                echo "finalizing marker for $gfacid has no requestID; removing it\n";
+                @unlink( $marker );
+                continue;
+            }
+            $message = "Results handling did not finish: the worker stopped after the job"
+                     . " record was removed. Check the job log for $gfacid and resubmit if"
+                     . " the results are missing.";
+            $query = "UPDATE " . mysqli_real_escape_string( $db_handle, $info[ 'us3_db' ] )
+                   . ".autoflowAnalysis SET status='FAILED', statusMsg='"
+                   . mysqli_real_escape_string( $db_handle, $message ) . "'"
+                   . " WHERE requestID=$reqid AND currentGfacID='"
+                   . mysqli_real_escape_string( $db_handle, $gfacid ) . "'"
+                   . " AND status NOT IN ('FAILED','COMPLETE')";
+            if ( mysqli_query( $db_handle, $query ) === false ) {
+                echo "could not close out requestID $reqid for $gfacid: " . mysqli_error( $db_handle ) . "\n";
+                continue;
+            }
+            echo "closed out requestID $reqid for $gfacid, whose results handling was interrupted\n";
+            @unlink( $marker );
+        }
+    }
+
     $res = db_obj_result( $db_handle, "select * from gfac.analysis order by cluster,us3_db,gfacid", true, true );
 
     $breakline = echoline( '-', 20 + 3 + 45 + 3 + 20 + 3 + 12 + 3 + 6 + 3 + 20, false );
@@ -487,46 +564,6 @@ if ( $running || $restart || $restart_only ) {
 
     if ( !$restart && !$restart_only ) {
         exit;
-    }
-    
-    ## A worker killed between deleting the gfac.analysis row and writing the
-    ## final stage status leaves no row, so nothing above will restart a monitor
-    ## for it and the stage sits at 'running'. cleanup leaves a marker across that
-    ## span; a marker with no row means the worker died in it.
-    foreach ( finalizing_markers() as $marker ) {
-        $info = json_decode( (string) @file_get_contents( $marker ), true );
-        if ( !is_array( $info ) || empty( $info[ 'us3_db' ] ) || empty( $info[ 'gfacID' ] ) ) {
-            echo "ignoring unreadable finalizing marker $marker\n";
-            continue;
-        }
-        $gfacid = $info[ 'gfacID' ];
-        $res    = db_obj_result( $db_handle,
-            "select count(*) as n from gfac.analysis where gfacID='"
-            . mysqli_real_escape_string( $db_handle, $gfacid ) . "'", false, true );
-        if ( $res !== false && (int) $res->{"n"} > 0 ) {
-            ## The row is back, or was never deleted: the monitor restart above
-            ## owns this job, so leave the marker to that run.
-            continue;
-        }
-        $id = (int) ( $info[ 'autoflowAnalysisID' ] ?? 0 );
-        if ( $id <= 0 ) {
-            echo "finalizing marker for $gfacid has no autoflowAnalysisID; removing it\n";
-            @unlink( $marker );
-            continue;
-        }
-        $message = "Results handling did not finish: the worker stopped after the job"
-                 . " record was removed. Check the job log for $gfacid and resubmit if"
-                 . " the results are missing.";
-        $query = "UPDATE " . mysqli_real_escape_string( $db_handle, $info[ 'us3_db' ] )
-               . ".autoflowAnalysis SET status='FAILED', statusMsg='"
-               . mysqli_real_escape_string( $db_handle, $message ) . "'"
-               . " WHERE autoflowAnalysisID=$id AND status NOT IN ('FAILED','COMPLETE')";
-        if ( mysqli_query( $db_handle, $query ) === false ) {
-            echo "could not close out stage $id for $gfacid: " . mysqli_error( $db_handle ) . "\n";
-            continue;
-        }
-        echo "closed out stage $id for $gfacid, whose results handling was interrupted\n";
-        @unlink( $marker );
     }
 
     if ( !count( $jm_restart_db ) ) {
