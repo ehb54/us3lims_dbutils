@@ -38,13 +38,15 @@ schema are upgraded separately, and the code must be upgraded first: pull common
 every instance, gridctl and dbutils to $required_version or newer, then run this as root.
 Step 0 refuses to go further while any checkout is older.
 
-Pull the code in one step, not per use:
+Pull the code in two steps, not per use and not with "all" (which also pulls the
+UltraScan gui and mpi checkouts, neither of which this upgrade touches):
 
-    php uslims_git_info.php --update-pull all
+    php uslims_git_info.php --update-pull util
+    php uslims_git_info.php --update-pull lims
 
 "--update-pull util" alone upgrades dbutils and leaves gridctl and common behind, which
 is the state step 0 exists to refuse: this script would otherwise rewrite an old-code
-host from its old template. Pull everything, then rerun this script.
+host from its old template. Run both, then rerun this script.
 
 The host must also be idle, and the order matters: stop the services with
 "php services.php stop" BEFORE pulling the new code, while the host's own 4.2.0 copy can
@@ -855,9 +857,11 @@ foreach ( $stack as $label => $dir ) {
 }
 if ( $stale ) {
     error_exit( "pull " . implode( ', ', $stale ) . " to $required_version or newer, then rerun:"
-                . "\n    cd " . __DIR__ . " && php uslims_git_info.php --update-pull all"
-                . "\nUse 'all' rather than a single use: pulling util alone leaves gridctl and"
-                . " common behind, which is the state this check refuses."
+                . "\n    cd " . __DIR__ . " && php uslims_git_info.php --update-pull util"
+                . "\n    cd " . __DIR__ . " && php uslims_git_info.php --update-pull lims"
+                . "\nRun both: pulling util alone leaves gridctl and common behind, which is the"
+                . " state this check refuses. 'all' also pulls the UltraScan gui and mpi"
+                . " checkouts, which this upgrade does not touch."
                 . "\nThe code and the database schema are upgraded separately; this script only"
                 . " changes this host's configuration. Nothing was changed" );
 }
@@ -896,7 +900,8 @@ if ( $missing ) {
     error_exit( "gridctl is not the $required_version contract: " . implode( ', ', $missing )
                 . ". A VERSION file alone is not enough, so check the checkout at $gridctl_dir"
                 . " is the upgraded one:"
-                . "\n    cd " . __DIR__ . " && php uslims_git_info.php --update-pull all"
+                . "\n    cd " . __DIR__ . " && php uslims_git_info.php --update-pull util"
+                . "\n    cd " . __DIR__ . " && php uslims_git_info.php --update-pull lims"
                 . "\nNothing was changed" );
 }
 
@@ -1544,6 +1549,13 @@ foreach ( $active as $name => $c ) {
     }
     if ( $want[ 'maxproc' ] !== null && $want[ 'maxproc' ] > $want[ 'ppn' ] ) {
         $want[ 'maxproc' ] = $want[ 'ppn' ];
+    }
+    ## ppbj (processes per batch job) is the per-dataset sizing maxproc never
+    ## touches, but it faces the same single_node ceiling: jobsubmit.php's gate
+    ## refuses 2DSA/PCSA just as it would GA/DMGA if ppbj alone were left over
+    ## ppn, which lowering only maxproc never catches.
+    if ( $want[ 'ppbj' ] !== null && $want[ 'ppbj' ] > $want[ 'ppn' ] ) {
+        $want[ 'ppbj' ] = $want[ 'ppn' ];
     }
     foreach ( $want as $key => $value ) {
         $now = isset( $c[ $key ] ) ? (int) $c[ $key ] : null;
