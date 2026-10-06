@@ -681,18 +681,21 @@ function conversion_blockers( $want, $have ) {
 ## cluster should have, each already capped at $cpus and at each other.
 function single_node_sizing( $c, $cpus ) {
     $want = [];
-    $want[ 'ppbj' ]    = isset( $c[ 'ppbj' ] )    ? (int) $c[ 'ppbj' ]    : null;
-    $want[ 'ppn' ]     = isset( $c[ 'ppn' ] )     ? (int) $c[ 'ppn' ]     : null;
-    $want[ 'maxproc' ] = isset( $c[ 'maxproc' ] ) ? (int) $c[ 'maxproc' ] : null;
-    foreach ( [ 'ppbj', 'ppn', 'maxproc' ] as $key ) {
-        if ( $want[ $key ] === null || $want[ $key ] > $cpus ) {
-            $want[ $key ] = $cpus;
-        }
+    $want[ 'ppbj' ] = isset( $c[ 'ppbj' ] ) ? (int) $c[ 'ppbj' ] : null;
+
+    ## A single-node GA/2DSA job uses the whole node: ppn and maxproc are set
+    ## to the real CPU count outright, raising an existing value as readily
+    ## as lowering it. Capping only when a value already sat above $cpus (the
+    ## original fix here) left a value someone set below $cpus -- e.g. from a
+    ## template written for a smaller node -- stuck there, leaving real
+    ## capacity on the node unused.
+    $want[ 'ppn' ]     = $cpus;
+    $want[ 'maxproc' ] = $cpus;
+
+    if ( $want[ 'ppbj' ] === null || $want[ 'ppbj' ] > $cpus ) {
+        $want[ 'ppbj' ] = $cpus;
     }
     ## Still never above ppn: that part of the original invariant stands.
-    if ( $want[ 'maxproc' ] > $want[ 'ppn' ] ) {
-        $want[ 'maxproc' ] = $want[ 'ppn' ];
-    }
     if ( $want[ 'ppbj' ] > $want[ 'ppn' ] ) {
         $want[ 'ppbj' ] = $want[ 'ppn' ];
     }
@@ -1998,7 +2001,11 @@ if ( is_dir( $breaker_dir ) && !is_link( $breaker_dir )
 ## later without a separate migration step.
 $runtime_table_sql = "$wwwpath/common/class/prediction/runtime_pilot_table.sql";
 if ( !is_file( $runtime_table_sql ) ) {
-    report( 'FAIL', "missing $runtime_table_sql; is the common checkout the required version?" );
+    ## The runtime advisory pilot (common#31) is optional, not a required
+    ## part of this upgrade: a common checkout that predates it, or one
+    ## built without the pilot, is not an upgrade failure.
+    report( 'note', "$runtime_table_sql not present; skipping the optional runtime advisory"
+          . " pilot table (common#31) -- not required for this upgrade" );
 } else {
     $exists = mysqli_query( $gdb, "SHOW TABLES IN gfac LIKE 'runtime_prediction'" );
     if ( $exists && mysqli_num_rows( $exists ) > 0 ) {
@@ -2018,6 +2025,12 @@ if ( !is_file( $runtime_table_sql ) ) {
             } elseif ( mysqli_query( $gdb, $create ) ) {
                 $changes++;
                 report( 'done', "gfac.runtime_prediction created" );
+            } elseif ( in_array( mysqli_errno( $gdb ), [ 1142, 1044 ], true ) ) {
+                ## 1142 (command denied) / 1044 (access denied to database):
+                ## the gfac account lacking CREATE is an expected, optional
+                ## gap for this pilot-scoped table, not an upgrade failure.
+                report( 'note', "gfac account lacks privilege to create the optional runtime"
+                      . " advisory pilot table (common#31): " . reason( mysqli_error( $gdb ) ) );
             } else {
                 report( 'FAIL', "could not create gfac.runtime_prediction: " . reason( mysqli_error( $gdb ) ) );
             }

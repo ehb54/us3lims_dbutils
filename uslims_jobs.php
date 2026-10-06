@@ -308,6 +308,41 @@ function finalizing_markers() {
 ## timestamp), when known. A process cannot have started after the marker
 ## that names its pid was written, so a later start time means the pid was
 ## reused by something else, not that the original worker is still running.
+## The real wall-clock time $pid started, or null when it cannot be
+## determined. /proc/<pid>'s own ctime (the previous implementation here) is
+## when the directory entry was last *looked up*, not when the process
+## started, so it is not usable for this at all -- it was found to always
+## read as "now" in practice, which made the reused-pid check below a no-op.
+## Field 22 of /proc/<pid>/stat is the process's start time in clock ticks
+## since boot (the comm field can itself contain spaces/parens, so this
+## counts fields from the last ')' rather than splitting on whitespace from
+## the start); combined with /proc/stat's btime (boot time, seconds since
+## the epoch) that converts to an absolute start time. USER_HZ is not read
+## from the kernel here -- every target this runs on is a stock x86_64 Linux
+## build, where it is fixed at 100 -- consistent with gridctl's own
+## cleanup_process_start() (jobmonitor/cleanup.php), which reads the same
+## field for the same reason.
+function marker_process_start_epoch( $pid ) {
+    $stat = @file_get_contents( "/proc/$pid/stat" );
+    if ( $stat !== false ) {
+        $rest   = substr( $stat, (int) strrpos( $stat, ')' ) + 2 );
+        $fields = preg_split( '/\s+/', trim( $rest ) );
+        $sys    = @file_get_contents( '/proc/stat' );
+        if ( isset( $fields[ 19 ] ) && $sys !== false && preg_match( '/^btime\s+(\d+)/m', $sys, $m ) ) {
+            return (int) $m[ 1 ] + (int) ( (float) $fields[ 19 ] / 100 );
+        }
+    }
+
+    ## No procfs (or unreadable): ask ps for elapsed seconds and work back to
+    ## an absolute start time.
+    $out = @shell_exec( 'ps -o etimes= -p ' . (int) $pid . ' 2>/dev/null' );
+    if ( $out !== null && trim( $out ) !== '' ) {
+        return time() - (int) trim( $out );
+    }
+
+    return null;
+}
+
 function marker_process_alive( $pid, $marker_started = 0 ) {
     $pid = (int) $pid;
     if ( $pid <= 0 ) {
@@ -332,10 +367,12 @@ function marker_process_alive( $pid, $marker_started = 0 ) {
     }
 
     if ( $marker_started > 0 ) {
-        $stat = @stat( "/proc/$pid" );
+        $started = marker_process_start_epoch( $pid );
         ## A few seconds of slack: writing the marker and this check are not
-        ## simultaneous with the process actually starting.
-        if ( $stat !== false && isset( $stat[ 'ctime' ] ) && $stat[ 'ctime' ] > $marker_started + 5 ) {
+        ## simultaneous with the process actually starting. $started === null
+        ## means it could not be determined at all (no procfs and no ps):
+        ## that is not evidence of a reused pid, so it does not fail this.
+        if ( $started !== null && $started > $marker_started + 5 ) {
             return false;
         }
     }
