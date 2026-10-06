@@ -2293,6 +2293,19 @@ if ( !$old_crons ) {
     report( 'ok', "no crontab drives gridctl" );
 }
 
+## Does this one Apache config line actually install a Content-Security-Policy
+## header (as opposed to merely mentioning the phrase)? Pure, so the
+## "add/append/merge/setifempty install one too, not just set" fix and the
+## "unset/comment/mention do not" exclusions are each pinned down by a real
+## test instead of only ever exercised against whatever happens to be on a
+## test host's live Apache config.
+function csp_header_line_installs_policy( $line ) {
+    return (bool) preg_match(
+        '/^\s*Header\s+(always\s+)?(set|add|append|merge|setifempty)\s+Content-Security-Policy\b/i',
+        $line
+    );
+}
+
 ## ------------------------------------------------------------- 7. Content-Security-Policy
 
 ## The pages are written for util/csp's policy. It goes in Report-Only, which
@@ -2355,17 +2368,14 @@ if ( $apache === null ) {
                        . " can miss or misdetect a policy -- Apache's own error: "
                        . reason( $dump_err !== '' ? $dump_err : $dump_out ) );
     }
-    ## And only a line that isn't a comment and actually sends the header, not
+    ## Only a line that isn't a comment and actually sends the header, not
     ## merely names it: grep alone also matched a site note, a commented-out
     ## directive, or "Header unset Content-Security-Policy" (which removes the
     ## header rather than setting one, so it is not a policy to leave alone).
-    ## 'add'/'append'/'merge'/'setifempty' all install a header too, same as
-    ## 'set' -- recognizing only 'set' let a second, Report-Only policy get
-    ## installed alongside one of those.
     $csp_found = [];
     foreach ( $csp_files as $file ) {
         foreach ( explode( "\n", (string) @file_get_contents( $file ) ) as $line ) {
-            if ( preg_match( '/^\s*Header\s+(always\s+)?(set|add|append|merge|setifempty)\s+Content-Security-Policy\b/i', $line ) ) {
+            if ( csp_header_line_installs_policy( $line ) ) {
                 $csp_found[] = $file;
                 break;
             }
