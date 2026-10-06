@@ -1994,6 +1994,44 @@ if ( is_dir( $breaker_dir ) && !is_link( $breaker_dir )
     }
 }
 
+## Classifies the outcome of actually running gfac.runtime_prediction's
+## CREATE TABLE (common#31's pilot table), given facts the caller has
+## already gathered -- pure, no DB access, no globals -- so the "optional,
+## pilot-scoped" downgrade below (a missing-privilege error is a note, not a
+## FAIL) is pinned down by a real unit test instead of only ever being
+## exercised against a live gfac account's actual privileges, the same gap
+## that let single_node_sizing() above regress three rounds running. This
+## step FAILed outright the first time it existed (744eef1), on every
+## roles-built host, for exactly the two reasons this now downgrades to a
+## note.
+##
+## $create_sql === '' (nothing left after stripping comments) is itself a
+## real bug in the shipped file, not an optional-privilege gap, so it still
+## FAILs. $create_ok/$create_errno/$create_error describe mysqli_query()'s
+## result on $create_sql.
+##
+## Returns [$status, $message] for report().
+function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_errno, $create_error ) {
+    if ( trim( (string) $create_sql ) === '' ) {
+        return [ 'FAIL', "the runtime advisory pilot table's SQL file has no SQL left after"
+                        . " stripping comments" ];
+    }
+    if ( $create_ok ) {
+        return [ 'done', "gfac.runtime_prediction created" ];
+    }
+    if ( in_array( (int) $create_errno, [ 1142, 1044 ], true ) ) {
+        ## 1142 (command denied) / 1044 (access denied to database): the gfac
+        ## account lacking CREATE is an expected, optional gap for this
+        ## pilot-scoped table, not an upgrade failure. An account that does
+        ## have CREATE on gfac can still create it by hand with the same file.
+        return [ 'note', "gfac account lacks privilege to create the optional runtime advisory"
+                        . " pilot table (common#31): " . reason( (string) $create_error )
+                        . "; an account with CREATE on gfac can run it by hand:"
+                        . " mysql gfac < common/class/prediction/runtime_pilot_table.sql" ];
+    }
+    return [ 'FAIL', "could not create gfac.runtime_prediction: " . reason( (string) $create_error ) ];
+}
+
 ## Purely additive and optional: $global_runtime_advisory_enabled (common#31)
 ## gates whether anything ever reads or writes this table, and
 ## CREATE TABLE IF NOT EXISTS is safe to run on every upgrade whether or not
@@ -2017,23 +2055,22 @@ if ( !is_file( $runtime_table_sql ) ) {
             ## comment lines (which include the teardown DROP TABLE, meant to
             ## be run by hand later, never by this upgrade) and run what's left.
             $lines  = explode( "\n", (string) file_get_contents( $runtime_table_sql ) );
-            $sql    = implode( "\n", array_filter( $lines,
-                function ( $line ) { return !preg_match( '/^\s*--/', $line ); } ) );
-            $create = trim( $sql );
-            if ( $create === '' ) {
-                report( 'FAIL', "$runtime_table_sql has no SQL left after stripping comments" );
-            } elseif ( mysqli_query( $gdb, $create ) ) {
-                $changes++;
-                report( 'done', "gfac.runtime_prediction created" );
-            } elseif ( in_array( mysqli_errno( $gdb ), [ 1142, 1044 ], true ) ) {
-                ## 1142 (command denied) / 1044 (access denied to database):
-                ## the gfac account lacking CREATE is an expected, optional
-                ## gap for this pilot-scoped table, not an upgrade failure.
-                report( 'note', "gfac account lacks privilege to create the optional runtime"
-                      . " advisory pilot table (common#31): " . reason( mysqli_error( $gdb ) ) );
-            } else {
-                report( 'FAIL', "could not create gfac.runtime_prediction: " . reason( mysqli_error( $gdb ) ) );
+            $create = trim( implode( "\n", array_filter( $lines,
+                function ( $line ) { return !preg_match( '/^\s*--/', $line ); } ) ) );
+
+            $create_ok = $create !== '' ? mysqli_query( $gdb, $create ) : false;
+            $errno     = 0;
+            $error     = '';
+            if ( $create !== '' && !$create_ok ) {
+                $errno = mysqli_errno( $gdb );
+                $error = mysqli_error( $gdb );
             }
+            if ( $create_ok ) {
+                $changes++;
+            }
+
+            list( $status, $message ) = runtime_prediction_create_outcome( $create, $create_ok, $errno, $error );
+            report( $status, $message );
         }
     }
 }
