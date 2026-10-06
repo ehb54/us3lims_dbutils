@@ -670,25 +670,24 @@ function conversion_blockers( $want, $have ) {
 ## outright for 2DSA/PCSA ("CPU count per node can not be satisfied"), and GA
 ## accepts but pends forever (PartitionConfig) -- worse than the regression
 ## the floor was added to avoid, since 4.2.0's 2DSA ran fine on such a node.
-## Capping at the real CPU count instead -- this function's only job -- means
-## GA gets fewer than 16 processes on a node with fewer than 16 CPUs, but
-## every family actually runs there. Nodes with at least 16 CPUs are
-## unaffected either way, since the floor was already a no-op there
-## (max($cpus, 16) == $cpus whenever $cpus >= 16).
+##
+## The first fix replaced the floor with a cap: ppn/maxproc were lowered when
+## above $cpus, but never raised when below it. That broke GA the other way
+## on every node whose template shipped ppn/maxproc below its real CPU count
+## (the stock appliance entry does, at ppn 8 / maxproc 16): GA was lowered to
+## 8 processes even on a 16- or 32-CPU node, instead of using the whole node.
+## ppn and maxproc are single-node whole-node counts, so they are now set to
+## $cpus outright, raising or lowering as needed. ppbj is not a whole-node
+## count -- it caps how much of the node one big job (2DSA/PCSA) may use --
+## so it keeps the cap-only rule: never raised, only ever lowered to $cpus.
 ##
 ## Pure: no reads, no writes, no reporting. $c is the cluster's current
 ## config (only 'ppbj'/'ppn'/'maxproc' are read); returns the three keys this
-## cluster should have, each already capped at $cpus and at each other.
+## cluster should have.
 function single_node_sizing( $c, $cpus ) {
     $want = [];
     $want[ 'ppbj' ] = isset( $c[ 'ppbj' ] ) ? (int) $c[ 'ppbj' ] : null;
 
-    ## A single-node GA/2DSA job uses the whole node: ppn and maxproc are set
-    ## to the real CPU count outright, raising an existing value as readily
-    ## as lowering it. Capping only when a value already sat above $cpus (the
-    ## original fix here) left a value someone set below $cpus -- e.g. from a
-    ## template written for a smaller node -- stuck there, leaving real
-    ## capacity on the node unused.
     $want[ 'ppn' ]     = $cpus;
     $want[ 'maxproc' ] = $cpus;
 
@@ -1664,7 +1663,8 @@ foreach ( $active as $name => $c ) {
         $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'single_node\' ] = true;';
     }
     ## Sizing itself is single_node_sizing() (pure, unit-tested); see its
-    ## docblock for why this floors at the CPU count rather than at 16.
+    ## docblock for why ppn/maxproc are set to the CPU count outright,
+    ## raising or lowering, rather than only ever capped at it.
     $want = single_node_sizing( $c, $cpus );
     foreach ( $want as $key => $value ) {
         $now = isset( $c[ $key ] ) ? (int) $c[ $key ] : null;
@@ -1675,8 +1675,8 @@ foreach ( $active as $name => $c ) {
                         . ( $now === null ? 'unset' : $now )
                         . "; one node with $cpus CPUs, and a single_node cluster needs"
                         . " maxproc <= ppn <= the CPU count -- real Slurm rejects or pends"
-                        . " any of these oversubscribed above $cpus, so GA is capped at"
-                        . " $cpus processes here rather than floored at 16)" );
+                        . " any of these oversubscribed above $cpus, so ppn/maxproc are set"
+                        . " to $cpus to use the whole node)" );
         $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ ' . var_export( $key, true ) . ' ] = ' . $value . ';';
     }
 }
