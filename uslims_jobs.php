@@ -322,6 +322,24 @@ function finalizing_markers() {
 ## build, where it is fixed at 100 -- consistent with gridctl's own
 ## cleanup_process_start() (jobmonitor/cleanup.php), which reads the same
 ## field for the same reason.
+## USER_HZ: the unit /proc/<pid>/stat's starttime field is in. Fixed at 100 on
+## stock x86_64 Linux (confirmed in the actual test container: `getconf
+## CLK_TCK` => 100, and starttime/100 against /proc/uptime matches to within
+## the sampling gap between the two reads) -- but read from the system
+## instead of just trusting that, in case this ever runs on a target where
+## it genuinely differs (ia64, mips, parisc, powerpc, s390 and sparc have
+## shipped other defaults). Cached: one shell call total per process, not
+## one per pid checked.
+function marker_process_clk_tck() {
+    static $hz = null;
+    if ( $hz === null ) {
+        $out = @shell_exec( 'getconf CLK_TCK 2>/dev/null' );
+        $hz  = ( $out !== null && ctype_digit( trim( (string) $out ) ) && (int) trim( $out ) > 0 )
+             ? (int) trim( $out ) : 100;
+    }
+    return $hz;
+}
+
 function marker_process_start_epoch( $pid ) {
     $stat = @file_get_contents( "/proc/$pid/stat" );
     if ( $stat !== false ) {
@@ -329,7 +347,7 @@ function marker_process_start_epoch( $pid ) {
         $fields = preg_split( '/\s+/', trim( $rest ) );
         $sys    = @file_get_contents( '/proc/stat' );
         if ( isset( $fields[ 19 ] ) && $sys !== false && preg_match( '/^btime\s+(\d+)/m', $sys, $m ) ) {
-            return (int) $m[ 1 ] + (int) ( (float) $fields[ 19 ] / 100 );
+            return (int) $m[ 1 ] + (int) ( (float) $fields[ 19 ] / marker_process_clk_tck() );
         }
     }
 
