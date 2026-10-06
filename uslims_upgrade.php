@@ -70,9 +70,13 @@ Steps
     settings the new code requires (queue time, tenant scope, local cluster,
     env_script_lines per cluster, single_node on one-node appliances)
 4 : records each cluster's host key and checks ssh for us3 and the web account
-5 : creates the shared circuit-breaker directory, and gfac.runtime_prediction
-    (the runtime advisory pilot table, common#31 -- optional, pilot-scoped; a
-    missing SQL file or no CREATE privilege is a note here, not a failure)
+5 : creates the shared circuit-breaker directory, the shared ssh-control directory
+    (common#24, sticky bit so one account cannot rename another's subdirectory
+    under it), elog.txt and its HMAC key (dbinst#75, provisioned shared from the
+    start so a split web/us3 account host does not depend on whichever account
+    happens to touch them first), and gfac.runtime_prediction (the runtime
+    advisory pilot table, common#31 -- optional, pilot-scoped; a missing SQL
+    file or no CREATE privilege is a note here, not a failure)
 6 : removes the gridctl cron entries (gridctl.php, and the gridctl_pro/dev names before it)
 7 : verifies the result, including that every active cluster passes the submission
     sizing gate rather than refusing every job
@@ -89,7 +93,9 @@ To roll back, with the services stopped:
      recorded as "(did not exist)";
   3. restore the LIMS cron entries, including the gridctl entry step 6 removed, if
      you are going back to a release that still expects the sweep;
-  4. the circuit-breaker directory can stay: an unused one changes nothing.
+  4. the circuit-breaker directory, the ssh-control directory, and elog.txt/
+     elog_hmac_key's ownership and mode can all stay: unused or already-correct,
+     none of them changes anything left alone.
 
 Nothing else to undo in the database: this script never touches the schema or any
 job row, with one exception -- step 5's gfac.runtime_prediction (see step 5 above),
@@ -2055,6 +2061,86 @@ if ( is_dir( $breaker_dir ) && !is_link( $breaker_dir )
                          : "$breaker_dir exists but its owner, group or mode could not be set" );
         }
     }
+}
+
+## Where submit_slurm's reused ssh/scp connection keeps its control socket
+## (common#24), mirroring remote_exec::default_control_dir()'s own default.
+## Sticky bit, not just 2770 like the breaker dir: unlike the breaker, every
+## account also creates its OWN subdirectory under here at runtime
+## (remote_exec::controlPath()), and without the sticky bit either account
+## could rename or replace the other's subdirectory out from under it.
+$ssh_control_dir = isset( $gc[ 'global_ssh_control_dir' ] ) && $gc[ 'global_ssh_control_dir' ] !== ''
+                  ? rtrim( (string) $gc[ 'global_ssh_control_dir' ], '/' )
+                  : "$us3_home/lims/etc/ssh-control";
+if ( is_dir( $ssh_control_dir ) && !is_link( $ssh_control_dir )
+     && fileowner( $ssh_control_dir ) === $us3_entry[ 'uid' ] && filegroup( $ssh_control_dir ) === $want_gid
+     && ( fileperms( $ssh_control_dir ) & 07777 ) === 03770 ) {
+    report( 'ok', "$ssh_control_dir is 3770 us3:$web_group" );
+} else {
+    report( 'todo', "create $ssh_control_dir as 3770 us3:$web_group" );
+    if ( $apply ) {
+        if ( is_link( $ssh_control_dir ) ) {
+            report( 'FAIL', "$ssh_control_dir is a symlink; remove it by hand and rerun" );
+        } elseif ( !is_dir( $ssh_control_dir ) && !@mkdir( $ssh_control_dir, 03770, true ) ) {
+            $last = error_get_last();
+            report( 'FAIL', "could not create $ssh_control_dir: " . reason( is_array( $last ) ? $last[ 'message' ] : '' ) );
+        } else {
+            $changes++;
+            $set = chown( $ssh_control_dir, 'us3' ) && chgrp( $ssh_control_dir, $web_group )
+                 && chmod( $ssh_control_dir, 03770 );
+            report( $set ? 'done' : 'FAIL',
+                    $set ? "$ssh_control_dir created as 3770 us3:$web_group"
+                         : "$ssh_control_dir exists but its owner, group or mode could not be set" );
+        }
+    }
+}
+
+## elog.php's own state (dbinst#75): elog.txt and its HMAC key, so a split
+## web/us3 account host does not depend on whichever account happens to
+## create them first. elog.txt is provisioned empty rather than left for
+## elog() to create on first use, because elog() only narrows a *brand new*
+## file to 0640 single-account -- provisioning it 0660 shared from the start
+## is what keeps the other account able to write it too. The key, unlike the
+## log, is generated now rather than left empty for elog_hmac_key()'s own
+## first-writer-wins link() dance: an empty file provisioned here would
+## otherwise trip that function's own "exists but is empty" warning on every
+## single request until some account happened to fill it.
+$elog_dir = isset( $gc[ 'global_elog_dir' ] ) && $gc[ 'global_elog_dir' ] !== ''
+          ? rtrim( (string) $gc[ 'global_elog_dir' ], '/' )
+          : "$us3_home/lims/etc";
+$elog_targets = [
+    "$elog_dir/elog.txt"        => [ 0660, '' ],
+    "$elog_dir/elog_hmac_key"   => [ 0640, null ],   ## null content: generate 32 random bytes if missing
+];
+foreach ( $elog_targets as $path => $spec ) {
+    list( $want_mode, $empty_content ) = $spec;
+    $want_mode_str = sprintf( '0%o', $want_mode );
+    if ( is_file( $path ) && !is_link( $path )
+         && fileowner( $path ) === $us3_entry[ 'uid' ] && filegroup( $path ) === $want_gid
+         && ( fileperms( $path ) & 07777 ) === $want_mode ) {
+        report( 'ok', "$path is $want_mode_str us3:$web_group" );
+        continue;
+    }
+    report( 'todo', "create or fix $path as $want_mode_str us3:$web_group" );
+    if ( !$apply ) {
+        continue;
+    }
+    if ( is_link( $path ) ) {
+        report( 'FAIL', "$path is a symlink; remove it by hand and rerun" );
+        continue;
+    }
+    if ( !is_file( $path ) ) {
+        $content = $empty_content !== null ? $empty_content : random_bytes( 32 );
+        if ( file_put_contents( $path, $content ) === false ) {
+            report( 'FAIL', "could not create $path" );
+            continue;
+        }
+    }
+    $changes++;
+    $set = chown( $path, 'us3' ) && chgrp( $path, $web_group ) && chmod( $path, $want_mode );
+    report( $set ? 'done' : 'FAIL',
+            $set ? "$path is now $want_mode_str us3:$web_group"
+                 : "$path exists but its owner, group or mode could not be set" );
 }
 
 ## Classifies the outcome of actually running gfac.runtime_prediction's
