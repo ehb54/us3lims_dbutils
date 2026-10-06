@@ -1811,9 +1811,17 @@ step( "4. SSH host keys and access (StrictHostKeyChecking=yes is the default)" )
 ## its own on the cluster that is about to go live for it too.
 $ssh_targets = $active;
 foreach ( $activate_want as $name ) {
-    if ( !isset( $ssh_targets[ $name ] ) && is_array( $clusters[ $name ] ?? null ) ) {
-        $ssh_targets[ $name ] = $clusters[ $name ];
+    if ( isset( $ssh_targets[ $name ] ) || !is_array( $clusters[ $name ] ?? null ) ) {
+        continue;
     }
+    ## Still 'http': the --activate block below is going to refuse this one
+    ## with "convert it first", so there is no point offering ssh setup for
+    ## it yet, and step 3's conversion loop hasn't necessarily given it a
+    ## real 'name'/'login' to test against.
+    if ( strtolower( (string) ( $clusters[ $name ][ 'submittype' ] ?? '' ) ) !== 'slurm' ) {
+        continue;
+    }
+    $ssh_targets[ $name ] = $clusters[ $name ];
 }
 
 foreach ( $ssh_targets as $name => $c ) {
