@@ -1842,7 +1842,7 @@ foreach ( $active as $name => $c ) {
 
 ## ------------------------------------------------------------- 5. breaker directory
 
-step( "5. Circuit-breaker directory" );
+step( "5. Circuit-breaker directory, and the runtime-advisory pilot table" );
 
 $web_group_entry = posix_getgrnam( $web_group );
 if ( $web_group_entry === false ) {
@@ -1868,6 +1868,40 @@ if ( is_dir( $breaker_dir ) && !is_link( $breaker_dir )
             report( $set ? 'done' : 'FAIL',
                     $set ? "$breaker_dir created as 2770 us3:$web_group"
                          : "$breaker_dir exists but its owner, group or mode could not be set" );
+        }
+    }
+}
+
+## Purely additive and optional: $global_runtime_advisory_enabled (common#31)
+## gates whether anything ever reads or writes this table, and
+## CREATE TABLE IF NOT EXISTS is safe to run on every upgrade whether or not
+## the pilot is turned on for this host -- that is how an admin enables it
+## later without a separate migration step.
+$runtime_table_sql = "$wwwpath/common/class/prediction/runtime_pilot_table.sql";
+if ( !is_file( $runtime_table_sql ) ) {
+    report( 'FAIL', "missing $runtime_table_sql; is the common checkout the required version?" );
+} else {
+    $exists = mysqli_query( $gdb, "SHOW TABLES IN gfac LIKE 'runtime_prediction'" );
+    if ( $exists && mysqli_num_rows( $exists ) > 0 ) {
+        report( 'ok', "gfac.runtime_prediction already exists" );
+    } else {
+        report( 'todo', "create gfac.runtime_prediction (runtime advisory pilot, common#31)" );
+        if ( $apply ) {
+            ## The file is documentation plus one statement: strip the '--'
+            ## comment lines (which include the teardown DROP TABLE, meant to
+            ## be run by hand later, never by this upgrade) and run what's left.
+            $lines  = explode( "\n", (string) file_get_contents( $runtime_table_sql ) );
+            $sql    = implode( "\n", array_filter( $lines,
+                function ( $line ) { return !preg_match( '/^\s*--/', $line ); } ) );
+            $create = trim( $sql );
+            if ( $create === '' ) {
+                report( 'FAIL', "$runtime_table_sql has no SQL left after stripping comments" );
+            } elseif ( mysqli_query( $gdb, $create ) ) {
+                $changes++;
+                report( 'done', "gfac.runtime_prediction created" );
+            } else {
+                report( 'FAIL', "could not create gfac.runtime_prediction: " . reason( mysqli_error( $gdb ) ) );
+            }
         }
     }
 }
