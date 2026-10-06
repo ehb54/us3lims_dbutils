@@ -59,10 +59,11 @@ Steps
 
 0 : every stack checkout is at $required_version or newer (read from each repository's VERSION),
     and gridctl carries the version-2 artifacts the later steps need
-1 : preflight. The host must be idle: us3-listen stopped, no jobmonitor, nothing from
-    /opt/ultrascan3/bin, no unfinished job in gfac.analysis, no cleanup claim, an empty
-    local Slurm queue with no node running work, no other client running a statement on
-    MariaDB, nobody else logged in, and the LIMS cron entries commented out
+1 : preflight. The host must be idle: none of listen, manage-us3-pipe, submitctl or esign
+    running (however they were started, not only via the us3-listen unit), no jobmonitor,
+    nothing from /opt/ultrascan3/bin, no unfinished job in gfac.analysis, no cleanup claim,
+    an empty local Slurm queue with no node running work, no other client running a
+    statement on MariaDB, nobody else logged in, and the LIMS cron entries commented out
 2 : rewrites listen-config.php from gridctl's template, carrying the site's values
 3 : deactivates clusters the Slurm code cannot submit to, or with --convert-http converts
     the national HPC ones to SSH instead, then sets the global_config.php
@@ -101,11 +102,11 @@ Options
 --accept-host-keys           : trust the host keys this script fetches, without review.
                                Only for a network you already trust: --yes does not imply it.
 --convert-http               : convert the national HPC entries (submittype 'http', left over
-                               from Airavata) to the SSH shape in global_config.php.template,
-                               and activate their cluster_config.php probes. Without this they
-                               are deactivated, which is the default. A converted entry stays
-                               inactive until its env_script_lines are supplied: only the
-                               cluster can say what those are.
+                               from Airavata, active or not) to the SSH shape in
+                               global_config.php.template. Conversion never activates an entry
+                               or its cluster_config.php probe, deliberately: only --activate
+                               does, once its env_script_lines are supplied and ssh to it
+                               succeeds -- only the cluster can say what those are.
 --www path                   : web root (default $wwwpath)
 --web-user name              : account the web code runs as (default: the PHP-FPM pool user, else apache, else www-data)
 --env cluster=lines          : env_script_lines for a cluster ('' for none); sets or changes it; repeatable
@@ -780,8 +781,20 @@ function live_lims_crontabs() {
             . '|jobmonitor\.php|uslims_daily_backup\.php|uslims_daily_rsync\.php|save-jobstats\.sh)#';
     list( $us3_tab, $err, $rc ) = capture( 'crontab -l -u us3' );
     $tabs = [ 'us3' => $rc === 0 ? $us3_tab : '' ];
+    ## Keyed by realpath, not the glob path, so a symlink under /etc/cron.d
+    ## pointing at a file already seen (its target, or another symlink to the
+    ## same target) does not report the same live entry twice under two names.
+    $seen = [];
     foreach ( array_merge( [ '/etc/crontab' ], glob( '/etc/cron.d/*' ) ?: [] ) as $file ) {
-        $tabs[ $file ] = is_file( $file ) ? (string) @file_get_contents( $file ) : '';
+        if ( !is_file( $file ) ) {
+            continue;
+        }
+        $real = realpath( $file ) ?: $file;
+        if ( isset( $seen[ $real ] ) ) {
+            continue;
+        }
+        $seen[ $real ] = true;
+        $tabs[ $file ] = (string) @file_get_contents( $file );
     }
     $live = [];
     foreach ( $tabs as $where => $text ) {
@@ -940,7 +953,10 @@ $busy = [];
 ## -- only listen.php let any of the other three still be running (confirmed:
 ## -- a container with just submitctl.php up passed this and the upgrade
 ## -- applied). The jobmonitors are checked separately below.
-$listeners = processes( '#^\s*(\d+)\s+\S*php[0-9.]*\s+\S*/(listen|manage-us3-pipe|submitctl|esign)\.php(\s|$)#' );
+## (?:\S*/)? : the path prefix is optional, not just the slash alone, so a
+## daemon started by hand from its own directory ("cd ~us3/lims/bin && php
+## listen.php", with no path on the command line at all) still matches.
+$listeners = processes( '#^\s*(\d+)\s+\S*php[0-9.]*\s+(?:\S*/)?(listen|manage-us3-pipe|submitctl|esign)\.php(\s|$)#' );
 if ( $listeners === null ) {
     report( 'FAIL', "could not read the process list, so the host cannot be shown to be idle" );
     $busy[] = 'process list unreadable';
@@ -1116,7 +1132,15 @@ $has_process_priv = false;
 $grants = mysqli_query( $gdb, 'SHOW GRANTS' );
 if ( $grants ) {
     while ( $row = mysqli_fetch_row( $grants ) ) {
-        if ( preg_match( '/\b(PROCESS|SUPER|ALL PRIVILEGES)\b/i', (string) ( $row[ 0 ] ?? '' ) ) ) {
+        $grant = (string) ( $row[ 0 ] ?? '' );
+        ## PROCESS and SUPER are global-only privileges in MySQL/MariaDB: they
+        ## cannot be granted on a specific database. But MariaDB always
+        ## expands "ALL" to "ALL PRIVILEGES" in SHOW GRANTS output, even for a
+        ## database-scoped grant like "GRANT ALL ON gfac.* TO ...", so
+        ## matching the word alone without checking the scope matched a grant
+        ## that gives nothing outside gfac and no real PROCESS privilege.
+        if ( preg_match( '/\bON\s+\*\.\*(\s|$)/i', $grant )
+           && preg_match( '/\b(PROCESS|SUPER|ALL PRIVILEGES)\b/i', $grant ) ) {
             $has_process_priv = true;
             break;
         }
@@ -1163,6 +1187,18 @@ if ( $who_rc !== 0 ) {
                     . reason( $who_err !== '' ? $who_err : $who_out )
                     . "); confirm nobody else is on this host" );
 } else {
+    ## Who actually invoked this: SUDO_USER under sudo (the normal invocation),
+    ## else this process's own account. Used below instead of broadly trusting
+    ## tmux/screen/sudo, which defeated the check entirely: "sudo php
+    ## uslims_upgrade.php" is the normal invocation, so every other logged-in
+    ## user's session was downgraded to a note alongside the operator's own.
+    $invoking_user = getenv( 'SUDO_USER' );
+    if ( $invoking_user === false || $invoking_user === '' ) {
+        $invoking_user = function_exists( 'posix_getpwuid' )
+                        ? (string) ( @posix_getpwuid( posix_geteuid() )[ 'name' ] ?? '' )
+                        : '';
+    }
+
     $sessions = [];
     foreach ( explode( "\n", trim( $who_out ) ) as $line ) {
         if ( !preg_match( '/^(\S+)\s+(\S+)/', trim( $line ), $m ) ) {
@@ -1171,24 +1207,27 @@ if ( $who_rc !== 0 ) {
         if ( $own_tty !== '' && $m[ 2 ] === $own_tty ) {
             continue;
         }
+        ## tmux and screen give each pane its own pty, and sudo with use_pty
+        ## gives the elevated process a new one too, so $own_tty can be real
+        ## and still not be the pty who(1) reports for this same login: the
+        ## exclusion above then matches nothing. Exclude by the invoking
+        ## user's name instead, not by downgrading every session once any of
+        ## those tools is in use -- that kept FAIL for everyone else logged
+        ## in as a different account.
+        if ( $invoking_user !== '' && $m[ 1 ] === $invoking_user ) {
+            continue;
+        }
         $sessions[] = "{$m[1]} on {$m[2]}";
     }
-    ## tmux and screen give each pane its own pty, and sudo with use_pty gives
-    ## the elevated process a new one too, so $own_tty can be real and still not
-    ## be the pty who(1) reports for this same login: the exclusion above then
-    ## matches nothing, and the operator's own session falls through to
-    ## $sessions as if it were someone else's.
-    $indirect_pty = getenv( 'TMUX' ) !== false || getenv( 'STY' ) !== false || getenv( 'SUDO_USER' ) !== false;
-    if ( $sessions && ( $own_tty === '' || $indirect_pty ) ) {
-        ## Without a terminal we can trust to be this session's own, there is no
-        ## way to tell the operator's session apart from anyone else's, and
-        ## refusing here would refuse every run from a pipe, a wrapper, tmux,
-        ## screen or sudo. Report the sessions and let the operator judge.
-        report( 'note', count( $sessions ) . " login session(s) found" . ( $indirect_pty
-                        ? ", and this session is running under tmux, screen or sudo, where the"
-                          . " controlling terminal is not reliably this login's own"
-                        : ", and this session's terminal could not be identified" )
-                        . ", so one of them may be this one: " . implode( ', ', $sessions ) );
+    if ( $sessions && $own_tty === '' ) {
+        ## Without a terminal we can trust to be this session's own, and with
+        ## no invoking user identified either, there is no way to tell the
+        ## operator's session apart from anyone else's. Report the sessions
+        ## and let the operator judge, rather than refuse every run from a
+        ## pipe or wrapper with no controlling terminal.
+        report( 'note', count( $sessions ) . " login session(s) found, and this session's"
+                        . " terminal could not be identified, so one of them may be this one: "
+                        . implode( ', ', $sessions ) );
     } elseif ( $sessions ) {
         report( 'FAIL', count( $sessions ) . " other login session(s): "
                         . implode( ', ', $sessions ) );
@@ -1403,6 +1442,55 @@ foreach ( $active as $name => $c ) {
     $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'active\' ] = false;';
     unset( $active[ $name ] );
 }
+
+## --convert-http above only ever walked $active: an inactive 'http' entry
+## could then be neither converted (not in $active, so never reached) nor
+## activated later ("convert it first with --convert-http"). Every national
+## HPC entry in the 4.2.0 template starts out inactive, so this covered all
+## of them. Same conversion, minus the active-entry bookkeeping (there is no
+## 'active' flag to turn off, and nothing here turns one on).
+if ( $convert_http ) {
+    foreach ( $clusters as $name => $c ) {
+        if ( isset( $active[ $name ] ) || !is_array( $c ) ) {
+            continue;
+        }
+        $is_http = isset( $c[ 'submittype' ] ) && strtolower( (string) $c[ 'submittype' ] ) === 'http';
+        if ( !$is_http ) {
+            continue;
+        }
+        $want = template_cluster( $name, $tpl_why );
+        if ( $want === null ) {
+            report( 'note', "inactive cluster '$name' is an 'http' entry and " . reason( $tpl_why )
+                            . ", so there is nothing to convert it to" );
+            continue;
+        }
+        $changed = [];
+        foreach ( $want as $key => $value ) {
+            if ( $key === 'active' ) {
+                continue;
+            }
+            if ( array_key_exists( $key, $c ) && $c[ $key ] === $value ) {
+                continue;
+            }
+            $changed[] = $key;
+            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ '
+                       . var_export( $key, true ) . ' ] = ' . php_value( $value ) . ';';
+        }
+        if ( ( $c[ 'submittype' ] ?? '' ) !== 'slurm' ) {
+            $changed[] = 'submittype';
+            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'submittype\' ] = \'slurm\';';
+        }
+        report( 'todo', "convert inactive cluster '$name' to SSH ("
+                        . ( $changed ? implode( ', ', $changed ) : 'already matches the template' )
+                        . "), left inactive" );
+        $blockers = conversion_blockers( $want, $c );
+        if ( $blockers ) {
+            report( 'note', "'$name' cannot be activated yet: " . implode( '; ', $blockers ) );
+        }
+        $converted[] = $name;
+    }
+}
+
 if ( $active ) {
     report( 'ok', count( $active ) . " active cluster(s) the Slurm code can use: " . implode( ', ', array_keys( $active ) ) );
 } else {
@@ -1534,51 +1622,47 @@ foreach ( $active as $name => $c ) {
         $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'single_node\' ] = true;';
     }
     ## jobsubmit.php refuses every job on a single_node cluster whose maxproc
-    ## exceeds ppn, or whose ppn is unusable, so that invariant still holds. But
-    ## 4.2.0 hard-coded ppn 16 for GA/DMGA on an appliance regardless of the
-    ## node's real core count, oversubscribing a smaller node on purpose: capping
-    ## ppn (and so maxproc) at the CPU count dropped GA to that many tasks, which
-    ## is not an acceptable regression. ppn and maxproc float up to 16 (or the
-    ## CPU count, if that is higher); they are never lowered toward it, since a
-    ## site that set them higher made that choice deliberately.
-    $ga_floor = max( $cpus, 16 );
-    $want     = [];
-    $want[ 'ppbj' ] = isset( $c[ 'ppbj' ] ) ? (int) $c[ 'ppbj' ] : null;
-    ## ppbj sizes 2DSA/PCSA, which the GA floor above does not concern: kept at
-    ## the real CPU count, lowered when it is over, same as before.
-    if ( $want[ 'ppbj' ] !== null && $want[ 'ppbj' ] > $cpus ) {
-        $want[ 'ppbj' ] = $cpus;
-    }
-    $want[ 'ppn' ] = isset( $c[ 'ppn' ] ) ? (int) $c[ 'ppn' ] : null;
-    if ( $want[ 'ppn' ] === null || $want[ 'ppn' ] < $ga_floor ) {
-        $want[ 'ppn' ] = $ga_floor;
-    }
+    ## exceeds ppn, or whose ppn is unusable, so that invariant still holds.
+    ##
+    ## 9b875a0 floored ppn/maxproc at max($cpus, 16) so GA kept 16 processes on
+    ## a smaller appliance, as 4.2.0 did. Tested against real Slurm (20.11.9,
+    ## cons_tres/CR_Core): that floor oversubscribes a node with fewer than 16
+    ## CPUs. sbatch rejects --ntasks-per-node above the node's real CPU count
+    ## outright for 2DSA/PCSA ("CPU count per node can not be satisfied"), and
+    ## GA accepts but pends forever (PartitionConfig) -- worse than the
+    ## regression the floor was added to avoid, since 4.2.0's 2DSA ran fine on
+    ## such a node. Capping at the real CPU count instead -- this block's only
+    ## job now -- means GA gets fewer than 16 processes on a node with fewer
+    ## than 16 CPUs, but every family actually runs there. Nodes with at least
+    ## 16 CPUs are unaffected either way, since the floor was already a no-op
+    ## there (max($cpus, 16) == $cpus whenever $cpus >= 16).
+    $want = [];
+    $want[ 'ppbj' ]    = isset( $c[ 'ppbj' ] )    ? (int) $c[ 'ppbj' ]    : null;
+    $want[ 'ppn' ]     = isset( $c[ 'ppn' ] )     ? (int) $c[ 'ppn' ]     : null;
     $want[ 'maxproc' ] = isset( $c[ 'maxproc' ] ) ? (int) $c[ 'maxproc' ] : null;
-    if ( $want[ 'maxproc' ] === null || $want[ 'maxproc' ] < $ga_floor ) {
-        $want[ 'maxproc' ] = $ga_floor;
+    foreach ( [ 'ppbj', 'ppn', 'maxproc' ] as $key ) {
+        if ( $want[ $key ] === null || $want[ $key ] > $cpus ) {
+            $want[ $key ] = $cpus;
+        }
     }
     ## Still never above ppn: that part of the original invariant stands.
     if ( $want[ 'maxproc' ] > $want[ 'ppn' ] ) {
         $want[ 'maxproc' ] = $want[ 'ppn' ];
     }
-    ## ppbj (processes per batch job) faces the same ceiling: jobsubmit.php's
-    ## gate refuses 2DSA/PCSA just as it would GA/DMGA if ppbj alone were left
-    ## over ppn. With ppn now floored at $ga_floor >= $cpus >= ppbj, this should
-    ## never fire, but it is kept as the invariant's own guarantee rather than
-    ## one that merely happens to hold given the values above.
-    if ( $want[ 'ppbj' ] !== null && $want[ 'ppbj' ] > $want[ 'ppn' ] ) {
+    if ( $want[ 'ppbj' ] > $want[ 'ppn' ] ) {
         $want[ 'ppbj' ] = $want[ 'ppn' ];
     }
     foreach ( $want as $key => $value ) {
         $now = isset( $c[ $key ] ) ? (int) $c[ $key ] : null;
-        if ( $value === null || $value === $now ) {
+        if ( $value === $now ) {
             continue;
         }
         report( 'todo', "set $key for $name to $value (currently "
                         . ( $now === null ? 'unset' : $now )
                         . "; one node with $cpus CPUs, and a single_node cluster needs"
-                        . " maxproc <= ppn, with ppn and maxproc at least "
-                        . "$ga_floor so GA keeps its process count)" );
+                        . " maxproc <= ppn <= the CPU count -- real Slurm rejects or pends"
+                        . " any of these oversubscribed above $cpus, so GA is capped at"
+                        . " $cpus processes here rather than floored at 16)" );
         $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ ' . var_export( $key, true ) . ' ] = ' . $value . ';';
     }
 }
@@ -1623,9 +1707,13 @@ foreach ( $activate_want as $name ) {
            . escapeshellarg( $login ) . " true";
     $rc    = run_as( 'us3', $ssh, $ssh_out, $ssh_err );
     if ( $rc !== 0 ) {
-        report( 'todo', "--activate: '$name' does not yet ssh as us3 to $login (exit $rc): "
+        ## 'input', not 'todo': this ssh failure does not get an entry in
+        ## $managed and so is never actually applied under --apply, unlike a
+        ## real 'todo'. Left as 'todo' this exited 0 ("All checks passed")
+        ## with the cluster still not activated.
+        report( 'input', "--activate: '$name' does not yet ssh as us3 to $login (exit $rc): "
                         . reason( $ssh_err !== '' ? $ssh_err : $ssh_out )
-                        . "; set up the key, as step 4 would for an active cluster" );
+                        . "; step 4, run again after this one, offers to set up the key" );
         continue;
     }
     if ( $env !== ( $c[ 'env_script_lines' ] ?? '' ) ) {
@@ -1716,7 +1804,19 @@ if ( $activated ) {
 
 step( "4. SSH host keys and access (StrictHostKeyChecking=yes is the default)" );
 
-foreach ( $active as $name => $c ) {
+## --activate names clusters not in $active yet (that is the point of
+## --activate), so without this they never got here: no host key was ever
+## offered for them, and --activate's own ssh test above only ever ran as
+## us3, leaving a separate web account with no key or known_hosts entry of
+## its own on the cluster that is about to go live for it too.
+$ssh_targets = $active;
+foreach ( $activate_want as $name ) {
+    if ( !isset( $ssh_targets[ $name ] ) && is_array( $clusters[ $name ] ?? null ) ) {
+        $ssh_targets[ $name ] = $clusters[ $name ];
+    }
+}
+
+foreach ( $ssh_targets as $name => $c ) {
     $host  = $c[ 'name' ] ?? '';
     $port  = (int) ( $c[ 'sshport' ] ?? 22 );
     $login = $c[ 'login' ] ?? "us3@$host";
@@ -2143,10 +2243,14 @@ if ( $apply && $changes ) {
            . "See \"Undoing it\" in --help before rolling any of it back.\n";
     }
 }
-## Gated on no FAILs, not just on something having changed: printing "start the
-## services" after a FAIL told the operator to bring the host back up with a
-## check still failing, as though the run had finished cleanly.
-if ( $apply && $changes && !$failures ) {
+## Gated on nothing outstanding (no FAIL, no [input], no decline), not on
+## $changes: a clean rerun after fixing a prior FAIL by hand often makes no
+## further change this time, and never printed these instructions even
+## though the host was then actually ready to finish. Still never gated on
+## $changes alone either way: printing "start the services" with a check
+## still failing told the operator to bring the host back up as though the
+## run had finished cleanly.
+if ( $apply && !$failures && !$needs_input && !$declined ) {
     ## The preflight required an idle host, so this is a start, not a restart, and
     ## it runs as us3: started as root the services would leave root-owned state.
     echo "\nFinish the upgrade in this order:\n"

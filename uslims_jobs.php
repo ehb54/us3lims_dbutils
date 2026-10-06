@@ -120,6 +120,10 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                 error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
             }
             $reqid = array_shift( $u_argv );
+            ## --getrun/--copyrun put this into a runuser -c shell command below.
+            if ( !preg_match( '/^\d+$/', $reqid ) ) {
+                error_exit( "ERROR: --reqid must be a positive integer, got '$reqid'" );
+            }
             break;
         }
         case "--gfacid": {
@@ -300,15 +304,43 @@ function finalizing_markers() {
 ## of a crash once its process is actually gone; closing out a stage while the
 ## worker that wrote the marker is still mid-import fails a job that was never
 ## unhealthy, just slow.
-function marker_process_alive( $pid ) {
+## $marker_started: the marker's own 'started' field (a wall-clock Unix
+## timestamp), when known. A process cannot have started after the marker
+## that names its pid was written, so a later start time means the pid was
+## reused by something else, not that the original worker is still running.
+function marker_process_alive( $pid, $marker_started = 0 ) {
     $pid = (int) $pid;
     if ( $pid <= 0 ) {
         return false;
     }
+
     if ( function_exists( 'posix_kill' ) ) {
-        return @posix_kill( $pid, 0 );
+        if ( !@posix_kill( $pid, 0 ) ) {
+            ## posix_kill() returning false does not mean "no such process":
+            ## it also fails with EPERM (errno 1) when the pid exists but
+            ## belongs to another account this one cannot signal, which this
+            ## script running as a non-root account would otherwise misread
+            ## as dead -- the opposite of the "still running" caution this
+            ## check exists for.
+            $alive = function_exists( 'posix_get_last_error' ) && posix_get_last_error() === 1;
+            if ( !$alive ) {
+                return false;
+            }
+        }
+    } elseif ( !file_exists( "/proc/$pid" ) ) {
+        return false;
     }
-    return file_exists( "/proc/$pid" );
+
+    if ( $marker_started > 0 ) {
+        $stat = @stat( "/proc/$pid" );
+        ## A few seconds of slack: writing the marker and this check are not
+        ## simultaneous with the process actually starting.
+        if ( $stat !== false && isset( $stat[ 'ctime' ] ) && $stat[ 'ctime' ] > $marker_started + 5 ) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 ## "php:<path>", matched no row, and the job read as unmonitored: --restart then
@@ -493,7 +525,7 @@ if ( $running || $restart || $restart_only ) {
             ## evidence of a crash once the process that wrote it is gone. Without
             ## this, --restart during a live import closed out a job that was
             ## simply slow, not unhealthy.
-            if ( marker_process_alive( $info[ 'pid' ] ?? 0 ) ) {
+            if ( marker_process_alive( $info[ 'pid' ] ?? 0, (int) ( $info[ 'started' ] ?? 0 ) ) ) {
                 echo "finalizing marker for $gfacid belongs to pid {$info['pid']}, which is"
                    . " still running; leaving it alone\n";
                 continue;
@@ -506,29 +538,69 @@ if ( $running || $restart || $restart_only ) {
                 ## owns this job, so leave the marker to that run.
                 continue;
             }
-            ## autoflowAnalysis's key is requestID (with currentGfacID as a guard
-            ## against a reused gfacID), not autoflowAnalysisID: matching on the
-            ## wrong column either touched no row or the wrong one.
-            $reqid = (int) ( $info[ 'requestID' ] ?? 0 );
-            if ( $reqid <= 0 ) {
-                echo "finalizing marker for $gfacid has no requestID; removing it\n";
-                @unlink( $marker );
+            $us3_db_esc  = mysqli_real_escape_string( $db_handle, $info[ 'us3_db' ] );
+            $gfacid_esc  = mysqli_real_escape_string( $db_handle, $gfacid );
+            $message     = "Results handling did not finish: the worker stopped after the job"
+                          . " record was removed. Check the job log for $gfacid and resubmit if"
+                          . " the results are missing.";
+            $message_esc = mysqli_real_escape_string( $db_handle, $message );
+            $autoflow_id = (int) ( $info[ 'autoflowAnalysisID' ] ?? 0 );
+
+            if ( $autoflow_id > 0 ) {
+                ## autoflowAnalysis's key is requestID, but the value held there is the
+                ## autoflowAnalysisID -- the marker's own requestID field is the
+                ## HPCAnalysisRequestID instead (see common's submit_slurm::update_db()
+                ## and gridctl's job_state_machine::update_autoflow_status(), which both
+                ## match this same column by autoflowAnalysisID, never by
+                ## HPCAnalysisRequestID). Matching on the marker's requestID here either
+                ## touched no row or the wrong one. 'CANCELED' is also now excluded: a
+                ## user-initiated cancel is not something this restart-time cleanup
+                ## should overwrite as a failure.
+                $query = "UPDATE $us3_db_esc.autoflowAnalysis SET status='FAILED', statusMsg='$message_esc'"
+                       . " WHERE requestID=$autoflow_id AND currentGfacID='$gfacid_esc'"
+                       . " AND status NOT IN ('FAILED','COMPLETE','CANCELED')";
+                if ( mysqli_query( $db_handle, $query ) === false ) {
+                    echo "could not close out autoflowAnalysisID $autoflow_id for $gfacid: "
+                       . mysqli_error( $db_handle ) . "\n";
+                    continue;
+                }
+                if ( mysqli_affected_rows( $db_handle ) > 0 ) {
+                    echo "closed out autoflowAnalysisID $autoflow_id for $gfacid, whose results"
+                       . " handling was interrupted\n";
+                    @unlink( $marker );
+                    continue;
+                }
+                ## Nothing changed: either the row is already terminal (nothing left to
+                ## fix, safe to drop the marker) or it genuinely isn't there yet (leave
+                ## the marker for the next --restart to retry, rather than delete it on
+                ## a row we never actually touched).
+                $found = db_obj_result( $db_handle,
+                    "select status from $us3_db_esc.autoflowAnalysis where requestID=$autoflow_id"
+                  . " and currentGfacID='$gfacid_esc'", false, true );
+                if ( $found !== false ) {
+                    echo "autoflowAnalysisID $autoflow_id for $gfacid is already"
+                       . " '{$found->status}'; removing its marker\n";
+                    @unlink( $marker );
+                } else {
+                    echo "no autoflowAnalysis row yet for autoflowAnalysisID $autoflow_id / $gfacid;"
+                       . " leaving its marker for the next --restart\n";
+                }
                 continue;
             }
-            $message = "Results handling did not finish: the worker stopped after the job"
-                     . " record was removed. Check the job log for $gfacid and resubmit if"
-                     . " the results are missing.";
-            $query = "UPDATE " . mysqli_real_escape_string( $db_handle, $info[ 'us3_db' ] )
-                   . ".autoflowAnalysis SET status='FAILED', statusMsg='"
-                   . mysqli_real_escape_string( $db_handle, $message ) . "'"
-                   . " WHERE requestID=$reqid AND currentGfacID='"
-                   . mysqli_real_escape_string( $db_handle, $gfacid ) . "'"
-                   . " AND status NOT IN ('FAILED','COMPLETE')";
+
+            ## Non-autoflow submission (e.g. plain GA/DMGA/2DSA): there is no
+            ## autoflowAnalysis row to close. Mark the scientist-visible queue status
+            ## instead, by gfacID -- the same key job_state_machine's own
+            ## update_hpc_analysis_result_status() resolves by.
+            $query = "UPDATE $us3_db_esc.HPCAnalysisResult SET queueStatus='failed', lastMessage='$message_esc'"
+                   . " WHERE gfacID='$gfacid_esc' AND queueStatus NOT IN ('completed','failed','aborted')";
             if ( mysqli_query( $db_handle, $query ) === false ) {
-                echo "could not close out requestID $reqid for $gfacid: " . mysqli_error( $db_handle ) . "\n";
+                echo "could not close out HPCAnalysisResult for $gfacid: " . mysqli_error( $db_handle ) . "\n";
                 continue;
             }
-            echo "closed out requestID $reqid for $gfacid, whose results handling was interrupted\n";
+            echo mysqli_affected_rows( $db_handle ) > 0
+               ? "closed out HPCAnalysisResult for $gfacid, whose results handling was interrupted\n"
+               : "HPCAnalysisResult for $gfacid already terminal or not found; removing its marker\n";
             @unlink( $marker );
         }
     }
@@ -572,12 +644,17 @@ if ( $running || $restart || $restart_only ) {
         $gfacid = $row[ 'gfacID' ];
         $jm_key = "$db:$gfacid";
 
+        ## emptyok=true: gridctl can leave a gfac.analysis row with no
+        ## HPCAnalysisResult behind (a deleted request or database). Since
+        ## services.php now runs --restart at every boot, exiting here on
+        ## the first such row (the old emptyok=false) would skip restarting
+        ## the monitor for every row after it, not just this one.
         $reshpc =
             db_obj_result(
                 $db_handle
                 ,"select HPCAnalysisRequestID from $db.HPCAnalysisResult where gfacID=\"$gfacid\" limit 1"
                 , false
-                , false
+                , true
             );
 
         if ( $reshpc ) {
@@ -990,23 +1067,26 @@ if ( $getrundir || $getrun || $copyrun ) {
     foreach ( $cluster_details as $k => $v ) {
         if (
             $v['name'] == $cluster &&
-            isset( $v['login'] ) &&
             isset( $v['workdir'] )
             ) {
             $queue   = $k;
-            $login   = $v['login'];
+            ## Same fallback as remote_exec::login(): an entry with no explicit
+            ## 'login' still has an ssh identity, just the default one.
+            $login   = $v['login'] ?? ( 'us3@' . $v['name'] );
             $workdir = $v['workdir'];
             break;
         }
     }
 
     if ( !$queue ) {
-        error_exit( "could not find any queue with login defined in $global_config_file for cluster $cluster" );
+        error_exit( "could not find any queue with workdir defined in $global_config_file for cluster $cluster" );
     }
 
     $padreqid = str_pad( $reqid, 5, '0', STR_PAD_LEFT );
 
-    $inputfile = "hpcinput-localhost-$db-$padreqid.tar";
+    ## Matches dbinst's lib/file_writer.php, which names these from the
+    ## instance's own $job['database']['host'], not a literal "localhost".
+    $inputfile = "hpcinput-$dbhost-$db-$padreqid.tar";
 
     ## submit_slurm's direct-ssh layout: one deterministic directory per
     ## request, not the Airavata PROCESS_*/ directory this used to glob for.
@@ -1035,13 +1115,16 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     ## get info
 
-    $reqxmlf = "hpcrequest-localhost-$db-$padreqid.xml";
+    ## Matches dbinst's lib/file_writer.php naming, same as $inputfile above.
+    $reqxmlf = "hpcrequest-$dbhost-$db-$padreqid.xml";
 
+    ## submit_slurm.php's own layout (class/submit_slurm.php:253-254,267): the
+    ## Airavata-era names (job_*.slurm, Ultrascan.stdout/stderr) are gone.
     $getfiles = [
-        "job_*.slurm"
+        "us3.slurm"
         ,$inputfile
-        ,"Ultrascan.stdout"
-        ,"Ultrascan.stderr"
+        ,"stdout"
+        ,"stderr"
         ,$reqxmlf
         ,"output/analysis-results.tar"
         ];
@@ -1061,17 +1144,16 @@ if ( $getrundir || $getrun || $copyrun ) {
     echo "results in:\n$tdir\n";
 
     if ( $runinfo ) {
-        $slurms = glob( "$tdir/job*slurm" );
-        if ( count( $slurms ) ) {
+        if ( file_exists( "$tdir/us3.slurm" ) ) {
             echoline();
-            echo run_cmd( "grep 'SBATCH' $slurms[0]" );
+            echo run_cmd( "grep 'SBATCH' $tdir/us3.slurm" );
         }
         if ( file_exists( "$tdir/$reqxmlf" ) ) {
             echoline();
             echo run_cmd( "grep -P '(datasetCount|iterations|groupcount|method)' $tdir/$reqxmlf | sed 's/^ *<//;s/> *$//;s/\/$//'" );
         }
         echoline();
-        echo run_cmd( "cd $tdir && tail -25 Ultrascan.stderr" );
+        echo run_cmd( "cd $tdir && tail -25 stderr" );
     }
 
     if ( !$copyrun ) {
