@@ -2318,24 +2318,54 @@ if ( $apache === null ) {
 } else {
     ## Any existing policy, Report-Only or enforced (an Ansible install enforces), is left as is.
     ##
-    ## Searched under conf-enabled on Debian, not the whole tree: a file sitting
-    ## in conf-available but never a2enconf'd takes no effect, and grep -r over
-    ## $apache['root'] counted it as configured anyway. conf-enabled holds
-    ## symlinks to the real files -- which GNU grep's lowercase -r does NOT
-    ## follow while recursing (confirmed: -r over a conf-enabled symlink finds
-    ## nothing, -R finds the target), so with -r an existing policy was never
-    ## detected there and every rerun reinstalled and reloaded for nothing.
-    $csp_search_root = ( $apache[ 'service' ] === 'apache2' && is_dir( '/etc/apache2/conf-enabled' ) )
-                      ? '/etc/apache2/conf-enabled' : $apache[ 'root' ];
-    list( $csp_candidates ) = capture( 'grep -RlI Content-Security-Policy ' . escapeshellarg( $csp_search_root ) );
-    ## And only a line that isn't a comment and actually sends the header,
-    ## not merely names it: grep alone also matched a site note, a commented-out
+    ## Apache's own list of files it actually loads (httpd -t -D DUMP_INCLUDES /
+    ## apache2ctl -t -D DUMP_INCLUDES), not a directory walk. A directory walk
+    ## has to choose a root, and either choice is wrong: conf-enabled alone (the
+    ## original fix here) misses a policy set directly in sites-enabled or
+    ## apache2.conf on Debian; the whole root instead, to catch those, means
+    ## recursing with -R (not -r: GNU grep's -r does not follow the symlinks
+    ## conf-enabled holds, which is the bug -R alone was added to fix) --
+    ## which on EL8 also follows conf.d's own logs/state symlinks straight into
+    ## /var/log/httpd and /var/lib/httpd. A large log file merely mentioning the
+    ## header (mod_security's audit log, a LogFormat with %{...}o) then gets
+    ## read whole into PHP and silently kills the run (reproduced: a 300MB
+    ## error_log, exit 255 on PHP 7.2). DUMP_INCLUDES is exactly the set Apache
+    ## itself resolved and actually loads, on either distro, with none of that.
+    $dump_cmd = $apache[ 'service' ] === 'apache2' ? 'apache2ctl' : 'httpd';
+    list( $dump_out, $dump_err, $dump_rc ) = capture( "$dump_cmd -t -D DUMP_INCLUDES 2>&1" );
+    $csp_files = [];
+    if ( $dump_rc === 0 ) {
+        foreach ( explode( "\n", $dump_out ) as $line ) {
+            if ( preg_match( '#^\s*\(\S+\)\s+(/\S+)#', $line, $m ) ) {
+                $csp_files[] = $m[ 1 ];
+            }
+        }
+    }
+    if ( !$csp_files ) {
+        ## DUMP_INCLUDES unavailable or failed for a reason unrelated to this
+        ## (an unrelated config error, an Apache too old to support it): fall
+        ## back to the directory walk rather than fail outright. -i: the grep
+        ## prefilter used to be case-sensitive even though the PHP-side regex
+        ## below always had /i.
+        $csp_search_root = ( $apache[ 'service' ] === 'apache2' && is_dir( '/etc/apache2/conf-enabled' ) )
+                          ? '/etc/apache2/conf-enabled' : $apache[ 'root' ];
+        list( $csp_candidates ) = capture( 'grep -RlIi Content-Security-Policy ' . escapeshellarg( $csp_search_root ) );
+        $csp_files = array_filter( explode( "\n", trim( $csp_candidates ) ) );
+        report( 'note', "$dump_cmd -t -D DUMP_INCLUDES failed; falling back to a directory walk, which"
+                       . " can miss or misdetect a policy -- Apache's own error: "
+                       . reason( $dump_err !== '' ? $dump_err : $dump_out ) );
+    }
+    ## And only a line that isn't a comment and actually sends the header, not
+    ## merely names it: grep alone also matched a site note, a commented-out
     ## directive, or "Header unset Content-Security-Policy" (which removes the
-    ## header rather than setting it, so it is not a policy to leave alone).
+    ## header rather than setting one, so it is not a policy to leave alone).
+    ## 'add'/'append'/'merge'/'setifempty' all install a header too, same as
+    ## 'set' -- recognizing only 'set' let a second, Report-Only policy get
+    ## installed alongside one of those.
     $csp_found = [];
-    foreach ( array_filter( explode( "\n", trim( $csp_candidates ) ) ) as $file ) {
+    foreach ( $csp_files as $file ) {
         foreach ( explode( "\n", (string) @file_get_contents( $file ) ) as $line ) {
-            if ( preg_match( '/^\s*Header\s+(always\s+)?set\s+Content-Security-Policy\b/i', $line ) ) {
+            if ( preg_match( '/^\s*Header\s+(always\s+)?(set|add|append|merge|setifempty)\s+Content-Security-Policy\b/i', $line ) ) {
                 $csp_found[] = $file;
                 break;
             }
