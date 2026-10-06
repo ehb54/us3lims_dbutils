@@ -736,10 +736,12 @@ if ( $running || $restart || $restart_only ) {
         $jm_key = "$db:$gfacid";
 
         ## emptyok=true: gridctl can leave a gfac.analysis row with no
-        ## HPCAnalysisResult behind (a deleted request or database). Since
-        ## services.php now runs --restart at every boot, exiting here on
-        ## the first such row (the old emptyok=false) would skip restarting
-        ## the monitor for every row after it, not just this one.
+        ## HPCAnalysisResult behind (a deleted request or database). The
+        ## us3-jobmonitors.service unit runs --restart at every boot (not
+        ## services.php, which no longer duplicates this -- see its own
+        ## comment in start()), exiting here on the first such row (the old
+        ## emptyok=false) would skip restarting the monitor for every row
+        ## after it, not just this one.
         $reshpc =
             db_obj_result(
                 $db_handle
