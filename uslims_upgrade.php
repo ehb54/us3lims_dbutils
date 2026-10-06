@@ -78,7 +78,9 @@ Steps
     advisory pilot table, common#31 -- optional, pilot-scoped; a missing SQL
     file or no CREATE privilege is a note here, not a failure)
 6 : removes the gridctl cron entries (gridctl.php, and the gridctl_pro/dev names before it)
-7 : verifies the result, including that every active cluster passes the submission
+7 : installs the Content-Security-Policy as Report-Only unless a policy is already
+    configured; enforcing it is a later step
+8 : verifies the result, including that every active cluster passes the submission
     sizing gate rather than refusing every job
 
 Undoing it
@@ -2291,9 +2293,87 @@ if ( !$old_crons ) {
     report( 'ok', "no crontab drives gridctl" );
 }
 
-## ------------------------------------------------------------- 7. verify
+## ------------------------------------------------------------- 7. Content-Security-Policy
 
-step( "7. Verify" );
+## The pages are written for util/csp's policy. It goes in Report-Only, which
+## blocks nothing and logs each violation through /csp-report.php; enforcing it is
+## a later, deliberate change once that log is quiet (util/csp/README.md).
+step( "7. Content-Security-Policy (Report-Only)" );
+
+$csp_policy = __DIR__ . '/util/csp/csp-report-only.conf';
+if ( is_dir( '/etc/httpd/conf.d' ) ) {
+    $apache = [ 'root' => '/etc/httpd', 'conf' => '/etc/httpd/conf.d/lims-csp.conf',
+                'enable' => '', 'disable' => '', 'service' => 'httpd' ];
+} elseif ( is_dir( '/etc/apache2/conf-available' ) ) {
+    $apache = [ 'root' => '/etc/apache2', 'conf' => '/etc/apache2/conf-available/lims-csp.conf',
+                'enable' => 'a2enconf -q lims-csp', 'disable' => 'a2disconf -q lims-csp', 'service' => 'apache2' ];
+} else {
+    $apache = null;
+}
+
+if ( $apache === null ) {
+    report( 'FAIL', "no Apache configuration directory (/etc/httpd/conf.d or /etc/apache2/conf-available)" );
+} elseif ( !is_file( $csp_policy ) ) {
+    report( 'FAIL', "policy not found: $csp_policy (update dbutils first)" );
+} else {
+    ## Any existing policy, Report-Only or enforced (an Ansible install enforces), is left as is.
+    ##
+    ## Searched under conf-enabled on Debian, not the whole tree: a file sitting
+    ## in conf-available but never a2enconf'd takes no effect, and grep -r over
+    ## $apache['root'] counted it as configured anyway. conf-enabled holds
+    ## symlinks to the real files -- which GNU grep's lowercase -r does NOT
+    ## follow while recursing (confirmed: -r over a conf-enabled symlink finds
+    ## nothing, -R finds the target), so with -r an existing policy was never
+    ## detected there and every rerun reinstalled and reloaded for nothing.
+    $csp_search_root = ( $apache[ 'service' ] === 'apache2' && is_dir( '/etc/apache2/conf-enabled' ) )
+                      ? '/etc/apache2/conf-enabled' : $apache[ 'root' ];
+    list( $csp_candidates ) = capture( 'grep -RlI Content-Security-Policy ' . escapeshellarg( $csp_search_root ) );
+    ## And only a line that isn't a comment and actually sends the header,
+    ## not merely names it: grep alone also matched a site note, a commented-out
+    ## directive, or "Header unset Content-Security-Policy" (which removes the
+    ## header rather than setting it, so it is not a policy to leave alone).
+    $csp_found = [];
+    foreach ( array_filter( explode( "\n", trim( $csp_candidates ) ) ) as $file ) {
+        foreach ( explode( "\n", (string) @file_get_contents( $file ) ) as $line ) {
+            if ( preg_match( '/^\s*Header\s+(always\s+)?set\s+Content-Security-Policy\b/i', $line ) ) {
+                $csp_found[] = $file;
+                break;
+            }
+        }
+    }
+    if ( $csp_found ) {
+        report( 'ok', "a Content-Security-Policy is already configured (" . implode( ', ', $csp_found ) . "); left as is" );
+    } else {
+        report( 'todo', "install the Report-Only policy for $wwwpath as {$apache['conf']}" );
+        if ( $apply && confirm( "Install the Report-Only Content-Security-Policy and reload {$apache['service']}?" ) ) {
+            write_file( $apache[ 'conf' ], "## Installed by uslims_upgrade.php from util/csp/csp-report-only.conf.\n"
+                        . "<Directory \"$wwwpath\">\n" . file_get_contents( $csp_policy ) . "\n</Directory>\n", false );
+            if ( $apache[ 'enable' ] !== '' ) {
+                capture( $apache[ 'enable' ] );
+            }
+            list( $t_out, $t_err, $t_rc ) = capture( 'apachectl configtest' );
+            if ( $t_rc !== 0 ) {
+                if ( $apache[ 'disable' ] !== '' ) {
+                    capture( $apache[ 'disable' ] );
+                }
+                @unlink( $apache[ 'conf' ] );
+                report( 'FAIL', "Apache rejected the policy, so it was removed: " . reason( $t_err !== '' ? $t_err : $t_out ) );
+            } else {
+                list( $r_out, $r_err, $r_rc ) = capture( 'systemctl reload ' . $apache[ 'service' ] );
+                report( $r_rc === 0 ? 'done' : 'FAIL', "Report-Only policy installed"
+                        . ( $r_rc === 0 ? "; {$apache['service']} reloaded" : "; reload {$apache['service']} by hand: " . reason( $r_err ) ) );
+            }
+        }
+    }
+    list( $mods ) = capture( 'apachectl -M' );
+    if ( strpos( $mods, 'headers_module' ) === false ) {
+        report( 'note', "mod_headers is not loaded, so Apache sends no CSP header; enable it" );
+    }
+}
+
+## ------------------------------------------------------------- 8. verify
+
+step( "8. Verify" );
 
 ## These checks describe the upgraded host, so on a dry run they would all fail
 ## by construction. Their outcome is only meaningful once the changes are in.

@@ -46,7 +46,8 @@
      4. records each cluster's host key and checks ssh for us3 and the web account (the PHP-FPM pool user); sets up the keys for the host's own cluster, and for any cluster named with --activate that isn't active yet
      5. creates the shared circuit-breaker directory, and the gfac.runtime_prediction table the runtime-advisory pilot uses if it is ever turned on
      6. removes the gridctl cron entries from the crontabs (us3's, /etc/crontab, /etc/cron.d), under gridctl.php and the gridctl_pro/dev names before it, since each job's jobmonitor now carries it to a terminal state
-     7. verifies the result
+     7. installs the util/csp policy as Report-Only in Apache (lims-csp.conf) unless a policy is already configured; enforcing it is a later step
+     8. verifies the result
    - ```--activate cluster[,cluster]``` brings a converted entry live: sets active=true in global_config.php and turns on its cluster_config.php probe, together, once its env_script_lines are real and ssh to it succeeds (as us3, and as the web account if different)
    - dry run by default; ```php uslims_upgrade.php --apply``` makes the changes, backing up each file first; safe to rerun
  - uslims_git_info.php
