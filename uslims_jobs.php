@@ -404,7 +404,13 @@ function marker_process_alive( $pid, $marker_started = 0 ) {
 ## (0 for a non-autoflow submission). Pulled out of the --restart loop so it can
 ## be exercised directly instead of only through a live database.
 function close_out_finalizing_marker( $db_handle, $marker, array $info ) {
-    $gfacid = $info[ 'gfacID' ];
+    $gfacid    = $info[ 'gfacID' ];
+    ## The marker's own requestID is the HPCAnalysisRequestID (see
+    ## cleanup_finalizing_begin() in gridctl's jobmonitor/cleanup.php); every
+    ## close-out below matches on it together with gfacID, not gfacID alone,
+    ## since gfacID gets reused and a stale marker from an older, unrelated
+    ## row must not touch today's row for that gfacID.
+    $requestid = (int) ( $info[ 'requestID' ] ?? 0 );
 
     $us3_db_esc  = mysqli_real_escape_string( $db_handle, $info[ 'us3_db' ] );
     $gfacid_esc  = mysqli_real_escape_string( $db_handle, $gfacid );
@@ -421,18 +427,34 @@ function close_out_finalizing_marker( $db_handle, $marker, array $info ) {
         ## and gridctl's job_state_machine::update_autoflow_status(), which both
         ## match this same column by autoflowAnalysisID, never by
         ## HPCAnalysisRequestID). Matching on the marker's requestID here either
-        ## touched no row or the wrong one. 'CANCELED' is also now excluded: a
-        ## user-initiated cancel is not something this restart-time cleanup
-        ## should overwrite as a failure.
+        ## touched no row or the wrong one. 'CANCELED' and 'ERROR' are also
+        ## excluded: a user-initiated cancel, and gridctl's own terminal
+        ## error status, are not something this restart-time cleanup should
+        ## overwrite as a failure.
         $query = "UPDATE $us3_db_esc.autoflowAnalysis SET status='FAILED', statusMsg='$message_esc'"
                . " WHERE requestID=$autoflow_id AND currentGfacID='$gfacid_esc'"
-               . " AND status NOT IN ('FAILED','COMPLETE','CANCELED')";
+               . " AND status NOT IN ('FAILED','COMPLETE','CANCELED','ERROR')";
         if ( mysqli_query( $db_handle, $query ) === false ) {
             echo "could not close out autoflowAnalysisID $autoflow_id for $gfacid: "
                . mysqli_error( $db_handle ) . "\n";
             return;
         }
         if ( mysqli_affected_rows( $db_handle ) > 0 ) {
+            ## gridctl's own final write (job_state_machine::update_autoflow_status())
+            ## updates both autoflowAnalysis and HPCAnalysisResult; this
+            ## restart-time close-out does the same, by HPCAnalysisRequestID
+            ## AND gfacID together. Best-effort: the autoflowAnalysis row is
+            ## already closed either way, so a failure here is logged, not
+            ## treated as reason to leave the marker behind.
+            if ( $requestid > 0 ) {
+                $hpc_query = "UPDATE $us3_db_esc.HPCAnalysisResult SET queueStatus='failed',"
+                           . " lastMessage='$message_esc' WHERE HPCAnalysisRequestID=$requestid"
+                           . " AND gfacID='$gfacid_esc' AND queueStatus NOT IN ('completed','failed','aborted')";
+                if ( mysqli_query( $db_handle, $hpc_query ) === false ) {
+                    echo "closed out autoflowAnalysisID $autoflow_id for $gfacid, but could not"
+                       . " also close out its HPCAnalysisResult: " . mysqli_error( $db_handle ) . "\n";
+                }
+            }
             echo "closed out autoflowAnalysisID $autoflow_id for $gfacid, whose results"
                . " handling was interrupted\n";
             @unlink( $marker );
@@ -458,10 +480,13 @@ function close_out_finalizing_marker( $db_handle, $marker, array $info ) {
 
     ## Non-autoflow submission (e.g. plain GA/DMGA/2DSA): there is no
     ## autoflowAnalysis row to close. Mark the scientist-visible queue status
-    ## instead, by gfacID -- the same key job_state_machine's own
-    ## update_hpc_analysis_result_status() resolves by.
+    ## instead, matched by HPCAnalysisRequestID AND gfacID together -- the
+    ## same two keys job_state_machine's own
+    ## update_hpc_analysis_result_status() resolves by -- not gfacID alone,
+    ## which an old, unrelated row can share after gfacID gets reused.
     $query = "UPDATE $us3_db_esc.HPCAnalysisResult SET queueStatus='failed', lastMessage='$message_esc'"
-           . " WHERE gfacID='$gfacid_esc' AND queueStatus NOT IN ('completed','failed','aborted')";
+           . " WHERE HPCAnalysisRequestID=$requestid AND gfacID='$gfacid_esc'"
+           . " AND queueStatus NOT IN ('completed','failed','aborted')";
     if ( mysqli_query( $db_handle, $query ) === false ) {
         echo "could not close out HPCAnalysisResult for $gfacid: " . mysqli_error( $db_handle ) . "\n";
         return;
@@ -732,6 +757,16 @@ if ( $running || $restart || $restart_only ) {
         if ( array_key_exists( $jm_key, $jm_active ) ) {
             $jm_pid = $jm_active[ $jm_key ];
             unset( $jm_active[ $jm_key ] );
+        } elseif ( $reqid === "unknown" ) {
+            ## round-5 fix: queuing this orphan row for restart anyway sent
+            ## jobmonitor.php a non-numeric HPCAnalysisRequestID ("unknown"),
+            ## which it rejects, exiting 255; run_cmd()'s default
+            ## die_if_exit then aborted the whole --restart pass, skipping
+            ## every row after this one, every single boot. Nothing can be
+            ## restarted for a row with no HPCAnalysisResult to read a
+            ## request id from, so it is skipped here instead, with a
+            ## message, rather than queued to fail the whole pass.
+            $jm_pid = "skipped (orphan row, no HPCAnalysisResult)";
         } else {
             $jm_pid                = "not running";
             $jm_restart_db      [] = $db;
@@ -1181,21 +1216,37 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     ## get info
 
-    ## Matches dbinst's lib/file_writer.php naming, same as $inputfile above.
-    $reqxmlf = "hpcrequest-$dbhost-$db-$padreqid.xml";
-
     ## submit_slurm.php's own layout (class/submit_slurm.php:253-254,267): the
     ## Airavata-era names (job_*.slurm, Ultrascan.stdout/stderr) are gone.
+    ## The request XML is never one of them: submit_slurm::stage_files()
+    ## only ever scp's the input tar and us3.slurm to the run directory (see
+    ## common's class/submit_slurm.php:131), so it is not requested here --
+    ## asking rsync for a file that can never exist used to end every
+    ## --getrun with exit code 23 (partial transfer).
+    ##
+    ## us_mpi_analysis writes the results tar at the top of the run
+    ## directory; output/analysis-results.tar is a fallback for older
+    ## layouts, same order gridctl's own fetch tries them in
+    ## (jobmonitor/cleanup.php's $tar_candidates).
     $getfiles = [
         "us3.slurm"
         ,$inputfile
         ,"stdout"
         ,"stderr"
-        ,$reqxmlf
+        ,"analysis-results.tar"
         ,"output/analysis-results.tar"
         ];
 
-    $cmd = "runuser -l us3 -c \"rsync -avz $login:$rundir/{" . implode(",",$getfiles) . "} " . $tdir . "\"";
+    ## $login and $rundir are quoted; the resulting runuser -c argument is
+    ## quoted as a whole too, instead of the previous hand-rolled double
+    ## quotes, which broke if any of these values (ultimately config- and
+    ## instance-derived) ever contained one. The curly-brace file list stays
+    ## bare: it is bash's own brace expansion, not something escapeshellarg()
+    ## can be applied to without disabling it.
+    $remote_spec = escapeshellarg( $login ) . ':' . escapeshellarg( $rundir )
+                 . '/{' . implode( ",", $getfiles ) . '}';
+    $inner_cmd   = "rsync -avz $remote_spec " . escapeshellarg( $tdir );
+    $cmd         = "runuser -l us3 -c " . escapeshellarg( $inner_cmd );
 
     echoline();
     echo "$cmd\n";
@@ -1214,10 +1265,9 @@ if ( $getrundir || $getrun || $copyrun ) {
             echoline();
             echo run_cmd( "grep 'SBATCH' $tdir/us3.slurm" );
         }
-        if ( file_exists( "$tdir/$reqxmlf" ) ) {
-            echoline();
-            echo run_cmd( "grep -P '(datasetCount|iterations|groupcount|method)' $tdir/$reqxmlf | sed 's/^ *<//;s/> *$//;s/\/$//'" );
-        }
+        ## The request XML was never fetched above (it is never staged to
+        ## the run directory in the first place), so there is nothing here
+        ## to grep it from.
         echoline();
         echo run_cmd( "cd $tdir && tail -25 stderr" );
     }

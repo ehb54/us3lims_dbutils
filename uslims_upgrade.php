@@ -70,7 +70,9 @@ Steps
     settings the new code requires (queue time, tenant scope, local cluster,
     env_script_lines per cluster, single_node on one-node appliances)
 4 : records each cluster's host key and checks ssh for us3 and the web account
-5 : creates the shared circuit-breaker directory
+5 : creates the shared circuit-breaker directory, and gfac.runtime_prediction
+    (the runtime advisory pilot table, common#31 -- optional, pilot-scoped; a
+    missing SQL file or no CREATE privilege is a note here, not a failure)
 6 : removes the gridctl cron entries (gridctl.php, and the gridctl_pro/dev names before it)
 7 : verifies the result, including that every active cluster passes the submission
     sizing gate rather than refusing every job
@@ -81,15 +83,20 @@ Every file this script rewrites is copied first, and so is every file it appends
 both go to one timestamped directory, named when the run starts and again at the end.
 To roll back, with the services stopped:
 
-  1. copy global_config.php and listen-config.php back from that directory;
+  1. copy global_config.php, listen-config.php and cluster_config.php back from
+     that directory;
   2. copy known_hosts and authorized_keys back, or delete them where the backup is
      recorded as "(did not exist)";
   3. restore the LIMS cron entries, including the gridctl entry step 6 removed, if
      you are going back to a release that still expects the sweep;
   4. the circuit-breaker directory can stay: an unused one changes nothing.
 
-There is nothing to undo in the database: this script does not touch the schema or
-any job row.
+Nothing else to undo in the database: this script never touches the schema or any
+job row, with one exception -- step 5's gfac.runtime_prediction (see step 5 above),
+which is optional, pilot-scoped and empty until the pilot is turned on. Dropping it
+is a separate, deliberate operator step (the teardown statement is documented in
+common's class/prediction/runtime_pilot_table.sql), not part of rolling back this
+script.
 
 Options
 
@@ -111,7 +118,9 @@ Options
 --web-user name              : account the web code runs as (default: the PHP-FPM pool user, else apache, else www-data)
 --env cluster=lines          : env_script_lines for a cluster ('' for none); sets or changes it; repeatable
 --local-cluster name         : cluster used for GUI requests naming 'localhost'; sets or changes it
---single-tenant yes|no       : yes on an appliance (one institution), no on a shared host; sets or changes it
+--single-tenant yes|no       : yes on an appliance (one institution), no on a shared host; sets or changes it.
+                               'no' also downgrades a busy sinfo node from this run's own FAIL to a note,
+                               since someone else's work on a shared cluster is not this upgrade's business
 --activate cluster[,cluster] : bring a converted entry live: sets active=true in global_config.php and
                                turns on its cluster_config.php probe, together, once its env_script_lines
                                are real and ssh to it succeeds. Still 'http', already active, no usable
@@ -1147,7 +1156,9 @@ if ( $sq_rc !== 0 ) {
                                 . " may not be us3's: " . implode( ', ', $working ) );
             } else {
                 report( 'FAIL', count( $working ) . " node(s) still running work: "
-                                . implode( ', ', $working ) );
+                                . implode( ', ', $working )
+                                . " (on a shared, multi-tenant host, pass --single-tenant no to"
+                                . " downgrade this to a note)" );
                 $busy[] = count( $working ) . ' node(s) busy';
             }
         } else {
@@ -1254,18 +1265,28 @@ if ( $who_rc !== 0 ) {
         ## exclusion above then matches nothing. Exclude by the invoking
         ## user's name instead, not by downgrading every session once any of
         ## those tools is in use -- that kept FAIL for everyone else logged
-        ## in as a different account.
-        if ( $invoking_user !== '' && $m[ 1 ] === $invoking_user ) {
+        ## in as a different account. Not for 'root', though: run directly
+        ## as root with no sudo, $invoking_user is 'root' same as anyone
+        ## else logged in directly as root, and that account is commonly
+        ## shared across several real admins/processes -- matching on it
+        ## would wave through a second, genuinely different root login as
+        ## if it were this same session, which $own_tty's own check above
+        ## (keyed on the pty, not the account) does not have this problem.
+        if ( $invoking_user !== '' && $invoking_user !== 'root' && $m[ 1 ] === $invoking_user ) {
             continue;
         }
         $sessions[] = "{$m[1]} on {$m[2]}";
     }
-    if ( $sessions && $own_tty === '' ) {
-        ## Without a terminal we can trust to be this session's own, and with
-        ## no invoking user identified either, there is no way to tell the
-        ## operator's session apart from anyone else's. Report the sessions
-        ## and let the operator judge, rather than refuse every run from a
-        ## pipe or wrapper with no controlling terminal.
+    ## Ambiguous only when NEITHER signal can tell this session apart from
+    ## anyone else's: no controlling terminal (Ansible, `ssh host sudo php
+    ## ...`, `</dev/null`) and no non-root invoking user identified either.
+    ## The previous version downgraded to 'note' whenever $own_tty alone was
+    ## empty, even when $invoking_user was known and had already correctly
+    ## excluded its own session above -- silently waving every other
+    ## session through as a mere note under Ansible or any other
+    ## no-terminal invocation.
+    $ambiguous = $own_tty === '' && ( $invoking_user === '' || $invoking_user === 'root' );
+    if ( $sessions && $ambiguous ) {
         report( 'note', count( $sessions ) . " login session(s) found, and this session's"
                         . " terminal could not be identified, so one of them may be this one: "
                         . implode( ', ', $sessions ) );
@@ -1516,10 +1537,19 @@ if ( $convert_http ) {
             $changed[] = $key;
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ '
                        . var_export( $key, true ) . ' ] = ' . php_value( $value ) . ';';
+            ## Mirrored into this run's own $clusters, not just queued for the
+            ## managed block written at the end: --convert-http and --activate
+            ## used to need separate runs, one for the file to actually carry
+            ## the new value before the next step could see it. Steps below
+            ## (ssh setup, --activate) read $clusters directly, so converting
+            ## and activating an entry in one run needs this to be visible to
+            ## them immediately, not just on the next invocation.
+            $clusters[ $name ][ $key ] = $value;
         }
         if ( ( $c[ 'submittype' ] ?? '' ) !== 'slurm' ) {
             $changed[] = 'submittype';
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'submittype\' ] = \'slurm\';';
+            $clusters[ $name ][ 'submittype' ] = 'slurm';
         }
         report( 'todo', "convert inactive cluster '$name' to SSH ("
                         . ( $changed ? implode( ', ', $changed ) : 'already matches the template' )
@@ -1686,6 +1716,20 @@ foreach ( $active as $name => $c ) {
 ## that can come any number of runs later, once the cluster has actually
 ## supplied its env_script_lines and SSH has been set up by hand (neither of
 ## which this script can do for a cluster that isn't in $active yet).
+##
+## Converting and activating used to take three separate runs even once
+## env_script_lines was supplied, because this block runs before step 4
+## (SSH) below it ever gets a chance to record a host key or authorize a
+## local key -- its own ssh test here still fails on an entry converted
+## earlier in this very run, for lack of a key, same as before. What the
+## conversion loop above now fixes is that it mirrors its changes straight
+## into $clusters, not just into $managed for the eventual file write: step
+## 4 below used to misread a freshly-converted entry's submittype as still
+## unset (not yet 'slurm' on disk) and skip setting its keys up at all this
+## run. With that read fixed, step 4 sets a fresh conversion's keys up in
+## the very run it was converted, so only one re-run -- to let --activate
+## see that step 4's work -- is needed before activation succeeds, down
+## from two.
 $activated = [];
 foreach ( $activate_want as $name ) {
     $c = $clusters[ $name ] ?? null;
@@ -1697,7 +1741,11 @@ foreach ( $activate_want as $name ) {
         report( 'ok', "--activate: '$name' is already active" );
         continue;
     }
-    if ( strtolower( (string) ( $c[ 'submittype' ] ?? '' ) ) !== 'slurm' ) {
+    ## A missing submittype is Slurm, not something still needing
+    ## conversion: the 4.3.0 template's own entries carry no submittype key
+    ## at all, and --convert-http only ever converts 'http' entries, so a
+    ## host built from that template had no way to activate anything.
+    if ( strtolower( (string) ( $c[ 'submittype' ] ?? 'slurm' ) ) !== 'slurm' ) {
         report( 'FAIL', "--activate: '$name' is still submittype '"
                         . ( $c[ 'submittype' ] ?? '' ) . "'; convert it first with --convert-http" );
         continue;
@@ -1723,21 +1771,34 @@ foreach ( $activate_want as $name ) {
     if ( $rc !== 0 ) {
         ## 'input', not 'todo': this ssh failure does not get an entry in
         ## $managed and so is never actually applied under --apply, unlike a
-        ## real 'todo'. Left as 'todo' this exited 0 ("All checks passed")
-        ## with the cluster still not activated.
+        ## real 'todo'.
         report( 'input', "--activate: '$name' does not yet ssh as us3 to $login (exit $rc): "
                         . reason( $ssh_err !== '' ? $ssh_err : $ssh_out )
-                        . "; step 4, run again after this one, offers to set up the key" );
+                        . "; step 4 below offers to set up the key under --apply, then re-run" );
         continue;
+    }
+    ## round-5 should-fix: the web account's ssh used to be checked only
+    ## after this wrote active = true, in step 4 further down in the old
+    ## file order -- a cluster could go live while the web tier (which
+    ## actually stages files and runs sbatch) still could not reach it at
+    ## all. Gated here too now, before activation, not only us3's.
+    if ( $web_user !== 'us3' ) {
+        $web_rc = run_as( $web_user, $ssh, $web_ssh_out, $web_ssh_err );
+        if ( $web_rc !== 0 ) {
+            report( 'input', "--activate: '$name' does not yet ssh as $web_user to $login (exit $web_rc): "
+                            . reason( $web_ssh_err !== '' ? $web_ssh_err : $web_ssh_out )
+                            . "; step 4 below offers to set up the key under --apply, then re-run" );
+            continue;
+        }
     }
     if ( $env !== ( $c[ 'env_script_lines' ] ?? '' ) ) {
         $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = '
                    . php_string( $env ) . ';';
     }
     $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'active\' ] = true;';
-    report( 'todo', "activate '$name' (env_script_lines is real, ssh to $login succeeds): sets"
-                    . " active = true in $global_config and turns on its status probe in"
-                    . " cluster_config.php" );
+    report( 'todo', "activate '$name' (env_script_lines is real, ssh to $login succeeds for us3"
+                    . ( $web_user !== 'us3' ? " and $web_user" : '' ) . "): sets active = true in"
+                    . " $global_config and turns on its status probe in cluster_config.php" );
     $activated[] = $name;
 }
 
@@ -1831,8 +1892,10 @@ foreach ( $activate_want as $name ) {
     ## Still 'http': the --activate block below is going to refuse this one
     ## with "convert it first", so there is no point offering ssh setup for
     ## it yet, and step 3's conversion loop hasn't necessarily given it a
-    ## real 'name'/'login' to test against.
-    if ( strtolower( (string) ( $clusters[ $name ][ 'submittype' ] ?? '' ) ) !== 'slurm' ) {
+    ## real 'name'/'login' to test against. A missing submittype is Slurm,
+    ## not 'http' -- the 4.3.0 template's entries carry no submittype key at
+    ## all, so this used to skip ssh setup for every one of them too.
+    if ( strtolower( (string) ( $clusters[ $name ][ 'submittype' ] ?? 'slurm' ) ) !== 'slurm' ) {
         continue;
     }
     $ssh_targets[ $name ] = $clusters[ $name ];
