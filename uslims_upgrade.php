@@ -660,6 +660,45 @@ function conversion_blockers( $want, $have ) {
     return $blockers;
 }
 
+## jobsubmit.php refuses every job on a single_node cluster whose maxproc
+## exceeds ppn, or whose ppn is unusable, so that invariant still holds.
+##
+## 9b875a0 floored ppn/maxproc at max($cpus, 16) so GA kept 16 processes on a
+## smaller appliance, as 4.2.0 did. Tested against real Slurm (20.11.9,
+## cons_tres/CR_Core): that floor oversubscribes a node with fewer than 16
+## CPUs. sbatch rejects --ntasks-per-node above the node's real CPU count
+## outright for 2DSA/PCSA ("CPU count per node can not be satisfied"), and GA
+## accepts but pends forever (PartitionConfig) -- worse than the regression
+## the floor was added to avoid, since 4.2.0's 2DSA ran fine on such a node.
+## Capping at the real CPU count instead -- this function's only job -- means
+## GA gets fewer than 16 processes on a node with fewer than 16 CPUs, but
+## every family actually runs there. Nodes with at least 16 CPUs are
+## unaffected either way, since the floor was already a no-op there
+## (max($cpus, 16) == $cpus whenever $cpus >= 16).
+##
+## Pure: no reads, no writes, no reporting. $c is the cluster's current
+## config (only 'ppbj'/'ppn'/'maxproc' are read); returns the three keys this
+## cluster should have, each already capped at $cpus and at each other.
+function single_node_sizing( $c, $cpus ) {
+    $want = [];
+    $want[ 'ppbj' ]    = isset( $c[ 'ppbj' ] )    ? (int) $c[ 'ppbj' ]    : null;
+    $want[ 'ppn' ]     = isset( $c[ 'ppn' ] )     ? (int) $c[ 'ppn' ]     : null;
+    $want[ 'maxproc' ] = isset( $c[ 'maxproc' ] ) ? (int) $c[ 'maxproc' ] : null;
+    foreach ( [ 'ppbj', 'ppn', 'maxproc' ] as $key ) {
+        if ( $want[ $key ] === null || $want[ $key ] > $cpus ) {
+            $want[ $key ] = $cpus;
+        }
+    }
+    ## Still never above ppn: that part of the original invariant stands.
+    if ( $want[ 'maxproc' ] > $want[ 'ppn' ] ) {
+        $want[ 'maxproc' ] = $want[ 'ppn' ];
+    }
+    if ( $want[ 'ppbj' ] > $want[ 'ppn' ] ) {
+        $want[ 'ppbj' ] = $want[ 'ppn' ];
+    }
+    return $want;
+}
+
 ## The managed block's assignments keyed by their target, e.g. '$default_local_cluster'.
 function block_settings( $block ) {
     $settings = [];
@@ -1621,37 +1660,9 @@ foreach ( $active as $name => $c ) {
         report( 'todo', "set single_node for $name (its queue has one node)" );
         $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'single_node\' ] = true;';
     }
-    ## jobsubmit.php refuses every job on a single_node cluster whose maxproc
-    ## exceeds ppn, or whose ppn is unusable, so that invariant still holds.
-    ##
-    ## 9b875a0 floored ppn/maxproc at max($cpus, 16) so GA kept 16 processes on
-    ## a smaller appliance, as 4.2.0 did. Tested against real Slurm (20.11.9,
-    ## cons_tres/CR_Core): that floor oversubscribes a node with fewer than 16
-    ## CPUs. sbatch rejects --ntasks-per-node above the node's real CPU count
-    ## outright for 2DSA/PCSA ("CPU count per node can not be satisfied"), and
-    ## GA accepts but pends forever (PartitionConfig) -- worse than the
-    ## regression the floor was added to avoid, since 4.2.0's 2DSA ran fine on
-    ## such a node. Capping at the real CPU count instead -- this block's only
-    ## job now -- means GA gets fewer than 16 processes on a node with fewer
-    ## than 16 CPUs, but every family actually runs there. Nodes with at least
-    ## 16 CPUs are unaffected either way, since the floor was already a no-op
-    ## there (max($cpus, 16) == $cpus whenever $cpus >= 16).
-    $want = [];
-    $want[ 'ppbj' ]    = isset( $c[ 'ppbj' ] )    ? (int) $c[ 'ppbj' ]    : null;
-    $want[ 'ppn' ]     = isset( $c[ 'ppn' ] )     ? (int) $c[ 'ppn' ]     : null;
-    $want[ 'maxproc' ] = isset( $c[ 'maxproc' ] ) ? (int) $c[ 'maxproc' ] : null;
-    foreach ( [ 'ppbj', 'ppn', 'maxproc' ] as $key ) {
-        if ( $want[ $key ] === null || $want[ $key ] > $cpus ) {
-            $want[ $key ] = $cpus;
-        }
-    }
-    ## Still never above ppn: that part of the original invariant stands.
-    if ( $want[ 'maxproc' ] > $want[ 'ppn' ] ) {
-        $want[ 'maxproc' ] = $want[ 'ppn' ];
-    }
-    if ( $want[ 'ppbj' ] > $want[ 'ppn' ] ) {
-        $want[ 'ppbj' ] = $want[ 'ppn' ];
-    }
+    ## Sizing itself is single_node_sizing() (pure, unit-tested); see its
+    ## docblock for why this floors at the CPU count rather than at 16.
+    $want = single_node_sizing( $c, $cpus );
     foreach ( $want as $key => $value ) {
         $now = isset( $c[ $key ] ) ? (int) $c[ $key ] : null;
         if ( $value === $now ) {
