@@ -166,9 +166,18 @@ $util_backup_dir = "";
 
 function backup_dir_init( $dir = "backup" ) {
     global $util_backup_dir;
-    $util_backup_dir = "$dir-" . trim( run_cmd( 'date +"%Y%m%d%H%M%S"' ) );
-    mkdir( $util_backup_dir );
-    if ( !is_dir( $util_backup_dir ) ) {
+    ## -pid<pid> too, not just the timestamp (round-6 nit): two runs within
+    ## the same second (ran: back-to-back --activate invocations) used to
+    ## collide on one directory -- mkdir() for the second run failed
+    ## silently (no @ here, but nothing checks its return either), and
+    ## is_dir() right after still passed because the first run's directory
+    ## was already there, so the second run's backup_file() calls silently
+    ## shared it. A file both runs backed up then kept only the second run's
+    ## copy, overwriting the first run's original -- exactly what a rollback
+    ## later needs. Appending the pid makes the directory name unique per
+    ## process regardless of timing.
+    $util_backup_dir = "$dir-" . trim( run_cmd( 'date +"%Y%m%d%H%M%S"' ) ) . '-pid' . getmypid();
+    if ( !mkdir( $util_backup_dir ) || !is_dir( $util_backup_dir ) ) {
         error_exit( "Could not make backup directory $util_backup_dir" );
     }
 }

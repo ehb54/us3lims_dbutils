@@ -2033,7 +2033,7 @@ foreach ( $ssh_targets as $name => $c ) {
 
 ## ------------------------------------------------------------- 5. breaker directory
 
-step( "5. Circuit-breaker directory, and the runtime-advisory pilot table" );
+step( "5. Circuit-breaker, ssh-control and elog directories, and the runtime-advisory pilot table" );
 
 $web_group_entry = posix_getgrnam( $web_group );
 if ( $web_group_entry === false ) {
@@ -2124,7 +2124,15 @@ $elog_targets = [
 foreach ( $elog_targets as $path => $spec ) {
     list( $want_mode, $empty_content ) = $spec;
     $want_mode_str = sprintf( '0%o', $want_mode );
-    if ( is_file( $path ) && !is_link( $path )
+    ## A key is never meant to be 0 bytes (round-6 nit): elog_hmac_key()
+    ## reads it with file_get_contents(), and treats empty exactly the same
+    ## as missing -- an empty key already right owner/mode/group would
+    ## otherwise report 'ok' and get left empty forever, with every account
+    ## warning on every request and digests changing per call. elog.txt
+    ## itself is legitimately empty when freshly provisioned, so this only
+    ## applies when $empty_content is null (the key).
+    $size_ok = $empty_content !== null || !is_file( $path ) || filesize( $path ) > 0;
+    if ( $size_ok && is_file( $path ) && !is_link( $path )
          && fileowner( $path ) === $us3_entry[ 'uid' ] && filegroup( $path ) === $want_gid
          && ( fileperms( $path ) & 07777 ) === $want_mode ) {
         report( 'ok', "$path is $want_mode_str us3:$web_group" );
@@ -2138,9 +2146,19 @@ foreach ( $elog_targets as $path => $spec ) {
         report( 'FAIL', "$path is a symlink; remove it by hand and rerun" );
         continue;
     }
-    if ( !is_file( $path ) ) {
+    if ( !is_file( $path ) || ( $empty_content === null && filesize( $path ) === 0 ) ) {
         $content = $empty_content !== null ? $empty_content : random_bytes( 32 );
-        if ( file_put_contents( $path, $content ) === false ) {
+        ## umask(0077) for the window between creating the file and the
+        ## chmod()/chown() below (round-6 nit): file_put_contents()
+        ## otherwise creates it under this process's own umask (commonly
+        ## 0644 root:root for uslims_upgrade.php, run as root), leaving the
+        ## HMAC key itself world-readable until those calls run. An
+        ## unrelated account polling the directory in the meantime read it
+        ## every time. Matches dbinst#75's own elog_hmac_key().
+        $old_umask = umask( 0077 );
+        $written = file_put_contents( $path, $content );
+        umask( $old_umask );
+        if ( $written === false ) {
             report( 'FAIL', "could not create $path" );
             continue;
         }
@@ -2169,7 +2187,8 @@ foreach ( $elog_targets as $path => $spec ) {
 ## result on $create_sql.
 ##
 ## Returns [$status, $message] for report().
-function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_errno, $create_error ) {
+function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_errno, $create_error,
+                                             $runtime_table_sql = 'common/class/prediction/runtime_pilot_table.sql' ) {
     if ( trim( (string) $create_sql ) === '' ) {
         return [ 'FAIL', "the runtime advisory pilot table's SQL file has no SQL left after"
                         . " stripping comments" ];
@@ -2182,10 +2201,13 @@ function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_err
         ## account lacking CREATE is an expected, optional gap for this
         ## pilot-scoped table, not an upgrade failure. An account that does
         ## have CREATE on gfac can still create it by hand with the same file.
+        ## Absolute path (round-6 nit): a relative path here fails for an
+        ## operator running the suggested command from anywhere but the
+        ## dbutils checkout itself.
         return [ 'note', "gfac account lacks privilege to create the optional runtime advisory"
                         . " pilot table (common#31): " . reason( (string) $create_error )
                         . "; an account with CREATE on gfac can run it by hand:"
-                        . " mysql gfac < common/class/prediction/runtime_pilot_table.sql" ];
+                        . " mysql gfac < $runtime_table_sql" ];
     }
     return [ 'FAIL', "could not create gfac.runtime_prediction: " . reason( (string) $create_error ) ];
 }
@@ -2227,7 +2249,8 @@ if ( !is_file( $runtime_table_sql ) ) {
                 $changes++;
             }
 
-            list( $status, $message ) = runtime_prediction_create_outcome( $create, $create_ok, $errno, $error );
+            list( $status, $message ) = runtime_prediction_create_outcome(
+                $create, $create_ok, $errno, $error, $runtime_table_sql );
             report( $status, $message );
         }
     }

@@ -217,7 +217,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     }        
 }
 
-$config_file = "db_config.php";
+## __DIR__, not a bare relative path (round-6 nit): services.php changes into
+## this directory before running --restart, but any other caller -- a systemd
+## unit, a cron line -- that doesn't cd here first used to fail with "db_config.php
+## does not exist" even though the real file is right next to this script.
+$config_file = __DIR__ . "/db_config.php";
 if ( count( $u_argv ) ) {
     $use_config_file = array_shift( $u_argv );
 } else {
@@ -319,16 +323,15 @@ function finalizing_markers() {
 ## determined. /proc/<pid>'s own ctime (the previous implementation here) is
 ## when the directory entry was last *looked up*, not when the process
 ## started, so it is not usable for this at all -- it was found to always
-## read as "now" in practice, which made the reused-pid check below a no-op.
+## read as "now" in practice (round-6 nit: not a no-op -- "now" is always
+## later than any past marker, so the old reused-pid check below concluded
+## "reused" every time and closed out every live worker it was supposed to
+## leave alone, the opposite of harmless).
 ## Field 22 of /proc/<pid>/stat is the process's start time in clock ticks
 ## since boot (the comm field can itself contain spaces/parens, so this
 ## counts fields from the last ')' rather than splitting on whitespace from
 ## the start); combined with /proc/stat's btime (boot time, seconds since
-## the epoch) that converts to an absolute start time. USER_HZ is not read
-## from the kernel here -- every target this runs on is a stock x86_64 Linux
-## build, where it is fixed at 100 -- consistent with gridctl's own
-## cleanup_process_start() (jobmonitor/cleanup.php), which reads the same
-## field for the same reason.
+## the epoch) that converts to an absolute start time.
 ## USER_HZ: the unit /proc/<pid>/stat's starttime field is in. Fixed at 100 on
 ## stock x86_64 Linux (confirmed in the actual test container: `getconf
 ## CLK_TCK` => 100, and starttime/100 against /proc/uptime matches to within
@@ -368,9 +371,33 @@ function marker_process_start_epoch( $pid ) {
     return null;
 }
 
+## Field 3 of /proc/<pid>/stat (right after the pid and the parenthesised
+## comm field, which is skipped the same way marker_process_start_epoch()
+## does so a comm containing ')' cannot throw this off). 'Z' is a zombie:
+## exited but not yet reaped by its parent. Null when procfs is unavailable
+## or unreadable, so the caller treats that the same as "cannot tell" the
+## way it already does for a missing start time.
+function marker_process_state( $pid ) {
+    $stat = @file_get_contents( "/proc/$pid/stat" );
+    if ( $stat === false ) {
+        return null;
+    }
+    $rest   = substr( $stat, (int) strrpos( $stat, ')' ) + 2 );
+    $fields = preg_split( '/\s+/', trim( $rest ) );
+    return $fields[ 0 ] ?? null;
+}
+
 function marker_process_alive( $pid, $marker_started = 0 ) {
     $pid = (int) $pid;
     if ( $pid <= 0 ) {
+        return false;
+    }
+
+    ## A zombie's pid is still valid as far as posix_kill()/kill(2) are
+    ## concerned (round-6 nit) -- it has exited but not yet been reaped by
+    ## its parent, so the kernel still holds the pid. Checked before
+    ## posix_kill() below, which would otherwise read it as alive.
+    if ( marker_process_state( $pid ) === 'Z' ) {
         return false;
     }
 
@@ -736,7 +763,12 @@ if ( $running || $restart || $restart_only ) {
     $jm_restart_db       = [];
     $jm_restart_gfacid   = [];
     $jm_restart_hpcreqid = [];
-    
+    ## Shown under plain --restart too, not only --running (round-6 nit):
+    ## $out's full table is gated on $running below, so an orphan row was
+    ## skipped with no sign of it anywhere a boot-time --restart run (which
+    ## never passes --running) would ever see.
+    $jm_orphan_skips     = [];
+
     while( $row = mysqli_fetch_array($res) ) {
         $db     = $row[ 'us3_db' ];
         $gfacid = $row[ 'gfacID' ];
@@ -774,6 +806,7 @@ if ( $running || $restart || $restart_only ) {
             ## request id from, so it is skipped here instead, with a
             ## message, rather than queued to fail the whole pass.
             $jm_pid = "skipped (orphan row, no HPCAnalysisResult)";
+            $jm_orphan_skips[] = "skipped $db gfacID=$gfacid: orphan row, no HPCAnalysisResult";
         } else {
             $jm_pid                = "not running";
             $jm_restart_db      [] = $db;
@@ -801,6 +834,8 @@ if ( $running || $restart || $restart_only ) {
 
     if ( $running ) {
         echo $out;
+    } elseif ( $jm_orphan_skips ) {
+        echo implode( "\n", $jm_orphan_skips ) . "\n";
     }
 
     if ( !$restart && !$restart_only ) {
@@ -1218,7 +1253,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     }
 
     ## make sure directory is owned by us3
-    $cmd = "chown -R us3:us3 $getrunbdir";
+    $cmd = "chown -R us3:us3 " . escapeshellarg( $getrunbdir );
     run_cmd( $cmd );
 
     ## get info
@@ -1252,7 +1287,12 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## can be applied to without disabling it.
     $remote_spec = escapeshellarg( $login ) . ':' . escapeshellarg( $rundir )
                  . '/{' . implode( ",", $getfiles ) . '}';
-    $inner_cmd   = "rsync -avz $remote_spec " . escapeshellarg( $tdir );
+    ## --ignore-missing-args (round-6 nit): output/analysis-results.tar is
+    ## only ever a fallback for older layouts, so on a current one it never
+    ## exists -- without this, rsync exits 23 (partial transfer) on every
+    ## single finished job even though the file that mattered, the top-level
+    ## analysis-results.tar, arrived just fine.
+    $inner_cmd   = "rsync -avz --ignore-missing-args $remote_spec " . escapeshellarg( $tdir );
     $cmd         = "runuser -l us3 -c " . escapeshellarg( $inner_cmd );
 
     echoline();
@@ -1263,20 +1303,20 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     echo "results in:\n$tdir\n";
     echoline();
-    echo run_cmd( "cd $tdir && ls -ltr" );
+    echo run_cmd( "cd " . escapeshellarg( $tdir ) . " && ls -ltr" );
     echoline();
     echo "results in:\n$tdir\n";
 
     if ( $runinfo ) {
         if ( file_exists( "$tdir/us3.slurm" ) ) {
             echoline();
-            echo run_cmd( "grep 'SBATCH' $tdir/us3.slurm" );
+            echo run_cmd( "grep 'SBATCH' " . escapeshellarg( "$tdir/us3.slurm" ) );
         }
         ## The request XML was never fetched above (it is never staged to
         ## the run directory in the first place), so there is nothing here
         ## to grep it from.
         echoline();
-        echo run_cmd( "cd $tdir && tail -25 stderr" );
+        echo run_cmd( "cd " . escapeshellarg( $tdir ) . " && tail -25 stderr" );
     }
 
     if ( !$copyrun ) {
@@ -1300,14 +1340,20 @@ if ( $getrundir || $getrun || $copyrun ) {
     $dlogin   = $cluster_details[ $copyrun ]['login'];
 
     ## mkdir workdir/../test/db/reqid
-    $cmd = "runuser -l us3 -c \"ssh $dlogin mkdir -p $dworkdir\"";
+    ## $dlogin/$dworkdir quoted (round-6 nit): both are config-derived
+    ## (cluster_details' login/workdir), the same risk category $login/
+    ## $rundir already were above.
+    $inner_cmd = "ssh " . escapeshellarg( $dlogin ) . " mkdir -p " . escapeshellarg( $dworkdir );
+    $cmd = "runuser -l us3 -c " . escapeshellarg( $inner_cmd );
     echoline();
     echo "$cmd\n";
     echoline();
     echo run_cmd( $cmd, false );
 
     ## rsync to workdir/../test/db/reqid
-    $cmd = "runuser -l us3 -c \"rsync -avz $tdir/* $dlogin:$dworkdir\"";
+    $inner_cmd = "rsync -avz " . escapeshellarg( "$tdir/" ) . "* "
+               . escapeshellarg( $dlogin ) . ':' . escapeshellarg( $dworkdir );
+    $cmd = "runuser -l us3 -c " . escapeshellarg( $inner_cmd );
     echoline();
     echo "$cmd\n";
     echoline();
