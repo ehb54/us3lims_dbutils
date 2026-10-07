@@ -217,7 +217,7 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     }        
 }
 
-## __DIR__, not a bare relative path (round-6 nit): services.php changes into
+## __DIR__, not a bare relative path: services.php changes into
 ## this directory before running --restart, but any other caller -- a systemd
 ## unit, a cron line -- that doesn't cd here first used to fail with "db_config.php
 ## does not exist" even though the real file is right next to this script.
@@ -311,22 +311,14 @@ function finalizing_markers() {
     return glob( "$base/*/*/finalizing" ) ?: [];
 }
 
-## Is a finalizing marker's own worker still alive? A marker is only evidence
-## of a crash once its process is actually gone; closing out a stage while the
-## worker that wrote the marker is still mid-import fails a job that was never
-## unhealthy, just slow.
-## $marker_started: the marker's own 'started' field (a wall-clock Unix
-## timestamp), when known. A process cannot have started after the marker
-## that names its pid was written, so a later start time means the pid was
-## reused by something else, not that the original worker is still running.
 ## The real wall-clock time $pid started, or null when it cannot be
 ## determined. /proc/<pid>'s own ctime (the previous implementation here) is
 ## when the directory entry was last *looked up*, not when the process
 ## started, so it is not usable for this at all -- it was found to always
-## read as "now" in practice (round-6 nit: not a no-op -- "now" is always
-## later than any past marker, so the old reused-pid check below concluded
-## "reused" every time and closed out every live worker it was supposed to
-## leave alone, the opposite of harmless).
+## read as "now" in practice -- not a no-op: "now" is always later than any
+## past marker, so the old reused-pid check below concluded "reused" every
+## time and closed out every live worker it was supposed to leave alone,
+## the opposite of harmless.
 ## Field 22 of /proc/<pid>/stat is the process's start time in clock ticks
 ## since boot (the comm field can itself contain spaces/parens, so this
 ## counts fields from the last ')' rather than splitting on whitespace from
@@ -387,6 +379,14 @@ function marker_process_state( $pid ) {
     return $fields[ 0 ] ?? null;
 }
 
+## Is a finalizing marker's own worker still alive? A marker is only evidence
+## of a crash once its process is actually gone; closing out a stage while the
+## worker that wrote the marker is still mid-import fails a job that was never
+## unhealthy, just slow.
+## $marker_started: the marker's own 'started' field (a wall-clock Unix
+## timestamp), when known. A process cannot have started after the marker
+## that names its pid was written, so a later start time means the pid was
+## reused by something else, not that the original worker is still running.
 function marker_process_alive( $pid, $marker_started = 0 ) {
     $pid = (int) $pid;
     if ( $pid <= 0 ) {
@@ -394,8 +394,8 @@ function marker_process_alive( $pid, $marker_started = 0 ) {
     }
 
     ## A zombie's pid is still valid as far as posix_kill()/kill(2) are
-    ## concerned (round-6 nit) -- it has exited but not yet been reaped by
-    ## its parent, so the kernel still holds the pid. Checked before
+    ## concerned -- it has exited but not yet been reaped by its parent,
+    ## so the kernel still holds the pid. Checked before
     ## posix_kill() below, which would otherwise read it as alive.
     if ( marker_process_state( $pid ) === 'Z' ) {
         return false;
@@ -763,7 +763,7 @@ if ( $running || $restart || $restart_only ) {
     $jm_restart_db       = [];
     $jm_restart_gfacid   = [];
     $jm_restart_hpcreqid = [];
-    ## Shown under plain --restart too, not only --running (round-6 nit):
+    ## Shown under plain --restart too, not only --running:
     ## $out's full table is gated on $running below, so an orphan row was
     ## skipped with no sign of it anywhere a boot-time --restart run (which
     ## never passes --running) would ever see.
@@ -797,7 +797,7 @@ if ( $running || $restart || $restart_only ) {
             $jm_pid = $jm_active[ $jm_key ];
             unset( $jm_active[ $jm_key ] );
         } elseif ( $reqid === "unknown" ) {
-            ## round-5 fix: queuing this orphan row for restart anyway sent
+            ## Queuing this orphan row for restart anyway sent
             ## jobmonitor.php a non-numeric HPCAnalysisRequestID ("unknown"),
             ## which it rejects, exiting 255; run_cmd()'s default
             ## die_if_exit then aborted the whole --restart pass, skipping
@@ -1266,10 +1266,12 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## asking rsync for a file that can never exist used to end every
     ## --getrun with exit code 23 (partial transfer).
     ##
-    ## us_mpi_analysis writes the results tar at the top of the run
-    ## directory; output/analysis-results.tar is a fallback for older
-    ## layouts, same order gridctl's own fetch tries them in
-    ## (jobmonitor/cleanup.php's $tar_candidates).
+    ## us_mpi_analysis changes into the run directory's output/ and
+    ## archives into that directory (us_mpi_analysis.cpp:340, :2515-2516),
+    ## so output/analysis-results.tar is where it actually is; the bare
+    ## top-level name is asked for too in case a layout ever puts it there,
+    ## same order gridctl's own fetch tries them in (jobmonitor/cleanup.php's
+    ## $tar_candidates). Asking for both is harmless either way.
     $getfiles = [
         "us3.slurm"
         ,$inputfile
@@ -1287,11 +1289,11 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## can be applied to without disabling it.
     $remote_spec = escapeshellarg( $login ) . ':' . escapeshellarg( $rundir )
                  . '/{' . implode( ",", $getfiles ) . '}';
-    ## --ignore-missing-args (round-6 nit): output/analysis-results.tar is
-    ## only ever a fallback for older layouts, so on a current one it never
-    ## exists -- without this, rsync exits 23 (partial transfer) on every
-    ## single finished job even though the file that mattered, the top-level
-    ## analysis-results.tar, arrived just fine.
+    ## --ignore-missing-args: the top-level analysis-results.tar is the one
+    ## that is never actually there (see above) -- without this, rsync
+    ## exits 23 (partial transfer) on every single finished job even though
+    ## the file that mattered, output/analysis-results.tar, arrived just
+    ## fine.
     $inner_cmd   = "rsync -avz --ignore-missing-args $remote_spec " . escapeshellarg( $tdir );
     $cmd         = "runuser -l us3 -c " . escapeshellarg( $inner_cmd );
 
@@ -1340,7 +1342,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     $dlogin   = $cluster_details[ $copyrun ]['login'];
 
     ## mkdir workdir/../test/db/reqid
-    ## $dlogin/$dworkdir quoted (round-6 nit): both are config-derived
+    ## $dlogin/$dworkdir quoted: both are config-derived
     ## (cluster_details' login/workdir), the same risk category $login/
     ## $rundir already were above.
     $inner_cmd = "ssh " . escapeshellarg( $dlogin ) . " mkdir -p " . escapeshellarg( $dworkdir );

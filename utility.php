@@ -166,7 +166,7 @@ $util_backup_dir = "";
 
 function backup_dir_init( $dir = "backup" ) {
     global $util_backup_dir;
-    ## -pid<pid> too, not just the timestamp (round-6 nit): two runs within
+    ## -pid<pid> too, not just the timestamp: two runs within
     ## the same second (ran: back-to-back --activate invocations) used to
     ## collide on one directory -- mkdir() for the second run failed
     ## silently (no @ here, but nothing checks its return either), and

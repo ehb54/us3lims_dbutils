@@ -132,6 +132,14 @@ Options
                                are real and ssh to it succeeds. Still 'http', already active, no usable
                                env_script_lines, or ssh failing are each reported and nothing is changed
                                for that entry.
+                               A freshly converted cluster's ssh may still fail on the same --apply run
+                               that converted it: step 4 (below, in the numbered steps) runs after this
+                               check and is what actually sets a key up, so --activate for a cluster
+                               converted in this very run needs one more --apply afterward. For the
+                               host's own local cluster that is enough; a remote cluster's account key
+                               still has to be created (if missing) and authorized for its login by
+                               hand -- step 4 only ever records a remote cluster's host key, never
+                               authorizes this account's key on the far end.
 
 __EOD;
 
@@ -336,7 +344,8 @@ function fatal( $msg ) {
 
 ## Create this run's backup directory, once, in a known absolute place. Called
 ## before anything that backs a file up, so utility.php's relative default
-## ("backup-<timestamp>" in the current directory) is never the one used.
+## ("backup-<timestamp>-pid<pid>" in the current directory) is never the
+## one used.
 function ensure_backup_dir() {
     global $util_backup_dir, $backup_prefix;
     if ( !isset( $util_backup_dir ) || !strlen( $util_backup_dir ) ) {
@@ -1778,22 +1787,36 @@ foreach ( $activate_want as $name ) {
         ## 'input', not 'todo': this ssh failure does not get an entry in
         ## $managed and so is never actually applied under --apply, unlike a
         ## real 'todo'.
+        ##
+        ## Step 4's own --apply only closes this gap for the local cluster
+        ## (authorize_local_key() is gated on $name === $host_cluster): for
+        ## a remote one it records the host's key but cannot authorize this
+        ## account's key on the far end, which needs the account's public
+        ## key created if missing and added to that account's
+        ## authorized_keys on the remote host by hand.
+        $advice = $name === $host_cluster
+            ? "step 4 below offers to set up the key under --apply, then re-run"
+            : "step 4 below only records $login's host key; create us3's"
+              . " key if missing and have it authorized for $login by hand, then re-run";
         report( 'input', "--activate: '$name' does not yet ssh as us3 to $login (exit $rc): "
                         . reason( $ssh_err !== '' ? $ssh_err : $ssh_out )
-                        . "; step 4 below offers to set up the key under --apply, then re-run" );
+                        . "; $advice" );
         continue;
     }
-    ## round-5 should-fix: the web account's ssh used to be checked only
-    ## after this wrote active = true, in step 4 further down in the old
-    ## file order -- a cluster could go live while the web tier (which
-    ## actually stages files and runs sbatch) still could not reach it at
-    ## all. Gated here too now, before activation, not only us3's.
+    ## The web account's ssh is checked here too, before activation, not
+    ## only us3's: a cluster could otherwise go live while the web tier
+    ## (which actually stages files and runs sbatch) still could not
+    ## reach it at all.
     if ( $web_user !== 'us3' ) {
         $web_rc = run_as( $web_user, $ssh, $web_ssh_out, $web_ssh_err );
         if ( $web_rc !== 0 ) {
+            $web_advice = $name === $host_cluster
+                ? "step 4 below offers to set up the key under --apply, then re-run"
+                : "step 4 below only records $login's host key; create $web_user's"
+                  . " key if missing and have it authorized for $login by hand, then re-run";
             report( 'input', "--activate: '$name' does not yet ssh as $web_user to $login (exit $web_rc): "
                             . reason( $web_ssh_err !== '' ? $web_ssh_err : $web_ssh_out )
-                            . "; step 4 below offers to set up the key under --apply, then re-run" );
+                            . "; $web_advice" );
             continue;
         }
     }
@@ -2111,11 +2134,10 @@ if ( is_dir( $ssh_control_dir ) && !is_link( $ssh_control_dir )
 ## callers (queue_setup_1/2/3.php, 2DSA_1.php) call elog() before
 ## global_config.php is ever loaded, so an operator-set override here would
 ## provision one directory while elog() itself, at actual runtime, always
-## logs to this same hardcoded default regardless -- a round-6 should-fix
-## found by ehb54 testing it live, not by reading the code. Removed rather
-## than wired up to load earlier: nothing else needs config.php loaded
-## before elog() on those pages, and moving that load order is a much
-## larger change than this setting is worth.
+## logs to this same hardcoded default regardless. Removed rather than
+## wired up to load earlier: nothing else needs config.php loaded before
+## elog() on those pages, and moving that load order is a much larger
+## change than this setting is worth.
 $elog_dir = "$us3_home/lims/etc";
 $elog_targets = [
     "$elog_dir/elog.txt"        => [ 0660, '' ],
@@ -2124,7 +2146,7 @@ $elog_targets = [
 foreach ( $elog_targets as $path => $spec ) {
     list( $want_mode, $empty_content ) = $spec;
     $want_mode_str = sprintf( '0%o', $want_mode );
-    ## A key is never meant to be 0 bytes (round-6 nit): elog_hmac_key()
+    ## A key is never meant to be 0 bytes: elog_hmac_key()
     ## reads it with file_get_contents(), and treats empty exactly the same
     ## as missing -- an empty key already right owner/mode/group would
     ## otherwise report 'ok' and get left empty forever, with every account
@@ -2149,7 +2171,7 @@ foreach ( $elog_targets as $path => $spec ) {
     if ( !is_file( $path ) || ( $empty_content === null && filesize( $path ) === 0 ) ) {
         $content = $empty_content !== null ? $empty_content : random_bytes( 32 );
         ## umask(0077) for the window between creating the file and the
-        ## chmod()/chown() below (round-6 nit): file_put_contents()
+        ## chmod()/chown() below: file_put_contents()
         ## otherwise creates it under this process's own umask (commonly
         ## 0644 root:root for uslims_upgrade.php, run as root), leaving the
         ## HMAC key itself world-readable until those calls run. An
@@ -2201,7 +2223,7 @@ function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_err
         ## account lacking CREATE is an expected, optional gap for this
         ## pilot-scoped table, not an upgrade failure. An account that does
         ## have CREATE on gfac can still create it by hand with the same file.
-        ## Absolute path (round-6 nit): a relative path here fails for an
+        ## Absolute path: a relative path here fails for an
         ## operator running the suggested command from anywhere but the
         ## dbutils checkout itself.
         return [ 'note', "gfac account lacks privilege to create the optional runtime advisory"
