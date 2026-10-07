@@ -97,7 +97,11 @@ To roll back, with the services stopped:
      you are going back to a release that still expects the sweep;
   4. the circuit-breaker directory, the ssh-control directory, and elog.txt/
      elog_hmac_key's ownership and mode can all stay: unused or already-correct,
-     none of them changes anything left alone.
+     none of them changes anything left alone;
+  5. remove step 7's installed policy, /etc/httpd/conf.d/lims-csp.conf or
+     /etc/apache2/conf-available/lims-csp.conf (Debian: "a2disconf lims-csp"
+     first), and reload Apache -- step 7 never backs this one up, since it is
+     new, not rewritten.
 
 Nothing else to undo in the database: this script never touches the schema or any
 job row, with one exception -- step 5's gfac.runtime_prediction (see step 5 above),
@@ -1428,8 +1432,10 @@ if ( $gc === null ) {
 ## The breaker directory belongs to remote_exec, which reads
 ## $global_circuit_breaker_dir and only falls back to us3's home. Recomputing the
 ## default here would create one directory and verify it while the web tier and
-## the daemons used another: step 5 would report it created, step 7 would report
-## it writable, and neither statement would be about the directory in use.
+## the daemons used another: step 5 would report it created, step 8 (Verify)
+## would report it writable, and neither statement would be about the
+## directory in use. Step 8, not step 7: this PR added the CSP step as step 7,
+## shifting Verify down from its old number.
 $configured_breaker = isset( $gc[ 'global_circuit_breaker_dir' ] )
                       ? trim( (string) $gc[ 'global_circuit_breaker_dir' ] ) : '';
 if ( $configured_breaker !== '' ) {
