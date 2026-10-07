@@ -2299,6 +2299,16 @@ if ( !$old_crons ) {
     report( 'ok', "no crontab drives gridctl" );
 }
 
+## Joins a backslash-continued directive ("Header set \\\nContent-Security-
+## Policy ...") onto one line, so a single-line match can see both halves.
+## \r?\n, not just \n: a file with CRLF line endings (which Apache accepts)
+## left the \r stuck to the end of the first half otherwise, so the join
+## never matched and a continued directive already installed was reported
+## as a fresh one to install. Pure, so this is testable without a real file.
+function csp_join_continued_directive( $contents ) {
+    return preg_replace( '/\\\\\r?\n/', ' ', (string) $contents );
+}
+
 ## Does this one Apache config line actually install a Content-Security-Policy
 ## header (as opposed to merely mentioning the phrase)? Pure, so the
 ## "add/append/merge/setifempty install one too, not just set" fix and the
@@ -2392,13 +2402,7 @@ if ( $apache === null ) {
         ## header rather than setting one, so it is not a policy to leave alone).
         $csp_found = [];
         foreach ( $csp_files as $file ) {
-            ## Join a backslash-continued directive onto one line first:
-            ## "Header set \\\nContent-Security-Policy ..." has the action
-            ## and the header name on separate lines, which no single-line match
-            ## below can see either half of on its own. \r?\n, not just \n: a
-            ## file with CRLF line endings (which Apache accepts) left the \r
-            ## stuck to the end of the first half, so the join never matched.
-            $joined = preg_replace( '/\\\\\r?\n/', ' ', (string) @file_get_contents( $file ) );
+            $joined = csp_join_continued_directive( @file_get_contents( $file ) );
             foreach ( explode( "\n", $joined ) as $line ) {
                 if ( csp_header_line_installs_policy( $line ) ) {
                     $csp_found[] = $file;
