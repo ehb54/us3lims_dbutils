@@ -43,6 +43,15 @@ usage: $self {options} {db_config_file}
 
 information about submitted jobs
 
+{db_config_file} defaults to db_config.php next to this script; a copy in
+the current directory is not used unless named explicitly. Most other
+dbutils scripts still default to the current directory's copy.
+
+--getrun's rsync uses --ignore-missing-args (rsync 3.1.0+, EL7/EL8
+default) so asking for both tar locations is harmless. Against an
+older remote rsync (EL6-era), rsync fails with "unknown option" and
+fetches nothing, but --getrun still reports "results in:" and rc 0.
+
 Options
 
 --help                     : print this information and exit

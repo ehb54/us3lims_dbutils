@@ -2141,6 +2141,12 @@ if ( is_dir( $ssh_control_dir ) && !is_link( $ssh_control_dir )
 $elog_dir = "$us3_home/lims/etc";
 $elog_targets = [
     "$elog_dir/elog.txt"        => [ 0660, '' ],
+    ## Provisioned the same as elog.txt itself: dbinst#75's rotation copies
+    ## elog.txt's own mode/group onto a freshly created .1, but the web
+    ## account can only create one on a split-account host once this is
+    ## already here in the shared 0660 mode, same as elog.txt before its
+    ## first write.
+    "$elog_dir/elog.txt.1"      => [ 0660, '' ],
     "$elog_dir/elog_hmac_key"   => [ 0640, null ],   ## null content: generate 32 random bytes if missing
 ];
 foreach ( $elog_targets as $path => $spec ) {
