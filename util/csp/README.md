@@ -86,6 +86,13 @@ The policy is not simply `default-src 'self'`. These additions are load-bearing:
 - **`report-uri /csp-report.php`**. Without it, violations only reach each
   visitor's browser console and the report-only phase collects nothing.
 
+**`.htaccess` is not checked.** uslims_upgrade.php's step 7 only looks at
+what Apache's own config (`httpd -t -D DUMP_INCLUDES`) actually loads, which
+does not include a `.htaccess` file even where `AllowOverride` permits one.
+A `Header` directive in one there is invisible to the "already configured"
+detection and can also override or conflict with the conf-level policy this
+installs, depending on merge order. Check for one by hand before deploying.
+
 Note that `style-src 'self'` still permits JavaScript to set element styles
 through the CSSOM (`element.style.display = ...`, jQuery `.show()`, jQuery UI
 sliders). CSP only blocks style *attributes parsed from markup*. No code had to
