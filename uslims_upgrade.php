@@ -2300,8 +2300,14 @@ if ( !$old_crons ) {
 ## test instead of only ever exercised against whatever happens to be on a
 ## test host's live Apache config.
 function csp_header_line_installs_policy( $line ) {
+    ## (always|onsuccess)?: Header's own optional condition keyword (round-6
+    ## nit -- onsuccess wasn't recognised, only always/bare). ["']? before the
+    ## header name: a quoted header name ('Header set "Content-Security-
+    ## Policy" ...') wasn't recognised either. The caller joins a backslash-
+    ## continued directive onto one line first, so that case needs no change
+    ## here.
     return (bool) preg_match(
-        '/^\s*Header\s+(always\s+)?(set|add|append|merge|setifempty)\s+Content-Security-Policy\b/i',
+        '/^\s*Header\s+(always\s+|onsuccess\s+)?(set|add|append|merge|setifempty)\s+["\']?Content-Security-Policy\b/i',
         $line
     );
 }
@@ -2377,7 +2383,12 @@ if ( $apache === null ) {
     ## header rather than setting one, so it is not a policy to leave alone).
     $csp_found = [];
     foreach ( $csp_files as $file ) {
-        foreach ( explode( "\n", (string) @file_get_contents( $file ) ) as $line ) {
+        ## Join a backslash-continued directive onto one line first (round-6
+        ## nit): "Header set \\\nContent-Security-Policy ..." has the action
+        ## and the header name on separate lines, which no single-line match
+        ## below can see either half of on its own.
+        $joined = str_replace( "\\\n", ' ', (string) @file_get_contents( $file ) );
+        foreach ( explode( "\n", $joined ) as $line ) {
             if ( csp_header_line_installs_policy( $line ) ) {
                 $csp_found[] = $file;
                 break;
