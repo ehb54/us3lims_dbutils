@@ -69,6 +69,13 @@ Options
 __EOD;
 
 require "utility.php";
+
+## Report failed connections and queries as values, not exceptions (PHP 8.1+),
+## matching uslims_upgrade.php and gridctl_bootstrap.php. Without this, --restart
+## throws uncaught on the first dropped instance database or missing table, and
+## no later row in the pass gets its monitor restarted either.
+mysqli_report( MYSQLI_REPORT_OFF );
+
 $u_argv = $argv;
 array_shift( $u_argv ); # first element is program name
 
@@ -736,12 +743,10 @@ if ( $running || $restart || $restart_only ) {
         $jm_key = "$db:$gfacid";
 
         ## emptyok=true: gridctl can leave a gfac.analysis row with no
-        ## HPCAnalysisResult behind (a deleted request or database). The
-        ## us3-jobmonitors.service unit runs --restart at every boot (not
-        ## services.php, which no longer duplicates this -- see its own
-        ## comment in start()), exiting here on the first such row (the old
-        ## emptyok=false) would skip restarting the monitor for every row
-        ## after it, not just this one.
+        ## HPCAnalysisResult behind (a deleted request or database).
+        ## services.php's own start() runs --restart at every boot; exiting
+        ## here on the first such row (the old emptyok=false) would skip
+        ## restarting the monitor for every row after it, not just this one.
         $reshpc =
             db_obj_result(
                 $db_handle
