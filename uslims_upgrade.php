@@ -2346,27 +2346,30 @@ if ( $apache === null ) {
     ## itself resolved and actually loads, on either distro, with none of that.
     $dump_cmd = $apache[ 'service' ] === 'apache2' ? 'apache2ctl' : 'httpd';
     list( $dump_out, $dump_err, $dump_rc ) = capture( "$dump_cmd -t -D DUMP_INCLUDES 2>&1" );
-    $csp_files = [];
-    if ( $dump_rc === 0 ) {
-        foreach ( explode( "\n", $dump_out ) as $line ) {
-            if ( preg_match( '#^\s*\(\S+\)\s+(/\S+)#', $line, $m ) ) {
-                $csp_files[] = $m[ 1 ];
-            }
-        }
-    }
-    if ( !$csp_files ) {
-        ## DUMP_INCLUDES unavailable or failed for a reason unrelated to this
-        ## (an unrelated config error, an Apache too old to support it): fall
-        ## back to the directory walk rather than fail outright. -i: the grep
-        ## prefilter used to be case-sensitive even though the PHP-side regex
-        ## below always had /i.
-        $csp_search_root = ( $apache[ 'service' ] === 'apache2' && is_dir( '/etc/apache2/conf-enabled' ) )
-                          ? '/etc/apache2/conf-enabled' : $apache[ 'root' ];
-        list( $csp_candidates ) = capture( 'grep -RlIi Content-Security-Policy ' . escapeshellarg( $csp_search_root ) );
-        $csp_files = array_filter( explode( "\n", trim( $csp_candidates ) ) );
-        report( 'note', "$dump_cmd -t -D DUMP_INCLUDES failed; falling back to a directory walk, which"
-                       . " can miss or misdetect a policy -- Apache's own error: "
+    ## A non-zero exit here now FAILs outright rather than falling back to a
+    ## directory walk (round-6 should-fix). The walk used to run for this
+    ## exact case too, on the theory that DUMP_INCLUDES might simply be
+    ## unsupported -- but both target distros support it, so in practice
+    ## this only ever means Apache's own config is already broken, which the
+    ## walk then masked with a worse failure mode: recursing a whole config
+    ## root with -R follows conf.d's own logs/state symlinks on EL8 straight
+    ## into /var/log/httpd, and a large log file merely mentioning the
+    ## header (mod_security's audit log, a LogFormat with %{...}o) silently
+    ## kills the run reading it whole into PHP (reproduced: a 300MB
+    ## error_log, exit 255 on PHP 7.2) -- while also reporting the wrong
+    ## cause (the stale DUMP_INCLUDES file listing, not Apache's real error)
+    ## and, on the same broken config, mod_headers reads as not loaded too,
+    ## so the run rolls back claiming "Apache rejected the policy" when
+    ## Apache was never configured correctly to begin with.
+    if ( $dump_rc !== 0 ) {
+        report( 'FAIL', "$dump_cmd -t -D DUMP_INCLUDES failed; fix Apache's configuration first: "
                        . reason( $dump_err !== '' ? $dump_err : $dump_out ) );
+    } else {
+    $csp_files = [];
+    foreach ( explode( "\n", $dump_out ) as $line ) {
+        if ( preg_match( '#^\s*\(\S+\)\s+(/\S+)#', $line, $m ) ) {
+            $csp_files[] = $m[ 1 ];
+        }
     }
     ## Only a line that isn't a comment and actually sends the header, not
     ## merely names it: grep alone also matched a site note, a commented-out
@@ -2408,6 +2411,7 @@ if ( $apache === null ) {
     list( $mods ) = capture( 'apachectl -M' );
     if ( strpos( $mods, 'headers_module' ) === false ) {
         report( 'note', "mod_headers is not loaded, so Apache sends no CSP header; enable it" );
+    }
     }
 }
 
