@@ -2306,8 +2306,7 @@ if ( !$old_crons ) {
 ## test instead of only ever exercised against whatever happens to be on a
 ## test host's live Apache config.
 function csp_header_line_installs_policy( $line ) {
-    ## (always|onsuccess)?: Header's own optional condition keyword (round-6
-    ## nit -- onsuccess wasn't recognised, only always/bare). ["']? before the
+    ## (always|onsuccess)?: Header's own optional condition keyword. ["']? before the
     ## header name: a quoted header name ('Header set "Content-Security-
     ## Policy" ...') wasn't recognised either. The caller joins a backslash-
     ## continued directive onto one line first, so that case needs no change
@@ -2357,9 +2356,13 @@ if ( $apache === null ) {
     ## error_log, exit 255 on PHP 7.2). DUMP_INCLUDES is exactly the set Apache
     ## itself resolved and actually loads, on either distro, with none of that.
     $dump_cmd = $apache[ 'service' ] === 'apache2' ? 'apache2ctl' : 'httpd';
-    list( $dump_out, $dump_err, $dump_rc ) = capture( "$dump_cmd -t -D DUMP_INCLUDES 2>&1" );
+    ## No 2>&1: capture() already separates the streams, and merging them
+    ## here buried a real "Syntax error on line..." after DUMP_INCLUDES'
+    ## own (successful) stdout listing, which reason() then truncated to
+    ## its first 200 characters -- showing the include list, not the error.
+    list( $dump_out, $dump_err, $dump_rc ) = capture( "$dump_cmd -t -D DUMP_INCLUDES" );
     ## A non-zero exit here now FAILs outright rather than falling back to a
-    ## directory walk (round-6 should-fix). The walk used to run for this
+    ## directory walk. The walk used to run for this
     ## exact case too, on the theory that DUMP_INCLUDES might simply be
     ## unsupported -- but both target distros support it, so in practice
     ## this only ever means Apache's own config is already broken, which the
@@ -2377,58 +2380,60 @@ if ( $apache === null ) {
         report( 'FAIL', "$dump_cmd -t -D DUMP_INCLUDES failed; fix Apache's configuration first: "
                        . reason( $dump_err !== '' ? $dump_err : $dump_out ) );
     } else {
-    $csp_files = [];
-    foreach ( explode( "\n", $dump_out ) as $line ) {
-        if ( preg_match( '#^\s*\(\S+\)\s+(/\S+)#', $line, $m ) ) {
-            $csp_files[] = $m[ 1 ];
-        }
-    }
-    ## Only a line that isn't a comment and actually sends the header, not
-    ## merely names it: grep alone also matched a site note, a commented-out
-    ## directive, or "Header unset Content-Security-Policy" (which removes the
-    ## header rather than setting one, so it is not a policy to leave alone).
-    $csp_found = [];
-    foreach ( $csp_files as $file ) {
-        ## Join a backslash-continued directive onto one line first (round-6
-        ## nit): "Header set \\\nContent-Security-Policy ..." has the action
-        ## and the header name on separate lines, which no single-line match
-        ## below can see either half of on its own.
-        $joined = str_replace( "\\\n", ' ', (string) @file_get_contents( $file ) );
-        foreach ( explode( "\n", $joined ) as $line ) {
-            if ( csp_header_line_installs_policy( $line ) ) {
-                $csp_found[] = $file;
-                break;
+        $csp_files = [];
+        foreach ( explode( "\n", $dump_out ) as $line ) {
+            if ( preg_match( '#^\s*\(\S+\)\s+(/\S+)#', $line, $m ) ) {
+                $csp_files[] = $m[ 1 ];
             }
         }
-    }
-    if ( $csp_found ) {
-        report( 'ok', "a Content-Security-Policy is already configured (" . implode( ', ', $csp_found ) . "); left as is" );
-    } else {
-        report( 'todo', "install the Report-Only policy for $wwwpath as {$apache['conf']}" );
-        if ( $apply && confirm( "Install the Report-Only Content-Security-Policy and reload {$apache['service']}?" ) ) {
-            write_file( $apache[ 'conf' ], "## Installed by uslims_upgrade.php from util/csp/csp-report-only.conf.\n"
-                        . "<Directory \"$wwwpath\">\n" . file_get_contents( $csp_policy ) . "\n</Directory>\n", false );
-            if ( $apache[ 'enable' ] !== '' ) {
-                capture( $apache[ 'enable' ] );
-            }
-            list( $t_out, $t_err, $t_rc ) = capture( 'apachectl configtest' );
-            if ( $t_rc !== 0 ) {
-                if ( $apache[ 'disable' ] !== '' ) {
-                    capture( $apache[ 'disable' ] );
+        ## Only a line that isn't a comment and actually sends the header, not
+        ## merely names it: grep alone also matched a site note, a commented-out
+        ## directive, or "Header unset Content-Security-Policy" (which removes the
+        ## header rather than setting one, so it is not a policy to leave alone).
+        $csp_found = [];
+        foreach ( $csp_files as $file ) {
+            ## Join a backslash-continued directive onto one line first:
+            ## "Header set \\\nContent-Security-Policy ..." has the action
+            ## and the header name on separate lines, which no single-line match
+            ## below can see either half of on its own. \r?\n, not just \n: a
+            ## file with CRLF line endings (which Apache accepts) left the \r
+            ## stuck to the end of the first half, so the join never matched.
+            $joined = preg_replace( '/\\\\\r?\n/', ' ', (string) @file_get_contents( $file ) );
+            foreach ( explode( "\n", $joined ) as $line ) {
+                if ( csp_header_line_installs_policy( $line ) ) {
+                    $csp_found[] = $file;
+                    break;
                 }
-                @unlink( $apache[ 'conf' ] );
-                report( 'FAIL', "Apache rejected the policy, so it was removed: " . reason( $t_err !== '' ? $t_err : $t_out ) );
-            } else {
-                list( $r_out, $r_err, $r_rc ) = capture( 'systemctl reload ' . $apache[ 'service' ] );
-                report( $r_rc === 0 ? 'done' : 'FAIL', "Report-Only policy installed"
-                        . ( $r_rc === 0 ? "; {$apache['service']} reloaded" : "; reload {$apache['service']} by hand: " . reason( $r_err ) ) );
             }
         }
-    }
-    list( $mods ) = capture( 'apachectl -M' );
-    if ( strpos( $mods, 'headers_module' ) === false ) {
-        report( 'note', "mod_headers is not loaded, so Apache sends no CSP header; enable it" );
-    }
+        if ( $csp_found ) {
+            report( 'ok', "a Content-Security-Policy is already configured (" . implode( ', ', $csp_found ) . "); left as is" );
+        } else {
+            report( 'todo', "install the Report-Only policy for $wwwpath as {$apache['conf']}" );
+            if ( $apply && confirm( "Install the Report-Only Content-Security-Policy and reload {$apache['service']}?" ) ) {
+                write_file( $apache[ 'conf' ], "## Installed by uslims_upgrade.php from util/csp/csp-report-only.conf.\n"
+                            . "<Directory \"$wwwpath\">\n" . file_get_contents( $csp_policy ) . "\n</Directory>\n", false );
+                if ( $apache[ 'enable' ] !== '' ) {
+                    capture( $apache[ 'enable' ] );
+                }
+                list( $t_out, $t_err, $t_rc ) = capture( 'apachectl configtest' );
+                if ( $t_rc !== 0 ) {
+                    if ( $apache[ 'disable' ] !== '' ) {
+                        capture( $apache[ 'disable' ] );
+                    }
+                    @unlink( $apache[ 'conf' ] );
+                    report( 'FAIL', "Apache rejected the policy, so it was removed: " . reason( $t_err !== '' ? $t_err : $t_out ) );
+                } else {
+                    list( $r_out, $r_err, $r_rc ) = capture( 'systemctl reload ' . $apache[ 'service' ] );
+                    report( $r_rc === 0 ? 'done' : 'FAIL', "Report-Only policy installed"
+                            . ( $r_rc === 0 ? "; {$apache['service']} reloaded" : "; reload {$apache['service']} by hand: " . reason( $r_err ) ) );
+                }
+            }
+        }
+        list( $mods ) = capture( 'apachectl -M' );
+        if ( strpos( $mods, 'headers_module' ) === false ) {
+            report( 'note', "mod_headers is not loaded, so Apache sends no CSP header; enable it" );
+        }
     }
 }
 
