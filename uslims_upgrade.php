@@ -2099,15 +2099,24 @@ if ( is_dir( $ssh_control_dir ) && !is_link( $ssh_control_dir )
 ## web/us3 account host does not depend on whichever account happens to
 ## create them first. elog.txt is provisioned empty rather than left for
 ## elog() to create on first use, because elog() only narrows a *brand new*
-## file to 0640 single-account -- provisioning it 0660 shared from the start
-## is what keeps the other account able to write it too. The key, unlike the
-## log, is generated now rather than left empty for elog_hmac_key()'s own
-## first-writer-wins link() dance: an empty file provisioned here would
-## otherwise trip that function's own "exists but is empty" warning on every
-## single request until some account happened to fill it.
-$elog_dir = isset( $gc[ 'global_elog_dir' ] ) && $gc[ 'global_elog_dir' ] !== ''
-          ? rtrim( (string) $gc[ 'global_elog_dir' ], '/' )
-          : "$us3_home/lims/etc";
+## file to 0660 shared -- provisioning it 0660 shared from the start is what
+## keeps the other account able to write it too, before its first request.
+## The key, unlike the log, is generated now rather than left empty for
+## elog_hmac_key()'s own first-writer-wins link() dance: an empty file
+## provisioned here would otherwise trip that function's own "exists but is
+## empty" warning on every single request until some account happened to
+## fill it.
+##
+## Always $us3_home/lims/etc, not $gc['global_elog_dir']: elog.php's own
+## callers (queue_setup_1/2/3.php, 2DSA_1.php) call elog() before
+## global_config.php is ever loaded, so an operator-set override here would
+## provision one directory while elog() itself, at actual runtime, always
+## logs to this same hardcoded default regardless -- a round-6 should-fix
+## found by ehb54 testing it live, not by reading the code. Removed rather
+## than wired up to load earlier: nothing else needs config.php loaded
+## before elog() on those pages, and moving that load order is a much
+## larger change than this setting is worth.
+$elog_dir = "$us3_home/lims/etc";
 $elog_targets = [
     "$elog_dir/elog.txt"        => [ 0660, '' ],
     "$elog_dir/elog_hmac_key"   => [ 0640, null ],   ## null content: generate 32 random bytes if missing
