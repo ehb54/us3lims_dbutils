@@ -132,14 +132,14 @@ Options
                                are real and ssh to it succeeds. Still 'http', already active, no usable
                                env_script_lines, or ssh failing are each reported and nothing is changed
                                for that entry.
-                               A freshly converted cluster's ssh may still fail on the same --apply run
-                               that converted it: step 4 (below, in the numbered steps) runs after this
-                               check and is what actually sets a key up, so --activate for a cluster
-                               converted in this very run needs one more --apply afterward. For the
-                               host's own local cluster that is enough; a remote cluster's account key
-                               still has to be created (if missing) and authorized for its login by
-                               hand -- step 4 only ever records a remote cluster's host key, never
-                               authorizes this account's key on the far end.
+                               --activate checks ssh before step 4 (above, in the numbered steps), which
+                               records the host key (and, for the host's own cluster, authorizes the
+                               key). So the first --apply --activate for a cluster records its host
+                               key, and the next one activates it -- not only for a cluster converted
+                               in this very run: any cluster whose host key is not recorded yet needs
+                               the same two runs. For a remote cluster, authorize the account's own
+                               key on the cluster by hand first; step 4 only ever records that
+                               cluster's host key, never authorizes this account's key on the far end.
 
 __EOD;
 
@@ -1492,6 +1492,14 @@ foreach ( $active as $name => $c ) {
             $changed[] = $key;
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ '
                        . var_export( $key, true ) . ' ] = ' . php_value( $value ) . ';';
+            ## Mirrored into this run's own $clusters (round 8 nit; same
+            ## reasoning as the inactive-entry loop below, which already
+            ## does this): --activate, later in this same run, reports
+            ## "already active" from $clusters, not from $managed, so an
+            ## active entry converted and named in --activate together
+            ## otherwise still reads as active here even though this run is
+            ## about to write active = false for it below.
+            $clusters[ $name ][ $key ] = $value;
         }
         ## submittype is what marks it as an Airavata entry. The submission code no
         ## longer reads it, but leaving 'http' there invites the next reader to think
@@ -1499,9 +1507,11 @@ foreach ( $active as $name => $c ) {
         if ( ( $c[ 'submittype' ] ?? '' ) !== 'slurm' ) {
             $changed[] = 'submittype';
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'submittype\' ] = \'slurm\';';
+            $clusters[ $name ][ 'submittype' ] = 'slurm';
         }
         if ( !empty( $c[ 'active' ] ) ) {
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'active\' ] = false;';
+            $clusters[ $name ][ 'active' ] = false;
         }
         report( 'todo', "convert cluster '$name' to SSH ("
                         . ( $changed ? implode( ', ', $changed ) : 'already matches the template' )
@@ -2139,14 +2149,19 @@ if ( is_dir( $ssh_control_dir ) && !is_link( $ssh_control_dir )
 ## elog() on those pages, and moving that load order is a much larger
 ## change than this setting is worth.
 $elog_dir = "$us3_home/lims/etc";
+## elog.txt.1 is deliberately not provisioned here (round 8 should-fix,
+## reverting round 7's own advice): dbinst#75 rotates by rename(), not by
+## writing .1 in place, and a rename() needs write access to $elog_dir
+## itself, not just to the file being provisioned -- a provisioned .1 does
+## not give the web account that on a roles host (0755 us3:us3 $elog_dir),
+## so this never actually let the web account rotate. Worse, on that same
+## host, every rotation leaves .1 owned us3:apache (whichever account's
+## PHP-FPM worker happened to rotate), so a provisioned 0660 us3:<web
+## group> .1 would never stay that way and --check would never converge.
+## See dbinst#75's elog.php for the accepted limitation this leaves: the
+## web account cannot rotate elog.txt on a split-account host today.
 $elog_targets = [
     "$elog_dir/elog.txt"        => [ 0660, '' ],
-    ## Provisioned the same as elog.txt itself: dbinst#75's rotation copies
-    ## elog.txt's own mode/group onto a freshly created .1, but the web
-    ## account can only create one on a split-account host once this is
-    ## already here in the shared 0660 mode, same as elog.txt before its
-    ## first write.
-    "$elog_dir/elog.txt.1"      => [ 0660, '' ],
     "$elog_dir/elog_hmac_key"   => [ 0640, null ],   ## null content: generate 32 random bytes if missing
 ];
 foreach ( $elog_targets as $path => $spec ) {
