@@ -2263,6 +2263,43 @@ function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_err
     return [ 'FAIL', "could not create gfac.runtime_prediction: " . reason( (string) $create_error ) ];
 }
 
+## Whether $grants (one string per SHOW GRANTS row for the connected
+## account) includes CREATE on gfac, directly or via ALL PRIVILEGES, at
+## either schema or global scope. Pure, no DB access, so the roles-host
+## false positive below (--check always claiming this table is a pending
+## change, forever, on an account that --apply could never actually create
+## it for either) is pinned down by a real unit test instead of only ever
+## being exercised against a live account's actual grants.
+function gfac_runtime_table_create_privileged( array $grants ) {
+    foreach ( $grants as $line ) {
+        if ( ! preg_match( '/^GRANT\s+(.+?)\s+ON\s+(\S+)\s+TO\s/i', $line, $m ) ) {
+            continue;
+        }
+        $privs = $m[ 1 ];
+        $scope = $m[ 2 ];
+        $on_gfac_or_global = (bool) preg_match( '/^(\*\.\*|`?gfac`?\.\*)$/i', $scope );
+        if ( $on_gfac_or_global
+             && ( preg_match( '/\bALL PRIVILEGES\b/i', $privs ) || preg_match( '/\bCREATE\b/i', $privs ) ) ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+## SHOW GRANTS rows for the connected account, as plain strings. Separated
+## from gfac_runtime_table_create_privileged() so that function stays pure
+## and testable without a database.
+function mysqli_grant_rows( $link ) {
+    $grants = [];
+    $result = mysqli_query( $link, 'SHOW GRANTS' );
+    if ( $result ) {
+        while ( $row = mysqli_fetch_row( $result ) ) {
+            $grants[] = $row[ 0 ];
+        }
+    }
+    return $grants;
+}
+
 ## Purely additive and optional: $global_runtime_advisory_enabled (common#31)
 ## gates whether anything ever reads or writes this table, and
 ## CREATE TABLE IF NOT EXISTS is safe to run on every upgrade whether or not
@@ -2279,6 +2316,16 @@ if ( !is_file( $runtime_table_sql ) ) {
     $exists = mysqli_query( $gdb, "SHOW TABLES IN gfac LIKE 'runtime_prediction'" );
     if ( $exists && mysqli_num_rows( $exists ) > 0 ) {
         report( 'ok', "gfac.runtime_prediction already exists" );
+    } elseif ( ! $apply && ! gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
+        ## --check never runs CREATE, so without this probe a roles-built
+        ## gfac account (SELECT/INSERT/UPDATE/DELETE only) reports "1
+        ## change(s) would be made" on every single --check, forever --
+        ## --apply could never actually create this table either, it would
+        ## just downgrade to the same 'note' below. Read-only (SHOW GRANTS),
+        ## so --check still never touches the database.
+        report( 'note', "gfac account lacks privilege to create the optional runtime advisory"
+              . " pilot table (common#31); an account with CREATE on gfac can run it by hand:"
+              . " mysql gfac < $runtime_table_sql" );
     } else {
         report( 'todo', "create gfac.runtime_prediction (runtime advisory pilot, common#31)" );
         if ( $apply ) {
