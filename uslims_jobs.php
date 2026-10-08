@@ -900,8 +900,12 @@ ORDER BY HPCAnalysisRequest.analType, HPCAnalysisResult.max_rss
         );
     echoline( "-", $fmtlen );
 
+    ## db_obj_result()'s $emptyok returns false, not a mysqli_result, when
+    ## the database has no max_rss rows -- mysqli_fetch_array(false) is a
+    ## TypeError on 8.1+, not an empty loop, so this must not call it on $res
+    ## unconditionally.
     $res = db_obj_result( $db_handle, $query, true, true );
-    while( $row = mysqli_fetch_array($res) ) {
+    while( $res && ( $row = mysqli_fetch_array($res) ) ) {
         echo sprintf(
             $fmt
             ,sprintf( "%.2f", $row['maxrss'] )
@@ -1327,7 +1331,15 @@ if ( $getrundir || $getrun || $copyrun ) {
         ## the run directory in the first place), so there is nothing here
         ## to grep it from.
         echoline();
-        echo run_cmd( "cd " . escapeshellarg( $tdir ) . " && tail -25 stderr" );
+        ## A job that hasn't started yet (or produced no stderr) has no
+        ## file here; run_cmd()'s default die_if_exit would otherwise kill
+        ## this whole script on tail's exit 1, losing everything printed
+        ## above it.
+        if ( file_exists( "$tdir/stderr" ) ) {
+            echo run_cmd( "cd " . escapeshellarg( $tdir ) . " && tail -25 stderr" );
+        } else {
+            echo "no stderr file yet\n";
+        }
     }
 
     if ( !$copyrun ) {
