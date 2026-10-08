@@ -138,6 +138,14 @@ Options
                                are real and ssh to it succeeds. Still 'http', already active, no usable
                                env_script_lines, or ssh failing are each reported and nothing is changed
                                for that entry.
+                               --activate checks ssh before step 4 (above, in the numbered steps), which
+                               records the host key (and, for the host's own cluster, authorizes the
+                               key). So the first --apply --activate for a cluster records its host
+                               key, and the next one activates it -- not only for a cluster converted
+                               in this very run: any cluster whose host key is not recorded yet needs
+                               the same two runs. For a remote cluster, authorize the account's own
+                               key on the cluster by hand first; step 4 only ever records that
+                               cluster's host key, never authorizes this account's key on the far end.
 
 __EOD;
 
@@ -342,7 +350,8 @@ function fatal( $msg ) {
 
 ## Create this run's backup directory, once, in a known absolute place. Called
 ## before anything that backs a file up, so utility.php's relative default
-## ("backup-<timestamp>" in the current directory) is never the one used.
+## ("backup-<timestamp>-pid<pid>" in the current directory) is never the
+## one used.
 function ensure_backup_dir() {
     global $util_backup_dir, $backup_prefix;
     if ( !isset( $util_backup_dir ) || !strlen( $util_backup_dir ) ) {
@@ -1491,6 +1500,14 @@ foreach ( $active as $name => $c ) {
             $changed[] = $key;
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ '
                        . var_export( $key, true ) . ' ] = ' . php_value( $value ) . ';';
+            ## Mirrored into this run's own $clusters (round 8 nit; same
+            ## reasoning as the inactive-entry loop below, which already
+            ## does this): --activate, later in this same run, reports
+            ## "already active" from $clusters, not from $managed, so an
+            ## active entry converted and named in --activate together
+            ## otherwise still reads as active here even though this run is
+            ## about to write active = false for it below.
+            $clusters[ $name ][ $key ] = $value;
         }
         ## submittype is what marks it as an Airavata entry. The submission code no
         ## longer reads it, but leaving 'http' there invites the next reader to think
@@ -1498,9 +1515,11 @@ foreach ( $active as $name => $c ) {
         if ( ( $c[ 'submittype' ] ?? '' ) !== 'slurm' ) {
             $changed[] = 'submittype';
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'submittype\' ] = \'slurm\';';
+            $clusters[ $name ][ 'submittype' ] = 'slurm';
         }
         if ( !empty( $c[ 'active' ] ) ) {
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'active\' ] = false;';
+            $clusters[ $name ][ 'active' ] = false;
         }
         report( 'todo', "convert cluster '$name' to SSH ("
                         . ( $changed ? implode( ', ', $changed ) : 'already matches the template' )
@@ -1786,22 +1805,36 @@ foreach ( $activate_want as $name ) {
         ## 'input', not 'todo': this ssh failure does not get an entry in
         ## $managed and so is never actually applied under --apply, unlike a
         ## real 'todo'.
+        ##
+        ## Step 4's own --apply only closes this gap for the local cluster
+        ## (authorize_local_key() is gated on $name === $host_cluster): for
+        ## a remote one it records the host's key but cannot authorize this
+        ## account's key on the far end, which needs the account's public
+        ## key created if missing and added to that account's
+        ## authorized_keys on the remote host by hand.
+        $advice = $name === $host_cluster
+            ? "step 4 below offers to set up the key under --apply, then re-run"
+            : "step 4 below only records $login's host key; create us3's"
+              . " key if missing and have it authorized for $login by hand, then re-run";
         report( 'input', "--activate: '$name' does not yet ssh as us3 to $login (exit $rc): "
                         . reason( $ssh_err !== '' ? $ssh_err : $ssh_out )
-                        . "; step 4 below offers to set up the key under --apply, then re-run" );
+                        . "; $advice" );
         continue;
     }
-    ## round-5 should-fix: the web account's ssh used to be checked only
-    ## after this wrote active = true, in step 4 further down in the old
-    ## file order -- a cluster could go live while the web tier (which
-    ## actually stages files and runs sbatch) still could not reach it at
-    ## all. Gated here too now, before activation, not only us3's.
+    ## The web account's ssh is checked here too, before activation, not
+    ## only us3's: a cluster could otherwise go live while the web tier
+    ## (which actually stages files and runs sbatch) still could not
+    ## reach it at all.
     if ( $web_user !== 'us3' ) {
         $web_rc = run_as( $web_user, $ssh, $web_ssh_out, $web_ssh_err );
         if ( $web_rc !== 0 ) {
+            $web_advice = $name === $host_cluster
+                ? "step 4 below offers to set up the key under --apply, then re-run"
+                : "step 4 below only records $login's host key; create $web_user's"
+                  . " key if missing and have it authorized for $login by hand, then re-run";
             report( 'input', "--activate: '$name' does not yet ssh as $web_user to $login (exit $web_rc): "
                             . reason( $web_ssh_err !== '' ? $web_ssh_err : $web_ssh_out )
-                            . "; step 4 below offers to set up the key under --apply, then re-run" );
+                            . "; $web_advice" );
             continue;
         }
     }
@@ -2041,7 +2074,7 @@ foreach ( $ssh_targets as $name => $c ) {
 
 ## ------------------------------------------------------------- 5. breaker directory
 
-step( "5. Circuit-breaker directory, and the runtime-advisory pilot table" );
+step( "5. Circuit-breaker, ssh-control and elog directories, and the runtime-advisory pilot table" );
 
 $web_group_entry = posix_getgrnam( $web_group );
 if ( $web_group_entry === false ) {
@@ -2119,12 +2152,22 @@ if ( is_dir( $ssh_control_dir ) && !is_link( $ssh_control_dir )
 ## callers (queue_setup_1/2/3.php, 2DSA_1.php) call elog() before
 ## global_config.php is ever loaded, so an operator-set override here would
 ## provision one directory while elog() itself, at actual runtime, always
-## logs to this same hardcoded default regardless -- a round-6 should-fix
-## found by ehb54 testing it live, not by reading the code. Removed rather
-## than wired up to load earlier: nothing else needs config.php loaded
-## before elog() on those pages, and moving that load order is a much
-## larger change than this setting is worth.
+## logs to this same hardcoded default regardless. Removed rather than
+## wired up to load earlier: nothing else needs config.php loaded before
+## elog() on those pages, and moving that load order is a much larger
+## change than this setting is worth.
 $elog_dir = "$us3_home/lims/etc";
+## elog.txt.1 is deliberately not provisioned here (round 8 should-fix,
+## reverting round 7's own advice): dbinst#75 rotates by rename(), not by
+## writing .1 in place, and a rename() needs write access to $elog_dir
+## itself, not just to the file being provisioned -- a provisioned .1 does
+## not give the web account that on a roles host (0755 us3:us3 $elog_dir),
+## so this never actually let the web account rotate. Worse, on that same
+## host, every rotation leaves .1 owned us3:apache (whichever account's
+## PHP-FPM worker happened to rotate), so a provisioned 0660 us3:<web
+## group> .1 would never stay that way and --check would never converge.
+## See dbinst#75's elog.php for the accepted limitation this leaves: the
+## web account cannot rotate elog.txt on a split-account host today.
 $elog_targets = [
     "$elog_dir/elog.txt"        => [ 0660, '' ],
     "$elog_dir/elog_hmac_key"   => [ 0640, null ],   ## null content: generate 32 random bytes if missing
@@ -2132,7 +2175,15 @@ $elog_targets = [
 foreach ( $elog_targets as $path => $spec ) {
     list( $want_mode, $empty_content ) = $spec;
     $want_mode_str = sprintf( '0%o', $want_mode );
-    if ( is_file( $path ) && !is_link( $path )
+    ## A key is never meant to be 0 bytes: elog_hmac_key()
+    ## reads it with file_get_contents(), and treats empty exactly the same
+    ## as missing -- an empty key already right owner/mode/group would
+    ## otherwise report 'ok' and get left empty forever, with every account
+    ## warning on every request and digests changing per call. elog.txt
+    ## itself is legitimately empty when freshly provisioned, so this only
+    ## applies when $empty_content is null (the key).
+    $size_ok = $empty_content !== null || !is_file( $path ) || filesize( $path ) > 0;
+    if ( $size_ok && is_file( $path ) && !is_link( $path )
          && fileowner( $path ) === $us3_entry[ 'uid' ] && filegroup( $path ) === $want_gid
          && ( fileperms( $path ) & 07777 ) === $want_mode ) {
         report( 'ok', "$path is $want_mode_str us3:$web_group" );
@@ -2146,9 +2197,19 @@ foreach ( $elog_targets as $path => $spec ) {
         report( 'FAIL', "$path is a symlink; remove it by hand and rerun" );
         continue;
     }
-    if ( !is_file( $path ) ) {
+    if ( !is_file( $path ) || ( $empty_content === null && filesize( $path ) === 0 ) ) {
         $content = $empty_content !== null ? $empty_content : random_bytes( 32 );
-        if ( file_put_contents( $path, $content ) === false ) {
+        ## umask(0077) for the window between creating the file and the
+        ## chmod()/chown() below: file_put_contents()
+        ## otherwise creates it under this process's own umask (commonly
+        ## 0644 root:root for uslims_upgrade.php, run as root), leaving the
+        ## HMAC key itself world-readable until those calls run. An
+        ## unrelated account polling the directory in the meantime read it
+        ## every time. Matches dbinst#75's own elog_hmac_key().
+        $old_umask = umask( 0077 );
+        $written = file_put_contents( $path, $content );
+        umask( $old_umask );
+        if ( $written === false ) {
             report( 'FAIL', "could not create $path" );
             continue;
         }
@@ -2177,7 +2238,8 @@ foreach ( $elog_targets as $path => $spec ) {
 ## result on $create_sql.
 ##
 ## Returns [$status, $message] for report().
-function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_errno, $create_error ) {
+function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_errno, $create_error,
+                                             $runtime_table_sql = 'common/class/prediction/runtime_pilot_table.sql' ) {
     if ( trim( (string) $create_sql ) === '' ) {
         return [ 'FAIL', "the runtime advisory pilot table's SQL file has no SQL left after"
                         . " stripping comments" ];
@@ -2190,10 +2252,13 @@ function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_err
         ## account lacking CREATE is an expected, optional gap for this
         ## pilot-scoped table, not an upgrade failure. An account that does
         ## have CREATE on gfac can still create it by hand with the same file.
+        ## Absolute path: a relative path here fails for an
+        ## operator running the suggested command from anywhere but the
+        ## dbutils checkout itself.
         return [ 'note', "gfac account lacks privilege to create the optional runtime advisory"
                         . " pilot table (common#31): " . reason( (string) $create_error )
                         . "; an account with CREATE on gfac can run it by hand:"
-                        . " mysql gfac < common/class/prediction/runtime_pilot_table.sql" ];
+                        . " mysql gfac < $runtime_table_sql" ];
     }
     return [ 'FAIL', "could not create gfac.runtime_prediction: " . reason( (string) $create_error ) ];
 }
@@ -2235,7 +2300,8 @@ if ( !is_file( $runtime_table_sql ) ) {
                 $changes++;
             }
 
-            list( $status, $message ) = runtime_prediction_create_outcome( $create, $create_ok, $errno, $error );
+            list( $status, $message ) = runtime_prediction_create_outcome(
+                $create, $create_ok, $errno, $error, $runtime_table_sql );
             report( $status, $message );
         }
     }
