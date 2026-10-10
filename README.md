@@ -36,6 +36,19 @@
      - ```php uslims_domain_info.php --change old_domain_name new_domain_name```
        - old_domain_name is required for metadata & httpd config changes.
    - optionally sets up redirects
+ - uslims_upgrade.php
+   - moves an existing host to the Slurm submission contract; run as root after pulling common, every instance, gridctl and dbutils
+   - host configuration only: the stack code and the database schema are upgraded separately, and the code must be in place first
+     0. checks that every stack checkout is at 4.3.0 or newer, read from each repository's VERSION, and refuses to go further while one is older (each instance docroot is its own dbinst clone, so each is checked on its own)
+     1. refuses to run unless the host is idle: none of listen, manage-us3-pipe, submitctl or esign running (however they were started, not only via the us3-listen unit), no jobmonitor and no unfinished gfac.analysis row, no cleanup claim, an empty local Slurm queue, no node allocated, no other client on MariaDB, nobody else logged in, and the LIMS cron entries commented out; every failing check is reported before it stops
+     2. rewrites listen-config.php from the gridctl template, carrying the site's values
+     3. deactivates cluster entries the Slurm code cannot submit to (metascheduler entries, and anything whose submittype is not slurm), or with --convert-http converts the national HPC entries left over from Airavata (active or not) to the template's SSH shape -- conversion never activates an entry or its status probe, deliberately -- then sets the global_config.php settings the new code requires (both stall timers 0, tenant scope, local cluster, env_script_lines per cluster, and single_node with maxproc <= ppn <= CPUs on one-node appliances)
+     4. records the host key for each active cluster and any cluster named with --activate that isn't active yet, and checks ssh for us3 and the web account (the PHP-FPM pool user); authorizes an account's own key too, but only for the host's own local cluster -- a remote cluster still needs that account's key created if missing and authorized for login by hand, which --activate's own message says when it applies
+     5. creates the shared circuit-breaker directory, the shared ssh-control directory (common#24), elog.txt and its HMAC key (dbinst#75, shared from the start so a split web/us3 account host does not depend on whichever account touches them first), and the gfac.runtime_prediction table the runtime-advisory pilot uses if it is ever turned on
+     6. removes the gridctl cron entries from the crontabs (us3's, /etc/crontab, /etc/cron.d), under gridctl.php and the gridctl_pro/dev names before it, since each job's jobmonitor now carries it to a terminal state
+     7. verifies the result
+   - ```--activate cluster[,cluster]``` brings a converted entry live: sets active=true in global_config.php and turns on its cluster_config.php probe, together, once its env_script_lines are real and ssh to it succeeds (as us3, and as the web account if different). --activate checks ssh before step 4, which records the host key (and, for the host's own cluster, authorizes the key). So the first --apply --activate for a cluster records its host key, and the next one activates it -- not only for a cluster converted in this very run, but any cluster whose host key is not recorded yet. For a remote cluster, authorize the account's own key on the cluster by hand first; step 4 only ever records that cluster's host key, never authorizes this account's key on the far end
+   - dry run by default; ```php uslims_upgrade.php --apply``` makes the changes, backing up each file first; safe to rerun
  - uslims_git_info.php
    - for all expected and discovered repos, reports path, url, branch, use, rev#, rev date, local changes, and deltas
    - also allows updating to expected branches, git pull, and build (for gui & mpi)
