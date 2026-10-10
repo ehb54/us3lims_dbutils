@@ -1224,6 +1224,15 @@ if ( !$res ) {
         if ( strcasecmp( (string) $row[ 'Command' ], 'Sleep' ) === 0 ) {
             continue;
         }
+        ## MariaDB's own background threads (InnoDB purge coordinator/workers,
+        ## the shutdown handler) show up as "system user" with Command =
+        ## 'Daemon'. They are not a client connection, and PROCESS/SUPER (needed
+        ## to see other accounts' threads at all, per the note above) always
+        ## surfaces them, so an account with that privilege would otherwise
+        ## never pass this check.
+        if ( strcasecmp( (string) $row[ 'Command' ], 'Daemon' ) === 0 ) {
+            continue;
+        }
         ## This script's own connection is running SHOW PROCESSLIST right now.
         if ( stripos( (string) $row[ 'Info' ], 'PROCESSLIST' ) !== false ) {
             continue;
