@@ -109,4 +109,6 @@
     - drops dbinstance databases, creates new from latest us3_sql, imports stage1 exported data, compares record counts
     - converts each dbinstance's people_audit.created_at to UTC from the stage2 connection's own session time zone (not the original exporting host's, which does not survive the export/import round trip), once per dbinstance -- a marker travels with the dbinstance itself so a later re-import does not shift already-correct rows again; skipped (with a warning) if the time zone is a named zone and the server has no time zone tables loaded
     - a row actually written during the repeated local hour when clocks fall back (e.g. 1:30am occurring twice) is ambiguous by nature -- CONVERT_TZ() always resolves it to standard time, so a row genuinely written during that hour's DST occurrence converts up to 60 minutes off; accepted, since the original data carries no way to tell the two occurrences apart
+  - uslims_upgrade.php's step 9 runs this same people_audit UTC migration in place, against every LIMS instance already running on the host, using each instance's own config.php -- no new credentials
+  - migrate_people_audit_utc.php runs the migration by itself, with none of uslims_upgrade.php's or stage2's other machinery: for a host already upgraded in-place before step 9 existed, or to fix one dbinstance by hand
  
