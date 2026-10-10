@@ -693,14 +693,14 @@ function squash($array, $prefix = '') {
 ## function at all).
 function people_audit_utc_migration_done( $db_handle, $db ) {
     sql_identifier_or_die( $db );
-    $marker = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE '_dbutils_people_audit_utc_migrated'" );
+    $marker = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE '_dbutils_people_audit_utc_migrated'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
     return $marker && mysqli_num_rows( $marker ) > 0;
 }
 
 function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
     sql_identifier_or_die( $db );
 
-    $exists = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE 'people_audit'" );
+    $exists = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE 'people_audit'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
     if ( !$exists || mysqli_num_rows( $exists ) === 0 ) {
         # Predates the audit feature entirely; nothing to migrate.
         return;
@@ -711,7 +711,7 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
         return;
     }
 
-    $count_res = mysqli_query( $db_handle, "SELECT COUNT(*) AS n FROM $db.people_audit" );
+    $count_res = mysqli_query( $db_handle, "SELECT COUNT(*) AS n FROM $db.people_audit" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
     $count_row = $count_res ? mysqli_fetch_assoc( $count_res ) : null;
     if ( !$count_row || (int) $count_row[ 'n' ] === 0 ) {
         echo "$db.people_audit is empty; nothing to migrate to UTC\n";
@@ -802,7 +802,7 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
     # so an operator knows to look, since a non-zero row landing here would
     # mean $from_tz is wrong or unresolvable in some way the guard above
     # did not anticipate.
-    $unresolved_res = mysqli_query( $db_handle,
+    $unresolved_res = mysqli_query( $db_handle, // NOSONAR $db is validated above by sql_identifier_or_die(); $from_tz_esc is mysqli_real_escape_string()'d
         "SELECT COUNT(*) AS n FROM $db.people_audit WHERE created_at != '0000-00-00 00:00:00'"
       . "   AND CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' ) IS NULL" );
     $unresolved_row = $unresolved_res ? mysqli_fetch_assoc( $unresolved_res ) : null;
@@ -816,9 +816,9 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
     # comment above), so a later migration attempt against this same
     # dbinstance -- by either caller -- skips it instead of shifting
     # already-correct rows again.
-    mysqli_query( $db_handle, "CREATE TABLE IF NOT EXISTS $db._dbutils_people_audit_utc_migrated ("
+    mysqli_query( $db_handle, "CREATE TABLE IF NOT EXISTS $db._dbutils_people_audit_utc_migrated (" // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
                              . " migrated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
                              . " from_time_zone VARCHAR(64) NOT NULL )" );
-    mysqli_query( $db_handle, "INSERT INTO $db._dbutils_people_audit_utc_migrated ( from_time_zone )"
+    mysqli_query( $db_handle, "INSERT INTO $db._dbutils_people_audit_utc_migrated ( from_time_zone )" // NOSONAR $db is validated above by sql_identifier_or_die(); $from_tz_esc is mysqli_real_escape_string()'d
                              . " VALUES ( '$from_tz_esc' )" );
 }
