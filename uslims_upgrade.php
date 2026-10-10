@@ -69,7 +69,8 @@ Steps
     the national HPC ones to SSH instead, then sets the global_config.php
     settings the new code requires (queue time, tenant scope, local cluster,
     env_script_lines per cluster, single_node on one-node appliances)
-4 : records each cluster's host key and checks ssh for us3 and the web account
+4 : records each cluster's host key (and, for the host's own cluster, authorizes
+    the key) and checks ssh for us3 and the web account
 5 : creates the shared circuit-breaker directory, the shared ssh-control directory
     (common#24, sticky bit so one account cannot rename another's subdirectory
     under it), elog.txt and its HMAC key (dbinst#75, provisioned shared from the
@@ -1195,53 +1196,21 @@ if ( $sq_rc !== 0 ) {
 ## different account (us3php, not gfac), so this check would see nobody else
 ## and report 'ok' while blind to them. Checked here rather than assumed, so
 ## that is a 'note' to verify by hand instead of a silent false negative.
-$has_process_priv = false;
-$grants = mysqli_query( $gdb, 'SHOW GRANTS' );
-if ( $grants ) {
-    while ( $row = mysqli_fetch_row( $grants ) ) {
-        $grant = (string) ( $row[ 0 ] ?? '' );
-        ## PROCESS and SUPER are global-only privileges in MySQL/MariaDB: they
-        ## cannot be granted on a specific database. But MariaDB always
-        ## expands "ALL" to "ALL PRIVILEGES" in SHOW GRANTS output, even for a
-        ## database-scoped grant like "GRANT ALL ON gfac.* TO ...", so
-        ## matching the word alone without checking the scope matched a grant
-        ## that gives nothing outside gfac and no real PROCESS privilege.
-        if ( preg_match( '/\bON\s+\*\.\*(\s|$)/i', $grant )
-           && preg_match( '/\b(PROCESS|SUPER|ALL PRIVILEGES)\b/i', $grant ) ) {
-            $has_process_priv = true;
-            break;
-        }
-    }
-}
+$has_process_priv = has_global_process_or_super_privilege( mysqli_grant_rows( $gdb ) );
 
 $res = mysqli_query( $gdb, 'SHOW PROCESSLIST' );
 if ( !$res ) {
     report( 'note', "could not list the database connections (" . reason( mysqli_error( $gdb ) )
                     . "); confirm nobody is using MariaDB" );
 } else {
-    $others = [];
+    $processlist_rows = [];
     while ( $row = mysqli_fetch_assoc( $res ) ) {
-        if ( strcasecmp( (string) $row[ 'Command' ], 'Sleep' ) === 0 ) {
-            continue;
-        }
-        ## MariaDB's own background threads (InnoDB purge coordinator/workers,
-        ## the shutdown handler) show up as "system user" with Command =
-        ## 'Daemon'. They are not a client connection, and PROCESS/SUPER (needed
-        ## to see other accounts' threads at all, per the note above) always
-        ## surfaces them, so an account with that privilege would otherwise
-        ## never pass this check.
-        if ( strcasecmp( (string) $row[ 'Command' ], 'Daemon' ) === 0 ) {
-            continue;
-        }
-        ## This script's own connection is running SHOW PROCESSLIST right now.
-        if ( stripos( (string) $row[ 'Info' ], 'PROCESSLIST' ) !== false ) {
-            continue;
-        }
-        $others[] = $row[ 'User' ] . '@' . preg_replace( '/:\d+$/', '', (string) $row[ 'Host' ] );
+        $processlist_rows[] = $row;
     }
+    $others = other_db_connections( $processlist_rows );
     if ( $others ) {
         report( 'FAIL', count( $others ) . " active database connection(s): "
-                        . implode( ', ', array_unique( $others ) ) );
+                        . implode( ', ', $others ) );
         $busy[] = 'database in use';
     } elseif ( !$has_process_priv ) {
         report( 'note', "no other '" . ( $old_listen[ 'guser' ] ?? 'gfac' ) . "' connection is running a"
@@ -1251,6 +1220,57 @@ if ( !$res ) {
     } else {
         report( 'ok', "no other client is running a statement on MariaDB" );
     }
+}
+
+## Whether $grants (one string per SHOW GRANTS row for the connected
+## account) includes the global-only PROCESS or SUPER privilege (or ALL
+## PRIVILEGES at global scope, which implies both). Pure, no DB access, so
+## it is pinned down by a real unit test instead of only ever being
+## exercised against whatever privileges the account running this script
+## happens to have.
+function has_global_process_or_super_privilege( array $grants ) {
+    foreach ( $grants as $grant ) {
+        $grant = (string) $grant;
+        ## PROCESS and SUPER are global-only privileges in MySQL/MariaDB: they
+        ## cannot be granted on a specific database. But MariaDB always
+        ## expands "ALL" to "ALL PRIVILEGES" in SHOW GRANTS output, even for a
+        ## database-scoped grant like "GRANT ALL ON gfac.* TO ...", so
+        ## matching the word alone without checking the scope matched a grant
+        ## that gives nothing outside gfac and no real PROCESS privilege.
+        if ( preg_match( '/\bON\s+\*\.\*(\s|$)/i', $grant )
+           && preg_match( '/\b(PROCESS|SUPER|ALL PRIVILEGES)\b/i', $grant ) ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+## Reduces SHOW PROCESSLIST's rows (each an assoc array with at least
+## Command/Info/User/Host) to the other connections that mean the database
+## is actually in use: excludes this account's idle ('Sleep') threads,
+## MariaDB's own background threads (InnoDB purge coordinator/workers, the
+## shutdown handler -- Command = 'Daemon', not a client connection at all,
+## and always visible to an account with PROCESS/SUPER, which is exactly the
+## account this check most wants to trust), and this script's own
+## SHOW PROCESSLIST call. Pure, no DB access, so the false FAIL this
+## produced for any gfac account with PROCESS privilege -- MariaDB's own
+## system threads always being present and always reported as "system
+## user"@"" -- is pinned down by a real unit test instead of only ever being
+## exercised against a live account's actual threads.
+function other_db_connections( array $rows ) {
+    $others = [];
+    foreach ( $rows as $row ) {
+        $command = (string) ( $row[ 'Command' ] ?? '' );
+        if ( strcasecmp( $command, 'Sleep' ) === 0 || strcasecmp( $command, 'Daemon' ) === 0 ) {
+            continue;
+        }
+        if ( stripos( (string) ( $row[ 'Info' ] ?? '' ), 'PROCESSLIST' ) !== false ) {
+            continue;
+        }
+        $others[] = ( $row[ 'User' ] ?? '' ) . '@'
+                  . preg_replace( '/:\d+$/', '', (string) ( $row[ 'Host' ] ?? '' ) );
+    }
+    return array_unique( $others );
 }
 
 ## -- other people on the host. The operator's own session is excluded, found from
@@ -1501,7 +1521,7 @@ foreach ( $active as $name => $c ) {
             $changed[] = $key;
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ '
                        . var_export( $key, true ) . ' ] = ' . php_value( $value ) . ';';
-            ## Mirrored into this run's own $clusters (round 8 nit; same
+            ## Mirrored into this run's own $clusters (same
             ## reasoning as the inactive-entry loop below, which already
             ## does this): --activate, later in this same run, reports
             ## "already active" from $clusters, not from $managed, so an
@@ -2158,15 +2178,15 @@ if ( is_dir( $ssh_control_dir ) && !is_link( $ssh_control_dir )
 ## elog() on those pages, and moving that load order is a much larger
 ## change than this setting is worth.
 $elog_dir = "$us3_home/lims/etc";
-## elog.txt.1 is deliberately not provisioned here (round 8 should-fix,
-## reverting round 7's own advice): dbinst#75 rotates by rename(), not by
-## writing .1 in place, and a rename() needs write access to $elog_dir
-## itself, not just to the file being provisioned -- a provisioned .1 does
-## not give the web account that on a roles host (0755 us3:us3 $elog_dir),
-## so this never actually let the web account rotate. Worse, on that same
-## host, every rotation leaves .1 owned us3:apache (whichever account's
-## PHP-FPM worker happened to rotate), so a provisioned 0660 us3:<web
-## group> .1 would never stay that way and --check would never converge.
+## elog.txt.1 is deliberately not provisioned here: dbinst#75 rotates by
+## rename(), not by writing .1 in place, and a rename() needs write access
+## to $elog_dir itself, not just to the file being provisioned -- a
+## provisioned .1 does not give the web account that on a split-account
+## host (0755 us3:us3 $elog_dir), so this never actually let the web
+## account rotate. Worse, on that same host, every rotation leaves .1
+## owned us3:apache (whichever account's PHP-FPM worker happened to
+## rotate), so a provisioned 0660 us3:<web group> .1 would never stay
+## that way and --check would never converge.
 ## See dbinst#75's elog.php for the accepted limitation this leaves: the
 ## web account cannot rotate elog.txt on a split-account host today.
 $elog_targets = [
@@ -2228,7 +2248,7 @@ foreach ( $elog_targets as $path => $spec ) {
 ## pilot-scoped" downgrade below (a missing-privilege error is a note, not a
 ## FAIL) is pinned down by a real unit test instead of only ever being
 ## exercised against a live gfac account's actual privileges, the same gap
-## that let single_node_sizing() above regress three rounds running. This
+## that let single_node_sizing() above regress repeatedly. This
 ## step FAILed outright the first time it existed (744eef1), on every
 ## roles-built host, for exactly the two reasons this now downgrades to a
 ## note.
