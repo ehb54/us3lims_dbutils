@@ -569,6 +569,142 @@ function squash($array, $prefix = '') {
             $flat[$_key] = $value;
         }
     }
-    
+
     return $flat;
+}
+
+# A 4.2.0 host's people_audit.created_at was written from the column's own
+# DEFAULT CURRENT_TIMESTAMP, which is the writing connection's session time
+# zone -- not necessarily UTC. 4.3.0's write_audit_row() writes
+# UTC_TIMESTAMP() explicitly instead, so any dbinstance that predates that
+# fix is still carrying some or all of its people_audit rows in whatever
+# local zone the writing host's MySQL session used.
+#
+# Shared by dbupgrade/stage2_import_dbinsts.php (a 4.2.0 dbinstance
+# imported wholesale onto a new host -- every row predates the fix the
+# first time this runs) and uslims_upgrade.php's in-place path (the same
+# dbinstance, upgraded where it already runs -- some rows may already be
+# correct UTC, written by 4.3.0 itself, if the fix has already deployed
+# here before this script has). Idempotent via a marker table written
+# inside the dbinstance itself (not metadata, not a file) so it is correct
+# either way and travels automatically with any future export/import of
+# this same dbinstance.
+function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
+    $exists = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE 'people_audit'" );
+    if ( !$exists || mysqli_num_rows( $exists ) === 0 ) {
+        # Predates the audit feature entirely; nothing to migrate.
+        return;
+    }
+
+    $marker = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE '_dbutils_people_audit_utc_migrated'" );
+    if ( $marker && mysqli_num_rows( $marker ) > 0 ) {
+        echo "$db.people_audit was already migrated to UTC previously; skipping\n";
+        return;
+    }
+
+    $count_res = mysqli_query( $db_handle, "SELECT COUNT(*) AS n FROM $db.people_audit" );
+    $count_row = $count_res ? mysqli_fetch_assoc( $count_res ) : null;
+    if ( !$count_row || (int) $count_row[ 'n' ] === 0 ) {
+        echo "$db.people_audit is empty; nothing to migrate to UTC\n";
+        return;
+    }
+
+    # $db_handle's own session time zone, not a value this function guesses
+    # or hardcodes, and not necessarily the zone the rows were actually
+    # written in if $db_handle is not the same connection/host that wrote
+    # them (stage2: that information does not survive the export/import
+    # round trip, so this reads whatever zone the server running stage2
+    # itself is in -- the caller is responsible for that being the right
+    # zone for its own scenario). 'SYSTEM' (the common default) defers to
+    # the OS's own tz rules via CONVERT_TZ, so DST in the historical data
+    # is still handled correctly without needing mysql.time_zone_* loaded.
+    $tz_res  = mysqli_query( $db_handle, "SELECT @@session.time_zone AS tz" );
+    $tz_row  = $tz_res ? mysqli_fetch_assoc( $tz_res ) : null;
+    $from_tz = ( $tz_row && $tz_row[ 'tz' ] !== '' ) ? $tz_row[ 'tz' ] : 'SYSTEM';
+
+    # A named zone (e.g. 'America/Chicago') needs mysql.time_zone_name
+    # loaded (mysql_tzinfo_to_sql) to resolve; 'SYSTEM' and a numeric offset
+    # (e.g. '+05:00', a valid session.time_zone value on its own, never a
+    # named zone) do not -- checking "!== 'SYSTEM'" alone treated every
+    # numeric-offset host as if it needed zone tables too, and skipped the
+    # migration entirely for one even when the tables were loaded fine
+    # (confirmed: SELECT CONVERT_TZ(..., '+05:00', '+00:00') resolves with
+    # no zone tables present at all). Rather than let CONVERT_TZ() silently
+    # return NULL into a NOT NULL column, check up front and skip loudly
+    # instead -- but only when $from_tz is actually a named zone.
+    if ( $from_tz !== 'SYSTEM' && !preg_match( '/^[+-]\d{2}:\d{2}$/', $from_tz ) ) {
+        $loaded = mysqli_query( $db_handle, "SELECT 1 FROM mysql.time_zone_name LIMIT 1" );
+        if ( !$loaded || mysqli_num_rows( $loaded ) === 0 ) {
+            echo "WARNING: $db.people_audit: session time_zone is '$from_tz' but"
+               . " mysql.time_zone_name is not loaded on this server (run"
+               . " mysql_tzinfo_to_sql); skipping the UTC migration for $db --"
+               . " convert it by hand once the time zone tables are loaded.\n";
+            return;
+        }
+    }
+
+    $from_tz_esc = mysqli_real_escape_string( $db_handle, $from_tz );
+    echo "Migrating $db.people_audit.created_at from '$from_tz' to UTC"
+       . " (" . $count_row[ 'n' ] . " row(s))\n";
+
+    # '+00:00', not the named zone 'UTC': a named zone on EITHER side of
+    # CONVERT_TZ() needs mysql.time_zone_name loaded, same as checked above
+    # for $from_tz -- but that check only ever covered the source side, so
+    # an account with SYSTEM (or any numeric-offset) $from_tz and no zone
+    # tables loaded still hit this as the destination and got NULL into a
+    # NOT NULL column. A numeric offset needs no zone tables at all, on
+    # either side, so this cannot happen here any more for a real
+    # timestamp -- but the WHERE clause below still excludes any row where
+    # it would, rather than trust that: a NULL written to this NOT NULL
+    # column does not necessarily raise an error at all. Tested directly
+    # (MariaDB 10.3, no zone tables loaded): assigning CONVERT_TZ()'s NULL
+    # to this column -- which carries DEFAULT CURRENT_TIMESTAMP -- silently
+    # replaced the row's created_at with the UPDATE's own run time instead
+    # of erroring OR zeroing it, under STRICT_ALL_TABLES. Excluding the row
+    # from the UPDATE instead of writing to it and checking afterward is
+    # exact regardless of which silent substitution a given server version
+    # and sql_mode happens to make.
+    $cmd = "UPDATE $db.people_audit"
+         . " SET created_at = CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' )"
+         . " WHERE created_at != '0000-00-00 00:00:00'"
+         . "   AND CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' ) IS NOT NULL";
+    $res = mysqli_query( $db_handle, $cmd );
+    if ( !$res ) {
+        # Not error_exit(): stage2's caller has already dropped and
+        # recreated this (and every other) dbinstance by the time this
+        # runs, so aborting the whole import here would leave every
+        # dbinstance after this one in the list missing entirely, over a
+        # problem confined to one table in one of them. uslims_upgrade.php
+        # does not touch other dbinstances at all, so the same non-fatal
+        # return is simply the right call there too.
+        echo "WARNING: $db.people_audit: could not convert created_at to UTC ("
+           . mysqli_error( $db_handle ) . "); this dbinstance's data is otherwise fully"
+           . " imported -- convert people_audit by hand once the time zone is resolvable.\n";
+        return;
+    }
+
+    # Rows excluded above (zero dates, and any CONVERT_TZ() genuinely
+    # cannot resolve) are untouched, not corrupted -- still worth a warning
+    # so an operator knows to look, since a non-zero row landing here would
+    # mean $from_tz is wrong or unresolvable in some way the guard above
+    # did not anticipate.
+    $unresolved_res = mysqli_query( $db_handle,
+        "SELECT COUNT(*) AS n FROM $db.people_audit WHERE created_at != '0000-00-00 00:00:00'"
+      . "   AND CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' ) IS NULL" );
+    $unresolved_row = $unresolved_res ? mysqli_fetch_assoc( $unresolved_res ) : null;
+    $unresolved = $unresolved_row ? (int) $unresolved_row[ 'n' ] : 0;
+    if ( $unresolved > 0 ) {
+        echo "WARNING: $db.people_audit: $unresolved row(s) could not be resolved to UTC from"
+           . " '$from_tz' and were left unchanged -- verify by hand.\n";
+    }
+
+    # Marker travels with the dbinstance itself (see the function-level
+    # comment above), so a later migration attempt against this same
+    # dbinstance -- by either caller -- skips it instead of shifting
+    # already-correct rows again.
+    mysqli_query( $db_handle, "CREATE TABLE IF NOT EXISTS $db._dbutils_people_audit_utc_migrated ("
+                             . " migrated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                             . " from_time_zone VARCHAR(64) NOT NULL )" );
+    mysqli_query( $db_handle, "INSERT INTO $db._dbutils_people_audit_utc_migrated ( from_time_zone )"
+                             . " VALUES ( '$from_tz_esc' )" );
 }
