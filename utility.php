@@ -94,6 +94,84 @@ function error_exit( $msg ) {
     exit(-1);
 }
 
+## Run a command, keeping its stderr separate from its stdout. Returns
+## [ stdout, stderr, exit status ] so a caller can report why a command
+## failed rather than only that it produced nothing.
+function capture( $cmd ) {
+    $errfile = tempnam( sys_get_temp_dir(), 'us3up' );
+    if ( $errfile === false ) {
+        error_exit( "could not create a temporary file" );
+    }
+    $lines = [];
+    ## The subshell keeps the redirect over the whole command: "a; b 2>f" would
+    ## otherwise redirect only b, letting a's stderr reach the terminal.
+    exec( '( ' . $cmd . ' ) 2>' . escapeshellarg( $errfile ), $lines, $rc );
+    $err = trim( (string) @file_get_contents( $errfile ) );
+    @unlink( $errfile );
+    return [ implode( "\n", $lines ), $err, $rc ];
+}
+
+## Variables a PHP config file defines, read in a separate process so that an
+## old config's own helper functions cannot clash with utility.php's.
+## $why is set to the reason when the file cannot be read.
+function config_vars( $file, &$why = null ) {
+    $code = 'ob_start(); include ' . var_export( $file, true ) . '; ob_end_clean();'
+          . ' $v = array_filter( get_defined_vars(), function ( $k ) { return $k[ 0 ] !== "_" && $k !== "GLOBALS"; },'
+          . ' ARRAY_FILTER_USE_KEY ); unset( $v["argv"], $v["argc"] );'
+          . ' echo json_encode( $v, JSON_PARTIAL_OUTPUT_ON_ERROR );';
+    list( $out, $err, $rc ) = capture( escapeshellarg( PHP_BINARY ) . ' -r ' . escapeshellarg( $code ) );
+    $vars = json_decode( $out, true );
+    if ( is_array( $vars ) ) {
+        $why = '';
+        return $vars;
+    }
+    ## Distinguish a fatal in the config, a non-zero exit and unparseable output.
+    $why = $err !== '' ? $err
+         : ( $rc !== 0 ? "php exited $rc with no message"
+                       : 'the config produced no readable variables: ' . json_last_error_msg() );
+    return null;
+}
+
+## Every LIMS instance's database config on this host: single-tenant
+## ($wwwpath/uslims3/config.php) and/or multi-tenant ($wwwpath/uslims3/<name>/config.php),
+## resolving a migrated instance's generated shim to its real overlay file the
+## same way uslims_domain_info.php's instance_overlay() does. Shared by
+## uslims_upgrade.php's step 9 and migrate_people_audit_utc.php so the two
+## agree on what "every instance on this host" means.
+##
+## Returns [ label => [ 'dbname'|'dbhost'|'dbusername'|'dbpasswd' => ..., ... ]
+## or [ 'error' => string ], ... ]. A per-instance error does not stop the
+## others from being reported.
+function discover_lims_instance_configs( $wwwpath, $us3_home ) {
+    $instance_configs = [];
+    if ( is_file( "$wwwpath/uslims3/config.php" ) ) {
+        ## Single-tenant: one instance, directly under uslims3/.
+        $instance_configs[ 'default' ] = "$wwwpath/uslims3/config.php";
+    }
+    foreach ( glob( "$wwwpath/uslims3/*/config.php" ) ?: [] as $instpath ) {
+        $instance_configs[ basename( dirname( $instpath ) ) ] = $instpath;
+    }
+
+    $resolved = [];
+    foreach ( $instance_configs as $label => $instpath ) {
+        $contents     = @file_get_contents( $instpath );
+        $overlay_path = "$us3_home/lims/etc/config/instances/$label.php";
+        $real_path    = ( $contents !== false && strpos( $contents, 'us3_dbinst_config_bootstrap' ) !== false
+                           && is_file( $overlay_path ) )
+                       ? $overlay_path : $instpath;
+
+        $cfg = config_vars( $real_path, $why );
+        if ( $cfg === null
+             || !isset( $cfg[ 'dbname' ], $cfg[ 'dbhost' ], $cfg[ 'dbusername' ], $cfg[ 'dbpasswd' ] ) ) {
+            $resolved[ $label ] = [ 'error' => "could not read database settings from $real_path"
+                                  . ( $why !== null && $why !== '' ? " ($why)" : '' ) ];
+            continue;
+        }
+        $resolved[ $label ] = $cfg;
+    }
+    return $resolved;
+}
+
 function echoline( $str = "-", $count = 80, $print = true ) {
     $out = "";
     for ( $i = 0; $i < $count; ++$i ) {

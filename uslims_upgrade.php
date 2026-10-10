@@ -395,43 +395,9 @@ function backup_append_target( $path, $label ) {
     return $append_backups[ $path ] = @copy( $path, $dest ) ? $dest : '';
 }
 
-## Run a command, keeping its stderr separate from its stdout. Returns
-## [ stdout, stderr, exit status ] so a step can report why a command failed
-## rather than only that it produced nothing.
-function capture( $cmd ) {
-    $errfile = tempnam( sys_get_temp_dir(), 'us3up' );
-    if ( $errfile === false ) {
-        error_exit( "could not create a temporary file" );
-    }
-    $lines = [];
-    ## The subshell keeps the redirect over the whole command: "a; b 2>f" would
-    ## otherwise redirect only b, letting a's stderr reach the terminal.
-    exec( '( ' . $cmd . ' ) 2>' . escapeshellarg( $errfile ), $lines, $rc );
-    $err = trim( (string) @file_get_contents( $errfile ) );
-    @unlink( $errfile );
-    return [ implode( "\n", $lines ), $err, $rc ];
-}
-
-## Variables a PHP config file defines, read in a separate process so that an
-## old config's own helper functions cannot clash with utility.php's.
-## $why is set to the reason when the file cannot be read.
-function config_vars( $file, &$why = null ) {
-    $code = 'ob_start(); include ' . var_export( $file, true ) . '; ob_end_clean();'
-          . ' $v = array_filter( get_defined_vars(), function ( $k ) { return $k[ 0 ] !== "_" && $k !== "GLOBALS"; },'
-          . ' ARRAY_FILTER_USE_KEY ); unset( $v["argv"], $v["argc"] );'
-          . ' echo json_encode( $v, JSON_PARTIAL_OUTPUT_ON_ERROR );';
-    list( $out, $err, $rc ) = capture( escapeshellarg( PHP_BINARY ) . ' -r ' . escapeshellarg( $code ) );
-    $vars = json_decode( $out, true );
-    if ( is_array( $vars ) ) {
-        $why = '';
-        return $vars;
-    }
-    ## Distinguish a fatal in the config, a non-zero exit and unparseable output.
-    $why = $err !== '' ? $err
-         : ( $rc !== 0 ? "php exited $rc with no message"
-                       : 'the config produced no readable variables: ' . json_last_error_msg() );
-    return null;
-}
+## capture() and config_vars() now live in utility.php: migrate_people_audit_utc.php
+## (dbutils#52) needs config_vars() too, to read an instance's config.php without
+## this script's own $gdb/$old_listen/global_config.php setup.
 
 ## $why is set to php -l's complaint when the file does not parse.
 function lint_ok( $file, &$why = null ) {
@@ -2730,31 +2696,17 @@ step( "9. people_audit UTC migration" );
 ## has everything needed. A dbinstance that could not connect with its own
 ## config would not be serving pages, so this connects with exactly what
 ## the site itself depends on, never root or a separate db_config.php.
-$instance_configs = [];
-if ( is_file( "$wwwpath/uslims3/config.php" ) ) {
-    ## Single-tenant: one instance, directly under uslims3/.
-    $instance_configs[ 'default' ] = "$wwwpath/uslims3/config.php";
-}
-foreach ( glob( "$wwwpath/uslims3/*/config.php" ) ?: [] as $instpath ) {
-    $instance_configs[ basename( dirname( $instpath ) ) ] = $instpath;
-}
+## discover_lims_instance_configs() (utility.php) is shared with the
+## standalone migrate_people_audit_utc.php, so both agree on what "every
+## instance on this host" means.
+$instance_configs = discover_lims_instance_configs( $wwwpath, $us3_home );
 
 if ( !$instance_configs ) {
     report( 'note', "no $wwwpath/uslims3 config.php found; nothing to migrate" );
 } else {
-    foreach ( $instance_configs as $label => $instpath ) {
-        $contents     = @file_get_contents( $instpath );
-        $overlay_path = "$us3_home/lims/etc/config/instances/$label.php";
-        $real_path    = ( $contents !== false && strpos( $contents, 'us3_dbinst_config_bootstrap' ) !== false
-                           && is_file( $overlay_path ) )
-                       ? $overlay_path : $instpath;
-
-        $cfg = config_vars( $real_path, $cfg_why );
-        if ( $cfg === null
-             || !isset( $cfg[ 'dbname' ], $cfg[ 'dbhost' ], $cfg[ 'dbusername' ], $cfg[ 'dbpasswd' ] ) ) {
-            report( 'note', "$label: could not read database settings from $real_path"
-                  . ( isset( $cfg_why ) && $cfg_why !== '' ? ' (' . reason( $cfg_why ) . ')' : '' )
-                  . "; convert people_audit by hand" );
+    foreach ( $instance_configs as $label => $cfg ) {
+        if ( isset( $cfg[ 'error' ] ) ) {
+            report( 'note', "$label: " . reason( $cfg[ 'error' ] ) . "; convert people_audit by hand" );
             continue;
         }
 
