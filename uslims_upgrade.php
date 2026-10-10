@@ -959,6 +959,35 @@ if ( $missing ) {
                 . "\nNothing was changed" );
 }
 
+## dbinst#75's "in-place window" (round 10): a row dbinst's already-
+## upgraded code writes between code going live and step 9 actually
+## running gets shifted a second time by step 9 itself, since step 9
+## otherwise has no way to tell it apart from a genuinely pre-upgrade row.
+## Recording each instance's current max people_audit.auditID here --
+## the earliest point this run can reach it, before steps 1-8 do anything
+## else -- narrows that window to this run's own duration instead of
+## however long the code was already live before this run even started
+## (closing it fully needs dbinst itself to keep writing local time until
+## marked, which is dbinst#75's own half of this item). Only on --apply:
+## a --check run changes nothing in any dbinstance, including this, and
+## recording it during a --check that is not immediately followed by
+## --apply would not narrow anything anyway. Errors here are left for
+## step 9 to report by name; this only ever records a boundary for an
+## instance step 9 can also reach.
+if ( $apply ) {
+    foreach ( discover_lims_instance_configs( $wwwpath, $us3_home ) as $label => $cfg ) {
+        if ( isset( $cfg[ 'error' ] ) || !is_sql_identifier( $cfg[ 'dbname' ] ) ) {
+            continue;
+        }
+        $conn = @mysqli_connect( $cfg[ 'dbhost' ], $cfg[ 'dbusername' ], $cfg[ 'dbpasswd' ], $cfg[ 'dbname' ] );
+        if ( !$conn ) {
+            continue;
+        }
+        record_people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] );
+        mysqli_close( $conn );
+    }
+}
+
 ## ------------------------------------------------------------- 1. preflight
 
 ## An upgrade runs on an idle host, so every check below has to agree that
@@ -1413,8 +1442,8 @@ if ( $gc === null ) {
 ## default here would create one directory and verify it while the web tier and
 ## the daemons used another: step 5 would report it created, step 8 (Verify)
 ## would report it writable, and neither statement would be about the
-## directory in use. Step 8, not step 7: this PR added the CSP step as step 7,
-## shifting Verify down from its old number.
+## directory in use. Step 8, not step 7: Verify is step 8, after the CSP
+## step (7).
 $configured_breaker = isset( $gc[ 'global_circuit_breaker_dir' ] )
                       ? trim( (string) $gc[ 'global_circuit_breaker_dir' ] ) : '';
 if ( $configured_breaker !== '' ) {
@@ -2707,6 +2736,16 @@ if ( !$instance_configs ) {
     foreach ( $instance_configs as $label => $cfg ) {
         if ( isset( $cfg[ 'error' ] ) ) {
             report( 'note', "$label: " . reason( $cfg[ 'error' ] ) . "; convert people_audit by hand" );
+            continue;
+        }
+
+        ## Checked here, not left to migrate_people_audit_created_at_to_utc()'s
+        ## own sql_identifier_or_die(): that one exits the whole script, which
+        ## would skip every later instance in this loop over one malformed
+        ## name -- after steps 1-8 have already applied. report()+continue
+        ## instead, same as every other per-instance failure in this loop.
+        if ( !is_sql_identifier( $cfg[ 'dbname' ] ) ) {
+            report( 'FAIL', "$label: '{$cfg['dbname']}' is not a usable database name; convert people_audit by hand" );
             continue;
         }
 

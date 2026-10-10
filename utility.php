@@ -95,14 +95,22 @@ function error_exit( $msg ) {
 }
 
 ## A database/table identifier cannot be bound as a prepared-statement
-## placeholder the way a value can, so a function that has to interpolate
-## one into SQL (SHOW TABLES IN, a dbname.table prefix, ...) validates it
-## against this whitelist first instead. Deliberately permissive of what a
-## real MySQL identifier allows (a leading digit, for one) and restrictive
-## only of what would let the interpolated text escape the identifier
-## position it is placed in.
+## placeholder the way a value can, so code that has to interpolate one
+## into SQL (SHOW TABLES IN, a dbname.table prefix, ...) checks it against
+## this whitelist first instead. Deliberately permissive of what a real
+## MySQL identifier allows (a leading digit, for one) and restrictive only
+## of what would let the interpolated text escape the identifier position
+## it is placed in.
+function is_sql_identifier( $value ) {
+    return is_string( $value ) && preg_match( '/^[A-Za-z0-9_$]+$/', $value ) === 1;
+}
+
+## Fatal, for code with no sensible way to skip and keep going (a CLI
+## option value, one explicit target). A per-instance loop over several
+## dbinstances should call is_sql_identifier() itself instead and report-
+## and-continue, so one malformed name does not stop every instance after it.
 function sql_identifier_or_die( $value, $what = 'database name' ) {
-    if ( !is_string( $value ) || !preg_match( '/^[A-Za-z0-9_$]+$/', $value ) ) {
+    if ( !is_sql_identifier( $value ) ) {
         error_exit( "not a valid $what: " . var_export( $value, true ) );
     }
     return $value;
@@ -685,6 +693,18 @@ function squash($array, $prefix = '') {
 # inside the dbinstance itself (not metadata, not a file) so it is correct
 # either way and travels automatically with any future export/import of
 # this same dbinstance.
+## Tables dbutils writes directly into a dbinstance's own schema as part
+## of the people_audit UTC migration, rather than anything us3.sql defines
+## or any dbinstance-to-dbinstance export/import is meant to carry a
+## structural diff over. Shared here so table_record_counts.php,
+## uslims_db_schemas.php and uslims_table_diffs.php all agree on what to
+## leave out of a record-count listing, a schema comparison, or an
+## --only-extras export filter -- without this, each of those saw a
+## migrated dbinstance as carrying an unexpected extra table.
+function dbutils_owned_tables() {
+    return [ '_dbutils_people_audit_utc_migrated', '_dbutils_people_audit_utc_boundary' ];
+}
+
 ## Whether $db's people_audit was already migrated by a previous call,
 ## from either caller. Pulled out of migrate_people_audit_created_at_to_utc()
 ## so uslims_upgrade.php step 9 and migrate_people_audit_utc.php can decide
@@ -706,7 +726,9 @@ function create_people_audit_utc_migration_marker_table( $db_handle, $db ) {
     sql_identifier_or_die( $db );
     return mysqli_query( $db_handle, "CREATE TABLE IF NOT EXISTS $db._dbutils_people_audit_utc_migrated (" // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
                                     . " migrated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
-                                    . " from_time_zone VARCHAR(64) NOT NULL )" );
+                                    . " from_time_zone VARCHAR(64) NOT NULL,"
+                                    . " system_time_zone VARCHAR(64) NULL,"
+                                    . " max_audit_id INT UNSIGNED NULL )" );
 }
 
 ## Writes the marker without attempting a conversion, for a dbinstance that
@@ -717,12 +739,94 @@ function create_people_audit_utc_migration_marker_table( $db_handle, $db ) {
 ## treats them as still needing conversion and shifts already-correct UTC
 ## rows. $note travels in the marker's own from_time_zone column (no
 ## conversion actually used a time zone here, so it is not a real one).
-function mark_people_audit_utc_migration_done( $db_handle, $db, $note ) {
+##
+## $max_audit_id records the highest people_audit.auditID this call
+## actually converted or confirmed already-UTC, for later audit -- null
+## when there was none (no table, or an empty one). system_time_zone
+## records @@system_time_zone alongside $note's session-level value, since
+## a session zone of 'SYSTEM' alone does not say which actual zone that
+## resolved to on this server.
+function mark_people_audit_utc_migration_done( $db_handle, $db, $note, $max_audit_id = null ) {
     sql_identifier_or_die( $db );
     create_people_audit_utc_migration_marker_table( $db_handle, $db );
-    $note_esc = mysqli_real_escape_string( $db_handle, $note );
-    mysqli_query( $db_handle, "INSERT INTO $db._dbutils_people_audit_utc_migrated ( from_time_zone )" // NOSONAR $db is validated above by sql_identifier_or_die(); $note_esc is mysqli_real_escape_string()'d
-                             . " VALUES ( '$note_esc' )" );
+
+    $note_esc   = mysqli_real_escape_string( $db_handle, $note );
+    $sys_res    = mysqli_query( $db_handle, "SELECT @@system_time_zone AS tz" );
+    $sys_row    = $sys_res ? mysqli_fetch_assoc( $sys_res ) : null;
+    $sys_tz_sql = ( $sys_row && $sys_row[ 'tz' ] !== '' )
+                ? "'" . mysqli_real_escape_string( $db_handle, $sys_row[ 'tz' ] ) . "'"
+                : 'NULL';
+    $max_id_sql = $max_audit_id === null ? 'NULL' : (int) $max_audit_id;
+
+    mysqli_query( $db_handle, "INSERT INTO $db._dbutils_people_audit_utc_migrated" // NOSONAR $db is validated above by sql_identifier_or_die(); $note_esc is mysqli_real_escape_string()'d
+                             . " ( from_time_zone, system_time_zone, max_audit_id )"
+                             . " VALUES ( '$note_esc', $sys_tz_sql, $max_id_sql )" );
+}
+
+## The highest people_audit.auditID that record_people_audit_utc_boundary()
+## saw already written the moment it ran, or null if nothing ever recorded
+## one here (stage2, migrate_people_audit_utc.php run standalone, or an
+## in-place host upgraded before uslims_upgrade.php recorded a boundary at
+## all). migrate_people_audit_created_at_to_utc() only converts rows at or
+## below this when it is set -- see the comment there for why.
+function people_audit_utc_boundary( $db_handle, $db ) {
+    sql_identifier_or_die( $db );
+    $has = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE '_dbutils_people_audit_utc_boundary'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+    if ( !$has || mysqli_num_rows( $has ) === 0 ) {
+        return null;
+    }
+    $res = mysqli_query( $db_handle, "SELECT auditID FROM $db._dbutils_people_audit_utc_boundary LIMIT 1" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+    $row = $res ? mysqli_fetch_assoc( $res ) : null;
+    return $row ? (int) $row[ 'auditID' ] : null;
+}
+
+## Captures, once, the highest people_audit.auditID that already exists --
+## so a later conversion can tell a row dbinst's already-upgraded code
+## wrote in UTC (auditID above this) from one still in local time (auditID
+## at or below it). Without this, every row written between dbinst's new
+## code going live and the conversion actually running gets shifted a
+## second time, landing it earlier than rows written before it (dbinst#75
+## round 10, confirmed +5h on a live edit). uslims_upgrade.php calls this
+## at step 0, before steps 1-8 run, which is the earliest point in a given
+## run it can -- narrowing the window to this run's own duration, not
+## closing it: the code could have already been live, writing rows, for
+## however long before this run started at all. Closing that larger window
+## needs dbinst itself to keep writing local time until the instance is
+## marked -- dbinst#75's own half of this item, not dbutils's. stage2 and
+## migrate_people_audit_utc.php never call this, so neither ever has a
+## boundary to apply, and their conversions still cover every row, which
+## is correct for both: stage2's rows all predate the fix by definition,
+## and the standalone script is for a host that upgraded before this
+## existed, with no earlier run of this script to have drawn one.
+##
+## Idempotent and permanent once set: a later call (a rerun after an
+## earlier FAILed step, or an --apply after an earlier --apply) must never
+## move the boundary forward, or rows written since the first call --
+## already correctly UTC -- would be misclassified as still needing
+## conversion. No-ops once the migration itself is done; nothing is left
+## to bound.
+function record_people_audit_utc_boundary( $db_handle, $db ) {
+    sql_identifier_or_die( $db );
+
+    if ( people_audit_utc_migration_done( $db_handle, $db ) ) {
+        return;
+    }
+    if ( people_audit_utc_boundary( $db_handle, $db ) !== null ) {
+        return;
+    }
+
+    $exists = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE 'people_audit'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+    $max_id = 0;
+    if ( $exists && mysqli_num_rows( $exists ) > 0 ) {
+        $max_res = mysqli_query( $db_handle, "SELECT COALESCE( MAX( auditID ), 0 ) AS max_id FROM $db.people_audit" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+        $max_row = $max_res ? mysqli_fetch_assoc( $max_res ) : null;
+        $max_id  = $max_row ? (int) $max_row[ 'max_id' ] : 0;
+    }
+
+    mysqli_query( $db_handle, "CREATE TABLE IF NOT EXISTS $db._dbutils_people_audit_utc_boundary (" // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+                             . " auditID INT UNSIGNED NOT NULL )" );
+    mysqli_query( $db_handle, "INSERT INTO $db._dbutils_people_audit_utc_boundary ( auditID )" // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+                             . " VALUES ( $max_id )" );
 }
 
 function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
@@ -754,6 +858,20 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
         # no marker and shift them.
         echo "$db.people_audit is empty; nothing to migrate to UTC\n";
         mark_people_audit_utc_migration_done( $db_handle, $db, 'n/a (table was empty)' );
+        return;
+    }
+
+    # A boundary of 0 means the table was empty when record_people_audit_utc_boundary()
+    # ran, so every row present now postdates it and is already UTC (same
+    # reasoning as the empty-table case just above) -- skip the UPDATE and
+    # the time-zone detection below entirely rather than run both for
+    # nothing, and risk a spurious "zone tables not loaded" warning over
+    # rows this would convert zero of anyway.
+    $boundary = people_audit_utc_boundary( $db_handle, $db );
+    if ( $boundary === 0 ) {
+        echo "$db.people_audit had no rows when the UTC boundary was recorded; all"
+           . " {$count_row['n']} row(s) present now postdate it and are already UTC\n";
+        mark_people_audit_utc_migration_done( $db_handle, $db, 'n/a (all rows postdate the recorded boundary)', 0 );
         return;
     }
 
@@ -796,9 +914,20 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
         }
     }
 
+    # Rows above the boundary (if one was recorded -- see
+    # record_people_audit_utc_boundary()) already existed after dbinst's
+    # own already-upgraded code could have started writing them in UTC, so
+    # converting them too would shift an already-correct row. $boundary is
+    # always an int here (people_audit_utc_boundary() casts it, or this
+    # function already returned above when it was exactly 0), so this is
+    # safe to interpolate directly.
+    $bound_clause = $boundary !== null ? " AND auditID <= $boundary" : '';
+
     $from_tz_esc = mysqli_real_escape_string( $db_handle, $from_tz );
     echo "Migrating $db.people_audit.created_at from '$from_tz' to UTC"
-       . " (" . $count_row[ 'n' ] . " row(s))\n";
+       . " (" . $count_row[ 'n' ] . " row(s)"
+       . ( $bound_clause !== '' ? ", up to auditID $boundary; later rows are presumed already UTC" : '' )
+       . ")\n";
 
     # '+00:00', not the named zone 'UTC': a named zone on EITHER side of
     # CONVERT_TZ() needs mysql.time_zone_name loaded, same as checked above
@@ -808,19 +937,19 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
     # NOT NULL column. A numeric offset needs no zone tables at all, on
     # either side, so this cannot happen here any more for a real
     # timestamp -- but the WHERE clause below still excludes any row where
-    # it would, rather than trust that: a NULL written to this NOT NULL
-    # column does not necessarily raise an error at all. Tested directly
-    # (MariaDB 10.3, no zone tables loaded): assigning CONVERT_TZ()'s NULL
-    # to this column -- which carries DEFAULT CURRENT_TIMESTAMP -- silently
-    # replaced the row's created_at with the UPDATE's own run time instead
-    # of erroring OR zeroing it, under STRICT_ALL_TABLES. Excluding the row
-    # from the UPDATE instead of writing to it and checking afterward is
-    # exact regardless of which silent substitution a given server version
-    # and sql_mode happens to make.
+    # it would, rather than let the UPDATE attempt it at all. Confirmed
+    # directly (MariaDB 10.3, no zone tables loaded, STRICT_ALL_TABLES):
+    # assigning CONVERT_TZ()'s NULL to this NOT NULL column raises
+    # ERROR 1048 and leaves that row's created_at unchanged -- not the
+    # silent run-time substitution originally suspected here. Either way,
+    # excluding the row up front rather than writing it and checking
+    # afterward is exact regardless of which failure mode a given server
+    # version and sql_mode actually produces.
     $cmd = "UPDATE $db.people_audit"
          . " SET created_at = CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' )"
          . " WHERE created_at != '0000-00-00 00:00:00'"
-         . "   AND CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' ) IS NOT NULL";
+         . "   AND CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' ) IS NOT NULL"
+         . $bound_clause;
     $res = mysqli_query( $db_handle, $cmd );
     if ( !$res ) {
         # Not error_exit(): stage2's caller has already dropped and
@@ -843,7 +972,8 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
     # did not anticipate.
     $unresolved_res = mysqli_query( $db_handle, // NOSONAR $db is validated above by sql_identifier_or_die(); $from_tz_esc is mysqli_real_escape_string()'d
         "SELECT COUNT(*) AS n FROM $db.people_audit WHERE created_at != '0000-00-00 00:00:00'"
-      . "   AND CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' ) IS NULL" );
+      . "   AND CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' ) IS NULL"
+      . $bound_clause );
     $unresolved_row = $unresolved_res ? mysqli_fetch_assoc( $unresolved_res ) : null;
     $unresolved = $unresolved_row ? (int) $unresolved_row[ 'n' ] : 0;
     if ( $unresolved > 0 ) {
@@ -851,9 +981,21 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
            . " '$from_tz' and were left unchanged -- verify by hand.\n";
     }
 
+    # $boundary when one was recorded (rows above it were never touched,
+    # so it is exactly the highest auditID this call could have converted);
+    # otherwise this converted every resolvable row, so the table's own
+    # current max is the same thing.
+    if ( $boundary !== null ) {
+        $max_audit_id = $boundary;
+    } else {
+        $max_res = mysqli_query( $db_handle, "SELECT MAX( auditID ) AS max_id FROM $db.people_audit" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+        $max_row = $max_res ? mysqli_fetch_assoc( $max_res ) : null;
+        $max_audit_id = ( $max_row && $max_row[ 'max_id' ] !== null ) ? (int) $max_row[ 'max_id' ] : null;
+    }
+
     # Marker travels with the dbinstance itself (see the function-level
     # comment above), so a later migration attempt against this same
     # dbinstance -- by either caller -- skips it instead of shifting
     # already-correct rows again.
-    mark_people_audit_utc_migration_done( $db_handle, $db, $from_tz );
+    mark_people_audit_utc_migration_done( $db_handle, $db, $from_tz, $max_audit_id );
 }

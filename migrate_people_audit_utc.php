@@ -136,6 +136,18 @@ foreach ( $targets as $label => $cfg ) {
         continue;
     }
 
+    ## Checked here, not left to migrate_people_audit_created_at_to_utc()'s
+    ## own sql_identifier_or_die(): that one is fatal, which in discovery
+    ## mode would stop this loop over one instance's malformed config and
+    ## skip every later one. (The explicit --db-name target is already
+    ## validated once, before $targets is even built, where a fatal error
+    ## is the right call -- there is only ever the one target to skip.)
+    if ( !is_sql_identifier( $cfg[ 'dbname' ] ) ) {
+        echo "[FAIL] $label: '{$cfg['dbname']}' is not a usable database name; convert people_audit by hand\n";
+        $failures++;
+        continue;
+    }
+
     $conn = @mysqli_connect( $cfg[ 'dbhost' ], $cfg[ 'dbusername' ], $cfg[ 'dbpasswd' ], $cfg[ 'dbname' ] );
     if ( !$conn ) {
         echo "[FAIL] $label: could not connect to {$cfg['dbname']}@{$cfg['dbhost']} as"
