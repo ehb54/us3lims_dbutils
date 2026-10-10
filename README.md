@@ -107,5 +107,5 @@
     - exports all dbinstances and record counts
   - stage2_import_dbinsts.php
     - drops dbinstance databases, creates new from latest us3_sql, imports stage1 exported data, compares record counts
-    - converts each dbinstance's people_audit.created_at from the exporting host's own session time zone to UTC, once, since every imported row predates the 4.3.0 fix that writes it as UTC directly; skipped (with a warning) if the time zone is a named zone and the server has no time zone tables loaded
+    - converts each dbinstance's people_audit.created_at to UTC from the stage2 connection's own session time zone (not the original exporting host's, which does not survive the export/import round trip), once per dbinstance -- a marker travels with the dbinstance itself so a later re-import does not shift already-correct rows again; skipped (with a warning) if the time zone is a named zone and the server has no time zone tables loaded
  

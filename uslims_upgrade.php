@@ -82,6 +82,10 @@ Steps
     configured; enforcing it is a later step
 8 : verifies the result, including that every active cluster passes the submission
     sizing gate rather than refusing every job
+9 : migrates each dbinstance's people_audit.created_at to UTC if not already done
+    (dbutils#52), using the running config.php (or overlay) each instance already
+    connects with -- idempotent, so a host dbupgrade/stage1+stage2 already migrated
+    is reported 'ok' here, not migrated again
 
 Undoing it
 
@@ -2278,8 +2282,16 @@ function gfac_runtime_table_create_privileged( array $grants ) {
         $privs = $m[ 1 ];
         $scope = $m[ 2 ];
         $on_gfac_or_global = (bool) preg_match( '/^(\*\.\*|`?gfac`?\.\*)$/i', $scope );
+        ## CREATE as its own comma-separated item, not a prefix: SHOW GRANTS
+        ## also lists "CREATE TEMPORARY TABLES", "CREATE VIEW", "CREATE
+        ## ROUTINE", etc. as separate, unrelated privileges, each starting
+        ## with the same word. \bCREATE\b matched those too, so an account
+        ## granted only one of them (never CREATE TABLE itself) looked
+        ## privileged to --check forever -- it would report a pending
+        ## change --apply could never actually make either.
         if ( $on_gfac_or_global
-             && ( preg_match( '/\bALL PRIVILEGES\b/i', $privs ) || preg_match( '/\bCREATE\b/i', $privs ) ) ) {
+             && ( preg_match( '/\bALL PRIVILEGES\b/i', $privs )
+                || preg_match( '/(?:^|,)\s*CREATE\s*(?:,|$)/i', $privs ) ) ) {
             return true;
         }
     }
@@ -2700,6 +2712,75 @@ if ( !$apply ) {
         } else {
             report( 'ok', "all $checked active cluster(s) pass the submission sizing gate" );
         }
+    }
+}
+
+step( "9. people_audit UTC migration" );
+
+## Unlike dbupgrade/stage2_import_dbinsts.php (which imports a 4.2.0
+## dbinstance wholesale onto a new host), this upgrade runs against the
+## dbinstance(s) already serving pages on THIS host -- so this reuses the
+## same migrate_people_audit_created_at_to_utc() (utility.php), idempotent
+## via a marker table inside each dbinstance, safe to run here whether or
+## not stage1/stage2 already ran against it.
+##
+## No new credentials: each instance's own already-running config.php (or,
+## for one migrated under the per-instance config layout, its overlay --
+## same detection uslims_domain_info.php's instance_overlay() uses) already
+## has everything needed. A dbinstance that could not connect with its own
+## config would not be serving pages, so this connects with exactly what
+## the site itself depends on, never root or a separate db_config.php.
+$instance_configs = [];
+if ( is_file( "$wwwpath/uslims3/config.php" ) ) {
+    ## Single-tenant: one instance, directly under uslims3/.
+    $instance_configs[ 'default' ] = "$wwwpath/uslims3/config.php";
+}
+foreach ( glob( "$wwwpath/uslims3/*/config.php" ) ?: [] as $instpath ) {
+    $instance_configs[ basename( dirname( $instpath ) ) ] = $instpath;
+}
+
+if ( !$instance_configs ) {
+    report( 'note', "no $wwwpath/uslims3 config.php found; nothing to migrate" );
+} else {
+    foreach ( $instance_configs as $label => $instpath ) {
+        $contents     = @file_get_contents( $instpath );
+        $overlay_path = "$us3_home/lims/etc/config/instances/$label.php";
+        $real_path    = ( $contents !== false && strpos( $contents, 'us3_dbinst_config_bootstrap' ) !== false
+                           && is_file( $overlay_path ) )
+                       ? $overlay_path : $instpath;
+
+        $cfg = config_vars( $real_path, $cfg_why );
+        if ( $cfg === null
+             || !isset( $cfg[ 'dbname' ], $cfg[ 'dbhost' ], $cfg[ 'dbusername' ], $cfg[ 'dbpasswd' ] ) ) {
+            report( 'note', "$label: could not read database settings from $real_path"
+                  . ( isset( $cfg_why ) && $cfg_why !== '' ? ' (' . reason( $cfg_why ) . ')' : '' )
+                  . "; convert people_audit by hand" );
+            continue;
+        }
+
+        $conn = @mysqli_connect( $cfg[ 'dbhost' ], $cfg[ 'dbusername' ], $cfg[ 'dbpasswd' ], $cfg[ 'dbname' ] );
+        if ( !$conn ) {
+            report( 'FAIL', "$label: could not connect to {$cfg['dbname']}@{$cfg['dbhost']} as"
+                  . " {$cfg['dbusername']}: " . reason( mysqli_connect_error() ) );
+            continue;
+        }
+
+        $marker = mysqli_query( $conn, "SHOW TABLES IN {$cfg['dbname']} LIKE '_dbutils_people_audit_utc_migrated'" );
+        if ( $marker && mysqli_num_rows( $marker ) > 0 ) {
+            report( 'ok', "$label ({$cfg['dbname']}): people_audit already migrated to UTC" );
+        } else {
+            report( 'todo', "$label ({$cfg['dbname']}): migrate people_audit.created_at to UTC" );
+            if ( $apply ) {
+                ob_start();
+                migrate_people_audit_created_at_to_utc( $conn, $cfg[ 'dbname' ] );
+                $out = trim( ob_get_clean() );
+                foreach ( $out !== '' ? explode( "\n", $out ) : [] as $line ) {
+                    echo "    $line\n";
+                }
+                $changes++;
+            }
+        }
+        mysqli_close( $conn );
     }
 }
 
