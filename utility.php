@@ -94,6 +94,20 @@ function error_exit( $msg ) {
     exit(-1);
 }
 
+## A database/table identifier cannot be bound as a prepared-statement
+## placeholder the way a value can, so a function that has to interpolate
+## one into SQL (SHOW TABLES IN, a dbname.table prefix, ...) validates it
+## against this whitelist first instead. Deliberately permissive of what a
+## real MySQL identifier allows (a leading digit, for one) and restrictive
+## only of what would let the interpolated text escape the identifier
+## position it is placed in.
+function sql_identifier_or_die( $value, $what = 'database name' ) {
+    if ( !is_string( $value ) || !preg_match( '/^[A-Za-z0-9_$]+$/', $value ) ) {
+        error_exit( "not a valid $what: " . var_export( $value, true ) );
+    }
+    return $value;
+}
+
 ## Run a command, keeping its stderr separate from its stdout. Returns
 ## [ stdout, stderr, exit status ] so a caller can report why a command
 ## failed rather than only that it produced nothing.
@@ -126,9 +140,13 @@ function config_vars( $file, &$why = null ) {
         return $vars;
     }
     ## Distinguish a fatal in the config, a non-zero exit and unparseable output.
-    $why = $err !== '' ? $err
-         : ( $rc !== 0 ? "php exited $rc with no message"
-                       : 'the config produced no readable variables: ' . json_last_error_msg() );
+    if ( $err !== '' ) {
+        $why = $err;
+    } elseif ( $rc !== 0 ) {
+        $why = "php exited $rc with no message";
+    } else {
+        $why = 'the config produced no readable variables: ' . json_last_error_msg();
+    }
     return null;
 }
 
@@ -667,15 +685,28 @@ function squash($array, $prefix = '') {
 # inside the dbinstance itself (not metadata, not a file) so it is correct
 # either way and travels automatically with any future export/import of
 # this same dbinstance.
+## Whether $db's people_audit was already migrated by a previous call,
+## from either caller. Pulled out of migrate_people_audit_created_at_to_utc()
+## so uslims_upgrade.php step 9 and migrate_people_audit_utc.php can decide
+## their own 'ok' vs 'todo' reporting without duplicating this query (each
+## used to run it a second time, inline, before ever calling the migration
+## function at all).
+function people_audit_utc_migration_done( $db_handle, $db ) {
+    sql_identifier_or_die( $db );
+    $marker = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE '_dbutils_people_audit_utc_migrated'" );
+    return $marker && mysqli_num_rows( $marker ) > 0;
+}
+
 function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
+    sql_identifier_or_die( $db );
+
     $exists = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE 'people_audit'" );
     if ( !$exists || mysqli_num_rows( $exists ) === 0 ) {
         # Predates the audit feature entirely; nothing to migrate.
         return;
     }
 
-    $marker = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE '_dbutils_people_audit_utc_migrated'" );
-    if ( $marker && mysqli_num_rows( $marker ) > 0 ) {
+    if ( people_audit_utc_migration_done( $db_handle, $db ) ) {
         echo "$db.people_audit was already migrated to UTC previously; skipping\n";
         return;
     }

@@ -2,7 +2,7 @@
 
 $self = __FILE__;
 
-require "utility.php";
+require_once "utility.php";
 
 ## Same defaults uslims_upgrade.php and uslims_domain_info.php use.
 $wwwpath  = "/srv/www/htdocs";
@@ -111,6 +111,12 @@ $explicit_given   = array_filter( $explicit_target, function ( $v ) { return $v 
 if ( $explicit_given && count( $explicit_given ) !== 4 ) {
     error_exit( "--db-host, --db-name, --db-user and --db-pass must be given together, not some of them\n\n$notes" );
 }
+if ( $explicit_given ) {
+    ## Validated here too, not only inside the functions this reaches: a
+    ## malformed --db-name otherwise reaches mysqli_connect() first and
+    ## fails as an uncaught exception instead of this script's own error.
+    sql_identifier_or_die( $db_name, '--db-name' );
+}
 
 ## [ label => [ 'dbname'|'dbhost'|'dbusername'|'dbpasswd' => ... ] | [ 'error' => string ] ]
 $targets = $explicit_given
@@ -138,8 +144,7 @@ foreach ( $targets as $label => $cfg ) {
         continue;
     }
 
-    $marker = mysqli_query( $conn, "SHOW TABLES IN {$cfg['dbname']} LIKE '_dbutils_people_audit_utc_migrated'" );
-    if ( $marker && mysqli_num_rows( $marker ) > 0 ) {
+    if ( people_audit_utc_migration_done( $conn, $cfg[ 'dbname' ] ) ) {
         echo "[ok] $label ({$cfg['dbname']}): people_audit already migrated to UTC\n";
     } elseif ( !$apply ) {
         echo "[todo] $label ({$cfg['dbname']}): would migrate people_audit.created_at to UTC"

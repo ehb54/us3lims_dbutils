@@ -2717,8 +2717,7 @@ if ( !$instance_configs ) {
             continue;
         }
 
-        $marker = mysqli_query( $conn, "SHOW TABLES IN {$cfg['dbname']} LIKE '_dbutils_people_audit_utc_migrated'" );
-        if ( $marker && mysqli_num_rows( $marker ) > 0 ) {
+        if ( people_audit_utc_migration_done( $conn, $cfg[ 'dbname' ] ) ) {
             report( 'ok', "$label ({$cfg['dbname']}): people_audit already migrated to UTC" );
         } else {
             report( 'todo', "$label ({$cfg['dbname']}): migrate people_audit.created_at to UTC" );
