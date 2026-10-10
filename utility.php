@@ -697,24 +697,63 @@ function people_audit_utc_migration_done( $db_handle, $db ) {
     return $marker && mysqli_num_rows( $marker ) > 0;
 }
 
+## Pulled out so stage2_import_dbinsts.php can create this table right after
+## loading us3.sql into a freshly (re)created dbinstance, BEFORE importing
+## that dbinstance's data dump -- see the long comment at the call site for
+## why: the dump can contain a row for this table that otherwise has
+## nowhere to land.
+function create_people_audit_utc_migration_marker_table( $db_handle, $db ) {
+    sql_identifier_or_die( $db );
+    return mysqli_query( $db_handle, "CREATE TABLE IF NOT EXISTS $db._dbutils_people_audit_utc_migrated (" // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+                                    . " migrated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                                    . " from_time_zone VARCHAR(64) NOT NULL )" );
+}
+
+## Writes the marker without attempting a conversion, for a dbinstance that
+## currently has nothing pre-UTC to convert (no people_audit table yet, or
+## one with no rows). Without this, such an instance is indistinguishable
+## from one that was never checked at all, so a later run -- once rows have
+## since been written here, by 4.3.0's own always-UTC write_audit_row() --
+## treats them as still needing conversion and shifts already-correct UTC
+## rows. $note travels in the marker's own from_time_zone column (no
+## conversion actually used a time zone here, so it is not a real one).
+function mark_people_audit_utc_migration_done( $db_handle, $db, $note ) {
+    sql_identifier_or_die( $db );
+    create_people_audit_utc_migration_marker_table( $db_handle, $db );
+    $note_esc = mysqli_real_escape_string( $db_handle, $note );
+    mysqli_query( $db_handle, "INSERT INTO $db._dbutils_people_audit_utc_migrated ( from_time_zone )" // NOSONAR $db is validated above by sql_identifier_or_die(); $note_esc is mysqli_real_escape_string()'d
+                             . " VALUES ( '$note_esc' )" );
+}
+
 function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
     sql_identifier_or_die( $db );
-
-    $exists = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE 'people_audit'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
-    if ( !$exists || mysqli_num_rows( $exists ) === 0 ) {
-        # Predates the audit feature entirely; nothing to migrate.
-        return;
-    }
 
     if ( people_audit_utc_migration_done( $db_handle, $db ) ) {
         echo "$db.people_audit was already migrated to UTC previously; skipping\n";
         return;
     }
 
+    $exists = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE 'people_audit'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+    if ( !$exists || mysqli_num_rows( $exists ) === 0 ) {
+        # Predates the audit feature entirely; nothing to migrate, but mark
+        # it anyway -- if people_audit is added later, every row written
+        # from then on is already UTC (4.3.0's write_audit_row()), so there
+        # is still nothing a future run should ever convert here.
+        echo "$db has no people_audit table; nothing to migrate to UTC\n";
+        mark_people_audit_utc_migration_done( $db_handle, $db, 'n/a (no people_audit table)' );
+        return;
+    }
+
     $count_res = mysqli_query( $db_handle, "SELECT COUNT(*) AS n FROM $db.people_audit" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
     $count_row = $count_res ? mysqli_fetch_assoc( $count_res ) : null;
     if ( !$count_row || (int) $count_row[ 'n' ] === 0 ) {
+        # Empty now, but not forever: every row written here from this
+        # point on is already UTC, so this instance is just as "done" as
+        # one that genuinely had pre-UTC rows converted. Without marking
+        # it, the next run (once it has 4.3.0-written UTC rows) would see
+        # no marker and shift them.
         echo "$db.people_audit is empty; nothing to migrate to UTC\n";
+        mark_people_audit_utc_migration_done( $db_handle, $db, 'n/a (table was empty)' );
         return;
     }
 
@@ -816,9 +855,5 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
     # comment above), so a later migration attempt against this same
     # dbinstance -- by either caller -- skips it instead of shifting
     # already-correct rows again.
-    mysqli_query( $db_handle, "CREATE TABLE IF NOT EXISTS $db._dbutils_people_audit_utc_migrated (" // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
-                             . " migrated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
-                             . " from_time_zone VARCHAR(64) NOT NULL )" );
-    mysqli_query( $db_handle, "INSERT INTO $db._dbutils_people_audit_utc_migrated ( from_time_zone )" // NOSONAR $db is validated above by sql_identifier_or_die(); $from_tz_esc is mysqli_real_escape_string()'d
-                             . " VALUES ( '$from_tz_esc' )" );
+    mark_people_audit_utc_migration_done( $db_handle, $db, $from_tz );
 }

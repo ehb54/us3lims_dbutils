@@ -259,6 +259,23 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
             }
         }
 
+        # us3.sql, just loaded above, does not define this table -- it is
+        # created by migrate_people_audit_created_at_to_utc() itself, inside
+        # whichever dbinstance a previous run of THIS instance already
+        # migrated. Stage1's data dump is data-only (--no-create-info) and
+        # dumps every table the source dbinstance actually has, so a
+        # dbinstance already migrated before this export carries a row for
+        # this table in its dump -- and the import below has nowhere to put
+        # it unless the table exists here first. Without this, that INSERT
+        # fails against a table that does not exist, after every dbinstance
+        # in this run has already been dropped: the import stops here,
+        # mid-list, with this (and every later) dbinstance simply gone.
+        # Creating it now, before the import, costs nothing for a
+        # dbinstance that was never migrated (its dump has no row for a
+        # table it never had either).
+        check_db();
+        create_people_audit_utc_migration_marker_table( $db_handle, $db );
+
         $cmds = [
     "$uncompresswith $sqldata | mysql --defaults-file=$cwd/my.cnf -u root $db"
     ,"mysql --defaults-file=$cwd/my.cnf -u root $db < export-$use_dbhost-$db-autoincrements.sql"
