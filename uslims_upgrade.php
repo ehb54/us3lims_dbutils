@@ -2299,8 +2299,16 @@ function gfac_runtime_table_create_privileged( array $grants ) {
         $privs = $m[ 1 ];
         $scope = $m[ 2 ];
         $on_gfac_or_global = (bool) preg_match( '/^(\*\.\*|`?gfac`?\.\*)$/i', $scope );
+        ## CREATE as its own comma-separated item, not a prefix: SHOW GRANTS
+        ## also lists "CREATE TEMPORARY TABLES", "CREATE VIEW", "CREATE
+        ## ROUTINE", etc. as separate, unrelated privileges, each starting
+        ## with the same word. \bCREATE\b matched those too, so an account
+        ## granted only one of them (never CREATE TABLE itself) looked
+        ## privileged to --check forever -- it would report a pending
+        ## change --apply could never actually make either.
         if ( $on_gfac_or_global
-             && ( preg_match( '/\bALL PRIVILEGES\b/i', $privs ) || preg_match( '/\bCREATE\b/i', $privs ) ) ) {
+             && ( preg_match( '/\bALL PRIVILEGES\b/i', $privs )
+                || preg_match( '/(?:^|,)\s*CREATE\s*(?:,|$)/i', $privs ) ) ) {
             return true;
         }
     }
