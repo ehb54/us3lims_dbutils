@@ -66,6 +66,76 @@ require "../utility.php";
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
+# A 4.2.0 host's people_audit.created_at was written from the column's own
+# DEFAULT CURRENT_TIMESTAMP, which is this connection's session time zone --
+# not necessarily UTC. 4.3.0's write_audit_row() writes UTC_TIMESTAMP()
+# explicitly instead, so a dbinstance imported here is still carrying every
+# pre-upgrade row in whatever local zone the 4.2.0 host's MySQL session used.
+# This import is the one point in this row's life where every single row
+# in the table is known to predate that fix (the new code has not run
+# against this data yet), so converting the whole table once, here, is
+# exact -- unlike a live migration against a running 4.3.0 host, where some
+# rows could already be correctly in UTC and must not be shifted again.
+function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
+    $exists = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE 'people_audit'" );
+    if ( !$exists || mysqli_num_rows( $exists ) === 0 ) {
+        # Predates the audit feature entirely; nothing to migrate.
+        return;
+    }
+
+    $count_res = mysqli_query( $db_handle, "SELECT COUNT(*) AS n FROM $db.people_audit" );
+    $count_row = $count_res ? mysqli_fetch_assoc( $count_res ) : null;
+    if ( !$count_row || (int) $count_row[ 'n' ] === 0 ) {
+        echo "$db.people_audit is empty; nothing to migrate to UTC\n";
+        return;
+    }
+
+    # The exporting host's own session time zone, not a value this script
+    # guesses or hardcodes: 'SYSTEM' (the common default) defers to the
+    # OS's own tz rules via CONVERT_TZ, so DST in the historical data is
+    # still handled correctly without needing mysql.time_zone_* loaded.
+    $tz_res  = mysqli_query( $db_handle, "SELECT @@session.time_zone AS tz" );
+    $tz_row  = $tz_res ? mysqli_fetch_assoc( $tz_res ) : null;
+    $from_tz = ( $tz_row && $tz_row[ 'tz' ] !== '' ) ? $tz_row[ 'tz' ] : 'SYSTEM';
+
+    # A named zone (e.g. 'America/Chicago') needs mysql.time_zone_name
+    # loaded (mysql_tzinfo_to_sql) to resolve; 'SYSTEM' does not. Rather
+    # than let CONVERT_TZ() silently return NULL into a NOT NULL column
+    # (which errors the UPDATE, but only after telling the operator nothing
+    # useful), check up front and skip loudly instead.
+    if ( $from_tz !== 'SYSTEM' ) {
+        $loaded = mysqli_query( $db_handle, "SELECT 1 FROM mysql.time_zone_name LIMIT 1" );
+        if ( !$loaded || mysqli_num_rows( $loaded ) === 0 ) {
+            echo "WARNING: $db.people_audit: session time_zone is '$from_tz' but"
+               . " mysql.time_zone_name is not loaded on this server (run"
+               . " mysql_tzinfo_to_sql); skipping the UTC migration for $db --"
+               . " convert it by hand once the time zone tables are loaded.\n";
+            return;
+        }
+    }
+
+    $from_tz_esc = mysqli_real_escape_string( $db_handle, $from_tz );
+    echo "Migrating $db.people_audit.created_at from '$from_tz' to UTC"
+       . " (" . $count_row[ 'n' ] . " row(s))\n";
+
+    $cmd = "UPDATE $db.people_audit"
+         . " SET created_at = CONVERT_TZ( created_at, '$from_tz_esc', 'UTC' )";
+    $res = mysqli_query( $db_handle, $cmd );
+    if ( !$res ) {
+        error_exit( "db query failed : $cmd\ndb query error: " . mysqli_error( $db_handle ) );
+    }
+
+    # CONVERT_TZ() returns NULL for any row it cannot resolve rather than
+    # failing the query outright; the column's NOT NULL constraint would
+    # catch that as an error above in practice, but affected_rows below
+    # confirms every row was actually touched, not silently left alone.
+    $affected = mysqli_affected_rows( $db_handle );
+    if ( $affected !== (int) $count_row[ 'n' ] ) {
+        echo "WARNING: $db.people_audit: expected to convert " . $count_row[ 'n' ]
+           . " row(s) but $affected were reported changed -- verify by hand.\n";
+    }
+}
+
 # main
 
 $myconf = "my.cnf";
@@ -266,6 +336,9 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
                 echo "command returns: $res\n";
             }
         }
+
+        check_db();
+        migrate_people_audit_created_at_to_utc( $db_handle, $db );
     }
 }
 

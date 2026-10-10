@@ -79,7 +79,9 @@ Steps
     advisory pilot table, common#31 -- optional, pilot-scoped; a missing SQL
     file or no CREATE privilege is a note here, not a failure)
 6 : removes the gridctl cron entries (gridctl.php, and the gridctl_pro/dev names before it)
-7 : verifies the result, including that every active cluster passes the submission
+7 : installs the Content-Security-Policy as Report-Only unless a policy is already
+    configured; enforcing it is a later step
+8 : verifies the result, including that every active cluster passes the submission
     sizing gate rather than refusing every job
 
 Undoing it
@@ -96,7 +98,11 @@ To roll back, with the services stopped:
      you are going back to a release that still expects the sweep;
   4. the circuit-breaker directory, the ssh-control directory, and elog.txt/
      elog_hmac_key's ownership and mode can all stay: unused or already-correct,
-     none of them changes anything left alone.
+     none of them changes anything left alone;
+  5. remove step 7's installed policy, /etc/httpd/conf.d/lims-csp.conf or
+     /etc/apache2/conf-available/lims-csp.conf (Debian: "a2disconf lims-csp"
+     first), and reload Apache -- step 7 never backs this one up, since it is
+     new, not rewritten.
 
 Nothing else to undo in the database: this script never touches the schema or any
 job row, with one exception -- step 5's gfac.runtime_prediction (see step 5 above),
@@ -1464,8 +1470,10 @@ if ( $gc === null ) {
 ## The breaker directory belongs to remote_exec, which reads
 ## $global_circuit_breaker_dir and only falls back to us3's home. Recomputing the
 ## default here would create one directory and verify it while the web tier and
-## the daemons used another: step 5 would report it created, step 7 would report
-## it writable, and neither statement would be about the directory in use.
+## the daemons used another: step 5 would report it created, step 8 (Verify)
+## would report it writable, and neither statement would be about the
+## directory in use. Step 8, not step 7: this PR added the CSP step as step 7,
+## shifting Verify down from its old number.
 $configured_breaker = isset( $gc[ 'global_circuit_breaker_dir' ] )
                       ? trim( (string) $gc[ 'global_circuit_breaker_dir' ] ) : '';
 if ( $configured_breaker !== '' ) {
@@ -2433,9 +2441,151 @@ if ( !$old_crons ) {
     report( 'ok', "no crontab drives gridctl" );
 }
 
-## ------------------------------------------------------------- 7. verify
+## Joins a backslash-continued directive ("Header set \\\nContent-Security-
+## Policy ...") onto one line, so a single-line match can see both halves.
+## \r?\n, not just \n: a file with CRLF line endings (which Apache accepts)
+## left the \r stuck to the end of the first half otherwise, so the join
+## never matched and a continued directive already installed was reported
+## as a fresh one to install. Pure, so this is testable without a real file.
+function csp_join_continued_directive( $contents ) {
+    return preg_replace( '/\\\\\r?\n/', ' ', (string) $contents );
+}
 
-step( "7. Verify" );
+## Does this one Apache config line actually install a Content-Security-Policy
+## header (as opposed to merely mentioning the phrase)? Pure, so the
+## "add/append/merge/setifempty install one too, not just set" fix and the
+## "unset/comment/mention do not" exclusions are each pinned down by a real
+## test instead of only ever exercised against whatever happens to be on a
+## test host's live Apache config.
+function csp_header_line_installs_policy( $line ) {
+    ## (always|onsuccess)?: Header's own optional condition keyword. ["']? before the
+    ## header name: a quoted header name ('Header set "Content-Security-
+    ## Policy" ...') wasn't recognised either. The caller joins a backslash-
+    ## continued directive onto one line first, so that case needs no change
+    ## here.
+    return (bool) preg_match(
+        '/^\s*Header\s+(always\s+|onsuccess\s+)?(set|add|append|merge|setifempty)\s+["\']?Content-Security-Policy\b/i',
+        $line
+    );
+}
+
+## ------------------------------------------------------------- 7. Content-Security-Policy
+
+## The pages are written for util/csp's policy. It goes in Report-Only, which
+## blocks nothing and logs each violation through /csp-report.php; enforcing it is
+## a later, deliberate change once that log is quiet (util/csp/README.md).
+step( "7. Content-Security-Policy (Report-Only)" );
+
+$csp_policy = __DIR__ . '/util/csp/csp-report-only.conf';
+if ( is_dir( '/etc/httpd/conf.d' ) ) {
+    $apache = [ 'root' => '/etc/httpd', 'conf' => '/etc/httpd/conf.d/lims-csp.conf',
+                'enable' => '', 'disable' => '', 'service' => 'httpd' ];
+} elseif ( is_dir( '/etc/apache2/conf-available' ) ) {
+    $apache = [ 'root' => '/etc/apache2', 'conf' => '/etc/apache2/conf-available/lims-csp.conf',
+                'enable' => 'a2enconf -q lims-csp', 'disable' => 'a2disconf -q lims-csp', 'service' => 'apache2' ];
+} else {
+    $apache = null;
+}
+
+if ( $apache === null ) {
+    report( 'FAIL', "no Apache configuration directory (/etc/httpd/conf.d or /etc/apache2/conf-available)" );
+} elseif ( !is_file( $csp_policy ) ) {
+    report( 'FAIL', "policy not found: $csp_policy (update dbutils first)" );
+} else {
+    ## Any existing policy, Report-Only or enforced (an Ansible install enforces), is left as is.
+    ##
+    ## Apache's own list of files it actually loads (httpd -t -D DUMP_INCLUDES /
+    ## apache2ctl -t -D DUMP_INCLUDES), not a directory walk. A directory walk
+    ## has to choose a root, and either choice is wrong: conf-enabled alone (the
+    ## original fix here) misses a policy set directly in sites-enabled or
+    ## apache2.conf on Debian; the whole root instead, to catch those, means
+    ## recursing with -R (not -r: GNU grep's -r does not follow the symlinks
+    ## conf-enabled holds, which is the bug -R alone was added to fix) --
+    ## which on EL8 also follows conf.d's own logs/state symlinks straight into
+    ## /var/log/httpd and /var/lib/httpd. A large log file merely mentioning the
+    ## header (mod_security's audit log, a LogFormat with %{...}o) then gets
+    ## read whole into PHP and silently kills the run (reproduced: a 300MB
+    ## error_log, exit 255 on PHP 7.2). DUMP_INCLUDES is exactly the set Apache
+    ## itself resolved and actually loads, on either distro, with none of that.
+    $dump_cmd = $apache[ 'service' ] === 'apache2' ? 'apache2ctl' : 'httpd';
+    ## No 2>&1: capture() already separates the streams, and merging them
+    ## here buried a real "Syntax error on line..." after DUMP_INCLUDES'
+    ## own (successful) stdout listing, which reason() then truncated to
+    ## its first 200 characters -- showing the include list, not the error.
+    list( $dump_out, $dump_err, $dump_rc ) = capture( "$dump_cmd -t -D DUMP_INCLUDES" );
+    ## A non-zero exit here now FAILs outright rather than falling back to a
+    ## directory walk. The walk used to run for this
+    ## exact case too, on the theory that DUMP_INCLUDES might simply be
+    ## unsupported -- but both target distros support it, so in practice
+    ## this only ever means Apache's own config is already broken, which the
+    ## walk then masked with a worse failure mode: recursing a whole config
+    ## root with -R follows conf.d's own logs/state symlinks on EL8 straight
+    ## into /var/log/httpd, and a large log file merely mentioning the
+    ## header (mod_security's audit log, a LogFormat with %{...}o) silently
+    ## kills the run reading it whole into PHP (reproduced: a 300MB
+    ## error_log, exit 255 on PHP 7.2) -- while also reporting the wrong
+    ## cause (the stale DUMP_INCLUDES file listing, not Apache's real error)
+    ## and, on the same broken config, mod_headers reads as not loaded too,
+    ## so the run rolls back claiming "Apache rejected the policy" when
+    ## Apache was never configured correctly to begin with.
+    if ( $dump_rc !== 0 ) {
+        report( 'FAIL', "$dump_cmd -t -D DUMP_INCLUDES failed; fix Apache's configuration first: "
+                       . reason( $dump_err !== '' ? $dump_err : $dump_out ) );
+    } else {
+        $csp_files = [];
+        foreach ( explode( "\n", $dump_out ) as $line ) {
+            if ( preg_match( '#^\s*\(\S+\)\s+(/\S+)#', $line, $m ) ) {
+                $csp_files[] = $m[ 1 ];
+            }
+        }
+        ## Only a line that isn't a comment and actually sends the header, not
+        ## merely names it: grep alone also matched a site note, a commented-out
+        ## directive, or "Header unset Content-Security-Policy" (which removes the
+        ## header rather than setting one, so it is not a policy to leave alone).
+        $csp_found = [];
+        foreach ( $csp_files as $file ) {
+            $joined = csp_join_continued_directive( @file_get_contents( $file ) );
+            foreach ( explode( "\n", $joined ) as $line ) {
+                if ( csp_header_line_installs_policy( $line ) ) {
+                    $csp_found[] = $file;
+                    break;
+                }
+            }
+        }
+        if ( $csp_found ) {
+            report( 'ok', "a Content-Security-Policy is already configured (" . implode( ', ', $csp_found ) . "); left as is" );
+        } else {
+            report( 'todo', "install the Report-Only policy for $wwwpath as {$apache['conf']}" );
+            if ( $apply && confirm( "Install the Report-Only Content-Security-Policy and reload {$apache['service']}?" ) ) {
+                write_file( $apache[ 'conf' ], "## Installed by uslims_upgrade.php from util/csp/csp-report-only.conf.\n"
+                            . "<Directory \"$wwwpath\">\n" . file_get_contents( $csp_policy ) . "\n</Directory>\n", false );
+                if ( $apache[ 'enable' ] !== '' ) {
+                    capture( $apache[ 'enable' ] );
+                }
+                list( $t_out, $t_err, $t_rc ) = capture( 'apachectl configtest' );
+                if ( $t_rc !== 0 ) {
+                    if ( $apache[ 'disable' ] !== '' ) {
+                        capture( $apache[ 'disable' ] );
+                    }
+                    @unlink( $apache[ 'conf' ] );
+                    report( 'FAIL', "Apache rejected the policy, so it was removed: " . reason( $t_err !== '' ? $t_err : $t_out ) );
+                } else {
+                    list( $r_out, $r_err, $r_rc ) = capture( 'systemctl reload ' . $apache[ 'service' ] );
+                    report( $r_rc === 0 ? 'done' : 'FAIL', "Report-Only policy installed"
+                            . ( $r_rc === 0 ? "; {$apache['service']} reloaded" : "; reload {$apache['service']} by hand: " . reason( $r_err ) ) );
+                }
+            }
+        }
+        list( $mods ) = capture( 'apachectl -M' );
+        if ( strpos( $mods, 'headers_module' ) === false ) {
+            report( 'note', "mod_headers is not loaded, so Apache sends no CSP header; enable it" );
+        }
+    }
+}
+
+## ------------------------------------------------------------- 8. verify
+
+step( "8. Verify" );
 
 ## These checks describe the upgraded host, so on a dry run they would all fail
 ## by construction. Their outcome is only meaningful once the changes are in.

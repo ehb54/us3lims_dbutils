@@ -46,7 +46,8 @@
      4. records the host key for each active cluster and any cluster named with --activate that isn't active yet, and checks ssh for us3 and the web account (the PHP-FPM pool user); authorizes an account's own key too, but only for the host's own local cluster -- a remote cluster still needs that account's key created if missing and authorized for login by hand, which --activate's own message says when it applies
      5. creates the shared circuit-breaker directory, the shared ssh-control directory (common#24), elog.txt and its HMAC key (dbinst#75, shared from the start so a split web/us3 account host does not depend on whichever account touches them first), and the gfac.runtime_prediction table the runtime-advisory pilot uses if it is ever turned on
      6. removes the gridctl cron entries from the crontabs (us3's, /etc/crontab, /etc/cron.d), under gridctl.php and the gridctl_pro/dev names before it, since each job's jobmonitor now carries it to a terminal state
-     7. verifies the result
+     7. installs the util/csp policy as Report-Only in Apache (lims-csp.conf) unless a policy is already configured; enforcing it is a later step
+     8. verifies the result
    - ```--activate cluster[,cluster]``` brings a converted entry live: sets active=true in global_config.php and turns on its cluster_config.php probe, together, once its env_script_lines are real and ssh to it succeeds (as us3, and as the web account if different). --activate checks ssh before step 4, which records the host key (and, for the host's own cluster, authorizes the key). So the first --apply --activate for a cluster records its host key, and the next one activates it -- not only for a cluster converted in this very run, but any cluster whose host key is not recorded yet. For a remote cluster, authorize the account's own key on the cluster by hand first; step 4 only ever records that cluster's host key, never authorizes this account's key on the far end
    - dry run by default; ```php uslims_upgrade.php --apply``` makes the changes, backing up each file first; safe to rerun
  - uslims_git_info.php
@@ -106,4 +107,5 @@
     - exports all dbinstances and record counts
   - stage2_import_dbinsts.php
     - drops dbinstance databases, creates new from latest us3_sql, imports stage1 exported data, compares record counts
+    - converts each dbinstance's people_audit.created_at from the exporting host's own session time zone to UTC, once, since every imported row predates the 4.3.0 fix that writes it as UTC directly; skipped (with a warning) if the time zone is a named zone and the server has no time zone tables loaded
  
