@@ -58,6 +58,10 @@ $tables = [];
 while( $row = mysqli_fetch_array($res) ) {
     $tables[] = $row[ "Tables_in_$lims_db" ];
 }
+# dbutils' own bookkeeping tables, not part of the dbinstance's schema --
+# listing their counts here reads as a diff against an unmigrated instance's
+# export even though nothing about the actual data differs.
+$tables = array_values( array_diff( $tables, dbutils_owned_tables() ) );
 # debug_json( "tables", $tables);
 
 foreach ( $tables as $k => $v ) {

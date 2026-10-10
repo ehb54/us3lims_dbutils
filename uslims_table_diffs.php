@@ -112,6 +112,13 @@ $db_tables = [];
 while( $row = mysqli_fetch_array($res) ) {
     $db_tables[ $row[ "Tables_in_$use_dbname" ] ] = 1;
 }
+# dbutils' own bookkeeping tables are never in schema_rev#.sql and never
+# should be -- without excluding them here, --only-extras reports them as
+# extra and a caller (dbmigrate's stage2_export_databases.php) drops them
+# during a host migration, losing the migration's own idempotency marker.
+foreach ( dbutils_owned_tables() as $owned_table ) {
+    unset( $db_tables[ $owned_table ] );
+}
 
 $in_schema_not_db = [];
 $in_db_not_schema = [];
