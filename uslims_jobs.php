@@ -1285,13 +1285,15 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## top-level name is asked for too in case a layout ever puts it there,
     ## same order gridctl's own fetch tries them in (jobmonitor/cleanup.php's
     ## $tar_candidates). Asking for both is harmless either way.
+    ## These all sit directly in $rundir, which exists from submission
+    ## onward, so --ignore-missing-args below cleanly covers every one that
+    ## simply isn't there yet.
     $getfiles = [
         "us3.slurm"
         ,$inputfile
         ,"stdout"
         ,"stderr"
         ,"analysis-results.tar"
-        ,"output/analysis-results.tar"
         ];
 
     ## $login and $rundir are quoted; the resulting runuser -c argument is
@@ -1315,6 +1317,22 @@ if ( $getrundir || $getrun || $copyrun ) {
     echoline();
 
     echo run_cmd( $cmd, false );
+
+    ## output/analysis-results.tar lives one level down, in the directory
+    ## us_mpi_analysis changes into and creates only once the job actually
+    ## starts producing output (us_mpi_analysis.cpp:340, :2515-2516). Until
+    ## then, output/ itself does not exist on the remote host, and
+    ## --ignore-missing-args does not cover that case the way it covers a
+    ## missing file in an existing directory: rsync still reports the
+    ## source as failed (code 23) because it cannot even resolve the
+    ## containing directory, not just the file. Fetched as its own rsync
+    ## call so that expected, routine noise for an unfinished job never
+    ## reaches the output above; a real transfer problem for a job that has
+    ## reached this stage would still show up as a missing file below.
+    $output_spec = escapeshellarg( $login ) . ':'
+                 . escapeshellarg( "$rundir/output/analysis-results.tar" );
+    $output_cmd  = "rsync -avz --ignore-missing-args $output_spec " . escapeshellarg( $tdir );
+    run_cmd( "runuser -l us3 -c " . escapeshellarg( $output_cmd ), false );
 
     echo "results in:\n$tdir\n";
     echoline();
