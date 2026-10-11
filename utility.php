@@ -204,6 +204,20 @@ function discover_lims_instance_configs( $wwwpath, $us3_home ) {
                                   . ( $why !== null && $why !== '' ? " ($why)" : '' ) ];
             continue;
         }
+        ## newus3 is dbutils' own registry database (uslims_dbs.php,
+        ## uslims_domain_info.php, uslims_db_stash.php, ... all read/write
+        ## newus3.metadata/.people by this same literal name) -- the new-
+        ## instance self-service UI's own config (commonly surfaced as a
+        ## uslims3/newlims/ or similar docroot) points here, not at any real
+        ## tenant's LIMS schema. It has no people_audit table at all, so
+        ## every run reported it unreadable/unmigratable instead of simply
+        ## not being an instance to begin with, and on a host where it
+        ## collides with the single-tenant 'default' entry too, the post-
+        ## apply recheck never settled. Skipped outright, not reported as
+        ## an error: this is expected, not a problem to flag.
+        if ( strcasecmp( $cfg[ 'dbname' ], 'newus3' ) === 0 ) {
+            continue;
+        }
         $resolved[ $label ] = $cfg;
     }
     return $resolved;
