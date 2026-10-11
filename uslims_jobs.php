@@ -860,7 +860,16 @@ if ( $running || $restart || $restart_only ) {
     foreach ( $jm_restart_db as $index => $db ) {
         $gfacid   = $jm_restart_gfacid  [ $index ];
         $hpcreqid = $jm_restart_hpcreqid[ $index ];
-        $cmd = "php $us3bin/jobmonitor/jobmonitor.php $db $gfacid $hpcreqid";
+        ## This subcommand is invoked as root like every other one here, but
+        ## unlike the others never wrapped its spawned process in `runuser -l
+        ## us3`. A monitor launched that way runs as root, not us3: common's
+        ## account-match gate (remote_exec::is_local()) then sends every
+        ## call over ssh as root instead of locally, root has no key for the
+        ## cluster, every poll fails with "No ECDSA host key", and the stuck
+        ## monitor holds the job lock so a later --restart as us3 cannot
+        ## replace it either.
+        $inner_cmd = "php $us3bin/jobmonitor/jobmonitor.php $db $gfacid $hpcreqid";
+        $cmd       = "runuser -l us3 -c " . escapeshellarg( $inner_cmd );
         echo "restarting: $cmd\n";
         run_cmd( $cmd );
         if ( $restart_only && ++$restarted >= $restart_only ) {
