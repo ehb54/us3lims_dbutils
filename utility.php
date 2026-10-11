@@ -954,6 +954,23 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
        . ( $bound_clause !== '' ? ", up to auditID $boundary; later rows are presumed already UTC" : '' )
        . ")\n";
 
+    # Created (or confirmed) here, before the conversion below, not after:
+    # mark_people_audit_utc_migration_done() creates this same table again
+    # at the end, but its own result was never checked there either, and an
+    # instance user lacking CREATE converted every row and then silently
+    # never recorded it -- indistinguishable from a run that never happened
+    # at all, so the next run shifted the now-already-UTC rows again.
+    # Checked up front instead: if the marker table cannot be created, the
+    # conversion is skipped entirely rather than left unrecorded. Low risk
+    # in practice (newinst/stage2 grant this account ALL), but a real gap.
+    if ( !create_people_audit_utc_migration_marker_table( $db_handle, $db ) ) {
+        echo "WARNING: $db.people_audit: could not create or confirm the UTC migration"
+           . " marker table (" . mysqli_error( $db_handle ) . "); skipping the conversion"
+           . " rather than convert rows this account cannot then mark as done --"
+           . " grant CREATE and rerun.\n";
+        return;
+    }
+
     # '+00:00', not the named zone 'UTC': a named zone on EITHER side of
     # CONVERT_TZ() needs mysql.time_zone_name loaded, same as checked above
     # for $from_tz -- but that check only ever covered the source side, so
