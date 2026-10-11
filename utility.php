@@ -136,10 +136,21 @@ function capture( $cmd ) {
 ## Variables a PHP config file defines, read in a separate process so that an
 ## old config's own helper functions cannot clash with utility.php's.
 ## $why is set to the reason when the file cannot be read.
+##
+## A base+overlay config (dbinst's own contract -- uslims_domain_info.php's
+## base_class_dir()/instance_overlay() read it the same way) defines no
+## plain variables at all: it returns an array shaped
+## [ 'values' => [ 'dbname' => ..., ... ] ]. get_defined_vars() alone sees
+## nothing for one, so this also captures the include's own return value
+## and falls back to its 'values' when the plain-variable capture came back
+## empty -- every other caller's config.php/global_config.php/etc. has no
+## top-level return at all, so this fallback never triggers for them.
 function config_vars( $file, &$why = null ) {
-    $code = 'ob_start(); include ' . var_export( $file, true ) . '; ob_end_clean();'
+    $code = 'ob_start(); $__returned = include ' . var_export( $file, true ) . '; ob_end_clean();'
           . ' $v = array_filter( get_defined_vars(), function ( $k ) { return $k[ 0 ] !== "_" && $k !== "GLOBALS"; },'
           . ' ARRAY_FILTER_USE_KEY ); unset( $v["argv"], $v["argc"] );'
+          . ' if ( empty( $v ) && is_array( $__returned ) && isset( $__returned[ "values" ] )'
+          . '      && is_array( $__returned[ "values" ] ) ) { $v = $__returned[ "values" ]; }'
           . ' echo json_encode( $v, JSON_PARTIAL_OUTPUT_ON_ERROR );';
     list( $out, $err, $rc ) = capture( escapeshellarg( PHP_BINARY ) . ' -r ' . escapeshellarg( $code ) );
     $vars = json_decode( $out, true );
