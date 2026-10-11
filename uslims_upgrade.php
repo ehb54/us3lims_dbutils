@@ -69,7 +69,8 @@ Steps
     the national HPC ones to SSH instead, then sets the global_config.php
     settings the new code requires (queue time, tenant scope, local cluster,
     env_script_lines per cluster, single_node on one-node appliances)
-4 : records each cluster's host key (and, for the host's own cluster, authorizes
+4 : records the host key for each active cluster and any cluster named with
+    --activate that isn't active yet (and, for the host's own cluster, authorizes
     the key) and checks ssh for us3 and the web account
 5 : creates the shared circuit-breaker directory, the shared ssh-control directory
     (common#24, sticky bit so one account cannot rename another's subdirectory
@@ -1225,9 +1226,9 @@ if ( !$res ) {
 ## Whether $grants (one string per SHOW GRANTS row for the connected
 ## account) includes the global-only PROCESS or SUPER privilege (or ALL
 ## PRIVILEGES at global scope, which implies both). Pure, no DB access, so
-## it is pinned down by a real unit test instead of only ever being
-## exercised against whatever privileges the account running this script
-## happens to have.
+## it is pinned down by a real unit test (in the lims aggregator's test
+## suite, not this repo) instead of only ever being exercised against
+## whatever privileges the account running this script happens to have.
 function has_global_process_or_super_privilege( array $grants ) {
     foreach ( $grants as $grant ) {
         $grant = (string) $grant;
@@ -1255,8 +1256,9 @@ function has_global_process_or_super_privilege( array $grants ) {
 ## SHOW PROCESSLIST call. Pure, no DB access, so the false FAIL this
 ## produced for any gfac account with PROCESS privilege -- MariaDB's own
 ## system threads always being present and always reported as "system
-## user"@"" -- is pinned down by a real unit test instead of only ever being
-## exercised against a live account's actual threads.
+## user"@"" -- is pinned down by a real unit test (in the lims aggregator's test
+## suite, not this repo) instead of only ever being exercised against a
+## live account's actual threads.
 function other_db_connections( array $rows ) {
     $others = [];
     foreach ( $rows as $row ) {
@@ -2246,8 +2248,9 @@ foreach ( $elog_targets as $path => $spec ) {
 ## CREATE TABLE (common#31's pilot table), given facts the caller has
 ## already gathered -- pure, no DB access, no globals -- so the "optional,
 ## pilot-scoped" downgrade below (a missing-privilege error is a note, not a
-## FAIL) is pinned down by a real unit test instead of only ever being
-## exercised against a live gfac account's actual privileges, the same gap
+## FAIL) is pinned down by a real unit test (in the lims aggregator's test
+## suite, not this repo) instead of only ever being exercised against a
+## live gfac account's actual privileges, the same gap
 ## that let single_node_sizing() above regress repeatedly. This
 ## step FAILed outright the first time it existed (744eef1), on every
 ## roles-built host, for exactly the two reasons this now downgrades to a
@@ -2316,8 +2319,9 @@ function runtime_prediction_alter_outcome( $alter_sql, $alter_ok, $alter_errno, 
 ## either schema or global scope. Pure, no DB access, so the roles-host
 ## false positive below (--check always claiming this table is a pending
 ## change, forever, on an account that --apply could never actually create
-## it for either) is pinned down by a real unit test instead of only ever
-## being exercised against a live account's actual grants.
+## it for either) is pinned down by a real unit test (in the lims
+## aggregator's test suite, not this repo) instead of only ever being
+## exercised against a live account's actual grants.
 function gfac_runtime_table_create_privileged( array $grants ) {
     foreach ( $grants as $line ) {
         if ( ! preg_match( '/^GRANT\s+(.+?)\s+ON\s+(\S+)\s+TO\s/i', $line, $m ) ) {

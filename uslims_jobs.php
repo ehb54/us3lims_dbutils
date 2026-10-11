@@ -1125,6 +1125,14 @@ function hpcreqout( $reqid ) {
         ;
 }    
 
+## The shell command --getrun uses to check $rundir exists on the cluster
+## before attempting either rsync fetch. Pure (string building only, no
+## exec), so the escaping is testable without a real connection.
+function remote_dir_check_command( $login, $rundir ) {
+    return "runuser -l us3 -c "
+         . escapeshellarg( "ssh " . escapeshellarg( $login ) . " test -d " . escapeshellarg( $rundir ) );
+}
+
 function hpcresbyreqout( $reqid, $reqisgfac = false ) {
     global $fullrpt;
     global $db;
@@ -1294,9 +1302,11 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## top-level name is asked for too in case a layout ever puts it there,
     ## same order gridctl's own fetch tries them in (jobmonitor/cleanup.php's
     ## $tar_candidates). Asking for both is harmless either way.
-    ## These all sit directly in $rundir, which exists from submission
-    ## onward, so --ignore-missing-args below cleanly covers every one that
-    ## simply isn't there yet.
+    ## These all sit directly in $rundir once a job has been staged, so
+    ## --ignore-missing-args below cleanly covers every one that simply
+    ## isn't there yet -- but $rundir itself only exists from staging
+    ## onward, not from submission: a job whose submission failed before
+    ## scp ever ran (or a stale/bad --reqid) has no $rundir at all.
     $getfiles = [
         "us3.slurm"
         ,$inputfile
@@ -1304,6 +1314,19 @@ if ( $getrundir || $getrun || $copyrun ) {
         ,"stderr"
         ,"analysis-results.tar"
         ];
+
+    ## Checked before either rsync call below: --ignore-missing-args only
+    ## covers a missing FILE inside an existing directory (see output/'s own
+    ## comment further down, which hits the same gap for its one file) -- a
+    ## missing $rundir itself still has rsync print its own "change_dir ...
+    ## failed" once per brace-expanded file above (five lines), at rc 0,
+    ## which reads as noise instead of the one simple fact it stands for.
+    exec( remote_dir_check_command( $login, $rundir ) . " 2>&1", $remoteDirCheckOutput, $remoteDirCheckStatus );
+
+    if ( $remoteDirCheckStatus !== 0 ) {
+        echo "$rundir does not exist on $login -- this job was never staged there\n";
+        echoline();
+    } else {
 
     ## $login and $rundir are quoted; the resulting runuser -c argument is
     ## quoted as a whole too, instead of the previous hand-rolled double
@@ -1342,6 +1365,7 @@ if ( $getrundir || $getrun || $copyrun ) {
                  . escapeshellarg( "$rundir/output/analysis-results.tar" );
     $output_cmd  = "rsync -avz --ignore-missing-args $output_spec " . escapeshellarg( $tdir );
     run_cmd( "runuser -l us3 -c " . escapeshellarg( $output_cmd ), false );
+    }
 
     echo "results in:\n$tdir\n";
     echoline();
