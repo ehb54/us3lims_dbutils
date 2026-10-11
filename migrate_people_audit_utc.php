@@ -4,6 +4,13 @@ $self = __FILE__;
 
 require_once "utility.php";
 
+## Report failed connections and queries as values, not exceptions (PHP
+## 8.1+), matching uslims_upgrade.php/uslims_jobs.php: without this, a wrong
+## password or a denied marker CREATE was fatal here on 8.2 and skipped
+## every remaining instance, instead of warning and continuing as 7.2
+## already does.
+mysqli_report( MYSQLI_REPORT_OFF );
+
 ## Same defaults uslims_upgrade.php and uslims_domain_info.php use.
 $wwwpath  = "/srv/www/htdocs";
 $us3_home = "/home/us3";

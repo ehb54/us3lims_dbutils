@@ -1,6 +1,15 @@
 <?php
 
 $self = __FILE__;
+
+## Report failed connections and queries as values, not exceptions (PHP
+## 8.1+), matching uslims_upgrade.php/uslims_jobs.php: without this, a
+## failing conversion UPDATE (migrate_people_audit_created_at_to_utc(),
+## utility.php) threw uncaught on 8.2 -- after the drop loop had already
+## dropped every instance (rc 255, the ones after the failure simply gone),
+## instead of warning and continuing to the next instance as intended.
+mysqli_report( MYSQLI_REPORT_OFF );
+
 # user defines
 $us3home         = "/home/us3";
 $us3ini          = "$us3home/lims/.us3lims.ini";
