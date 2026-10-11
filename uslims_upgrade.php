@@ -33,8 +33,9 @@ Upgrade this host to the Slurm submission contract (gridctl#33, common#24, dbins
 Without --apply nothing is changed; each step reports what it would do. Run with --check
 for that dry run; with no options at all this help is printed instead.
 
-This script changes only this host's configuration. The stack code and the database
-schema are upgraded separately, and the code must be upgraded first: pull common,
+This script changes this host's configuration, plus one schema fix step 9 runs inside
+each dbinstance (see below). Otherwise, the stack code and the database schema are
+upgraded separately, and the code must be upgraded first: pull common,
 every instance, gridctl and dbutils to $required_version or newer, then run this as root.
 Step 0 refuses to go further while any checkout is older.
 
@@ -108,12 +109,14 @@ To roll back, with the services stopped:
      first), and reload Apache -- step 7 never backs this one up, since it is
      new, not rewritten.
 
-Nothing else to undo in the database: this script never touches the schema or any
-job row, with one exception -- step 5's gfac.runtime_prediction (see step 5 above),
-which is optional, pilot-scoped and empty until the pilot is turned on. Dropping it
-is a separate, deliberate operator step (the teardown statement is documented in
-common's class/prediction/runtime_pilot_table.sql), not part of rolling back this
-script.
+Nothing else to undo in the database, with two exceptions. Step 5's gfac.runtime_prediction
+(see step 5 above) is optional, pilot-scoped and empty until the pilot is turned on;
+dropping it is a separate, deliberate operator step (the teardown statement is documented
+in common's class/prediction/runtime_pilot_table.sql), not part of rolling back this script.
+Step 9 (see step 9 above) rewrites people_audit.created_at in every dbinstance it migrates
+and adds a marker table there; this is a one-time, one-direction conversion with no
+undo step of its own -- a pre-migration backup of each dbinstance's own database is
+the only way back if a conversion turns out to be wrong for some instance.
 
 Options
 

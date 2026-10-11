@@ -911,9 +911,12 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
     # is still handled correctly without needing mysql.time_zone_* loaded --
     # except for a row genuinely written during the repeated local hour
     # when clocks fall back (e.g. 1:30am occurring twice): that instant is
-    # ambiguous by nature, CONVERT_TZ() always resolves it to standard
-    # time, and the original data carries no way to tell which of the two
-    # occurrences a given row meant. Accepted (README).
+    # ambiguous by nature, and the original data carries no way to tell
+    # which of the two occurrences a given row meant. Confirmed directly
+    # (MariaDB, mysql.time_zone_name loaded, 'America/Chicago'): CONVERT_TZ()
+    # resolves the ambiguous hour to daylight time (the first occurrence),
+    # not standard -- a row that actually meant the second (standard-time)
+    # occurrence converts up to 60 minutes off. Accepted (README).
     $tz_res  = mysqli_query( $db_handle, "SELECT @@session.time_zone AS tz" );
     $tz_row  = $tz_res ? mysqli_fetch_assoc( $tz_res ) : null;
     $from_tz = ( $tz_row && $tz_row[ 'tz' ] !== '' ) ? $tz_row[ 'tz' ] : 'SYSTEM';
