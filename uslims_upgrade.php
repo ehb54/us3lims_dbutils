@@ -2284,6 +2284,33 @@ function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_err
     return [ 'FAIL', "could not create gfac.runtime_prediction: " . reason( (string) $create_error ) ];
 }
 
+## Same classification as runtime_prediction_create_outcome(), for the
+## additive ALTER an existing (pre-common#31) table needs instead of the
+## CREATE above. Without this, an existing pilot table silently lost every
+## insert (0 rows, including requests that never set prediction_cluster_name)
+## the moment common#31 started writing those two columns, and step 5 reported
+## "already exists" regardless since it only ever checked the table, never
+## its columns.
+function runtime_prediction_alter_outcome( $alter_sql, $alter_ok, $alter_errno, $alter_error,
+                                            $runtime_table_alter_sql ) {
+    if ( trim( (string) $alter_sql ) === '' ) {
+        return [ 'FAIL', "the runtime advisory pilot table's column-migration SQL file has no SQL"
+                        . " left after stripping comments" ];
+    }
+    if ( $alter_ok ) {
+        return [ 'done', "gfac.runtime_prediction.prediction_cluster[_source] columns added" ];
+    }
+    if ( in_array( (int) $alter_errno, [ 1142, 1044 ], true ) ) {
+        return [ 'note', "gfac account lacks privilege to add the optional runtime advisory"
+                        . " pilot table's prediction_cluster columns (common#31): "
+                        . reason( (string) $alter_error )
+                        . "; an account with ALTER on gfac can run it by hand:"
+                        . " mysql gfac < $runtime_table_alter_sql" ];
+    }
+    return [ 'FAIL', "could not add gfac.runtime_prediction's prediction_cluster columns: "
+                    . reason( (string) $alter_error ) ];
+}
+
 ## Whether $grants (one string per SHOW GRANTS row for the connected
 ## account) includes CREATE on gfac, directly or via ALL PRIVILEGES, at
 ## either schema or global scope. Pure, no DB access, so the roles-host
@@ -2309,6 +2336,34 @@ function gfac_runtime_table_create_privileged( array $grants ) {
         if ( $on_gfac_or_global
              && ( preg_match( '/\bALL PRIVILEGES\b/i', $privs )
                 || preg_match( '/(?:^|,)\s*CREATE\s*(?:,|$)/i', $privs ) ) ) {
+            return true;
+        }
+    }
+    return false;
+}
+
+## Same reasoning as gfac_runtime_table_create_privileged(), for ALTER: an
+## existing gfac.runtime_prediction created before prediction_cluster/
+## prediction_cluster_source existed needs its own privilege (ALTER, not
+## CREATE) to pick up the columns via runtime_pilot_table_add_prediction_cluster.sql.
+## A roles-built gfac account (SELECT/INSERT/UPDATE/DELETE only) has neither,
+## so this stays its own check rather than reusing the CREATE one and getting
+## the wrong answer for this statement.
+function gfac_runtime_table_alter_privileged( array $grants ) {
+    foreach ( $grants as $line ) {
+        if ( ! preg_match( '/^GRANT\s+(.+?)\s+ON\s+(\S+)\s+TO\s/i', $line, $m ) ) {
+            continue;
+        }
+        $privs = $m[ 1 ];
+        $scope = $m[ 2 ];
+        $on_gfac_or_global = (bool) preg_match( '/^(\*\.\*|`?gfac`?\.\*)$/i', $scope );
+        ## ALTER as its own comma-separated item, not a prefix match, for the
+        ## same reason as CREATE above (no "ALTER ..." multi-word privilege
+        ## exists in MariaDB's grant vocabulary today, but matching exactly
+        ## costs nothing and stays correct if one ever does).
+        if ( $on_gfac_or_global
+             && ( preg_match( '/\bALL PRIVILEGES\b/i', $privs )
+                || preg_match( '/(?:^|,)\s*ALTER\s*(?:,|$)/i', $privs ) ) ) {
             return true;
         }
     }
@@ -2342,9 +2397,62 @@ if ( !is_file( $runtime_table_sql ) ) {
     report( 'note', "$runtime_table_sql not present; skipping the optional runtime advisory"
           . " pilot table (common#31) -- not required for this upgrade" );
 } else {
+    ## The additive migration for a table created before prediction_cluster/
+    ## prediction_cluster_source existed. Checked beside $runtime_table_sql
+    ## for the same optional-checkout reason; absent, the column check below
+    ## is simply skipped, same as "already exists" used to report
+    ## unconditionally before this existed.
+    $runtime_table_alter_sql = "$wwwpath/common/class/prediction/runtime_pilot_table_add_prediction_cluster.sql";
+
     $exists = mysqli_query( $gdb, "SHOW TABLES IN gfac LIKE 'runtime_prediction'" );
     if ( $exists && mysqli_num_rows( $exists ) > 0 ) {
-        report( 'ok', "gfac.runtime_prediction already exists" );
+        ## The table existing says nothing about whether it has these two
+        ## columns: a table created from the pre-common#31 runtime_pilot_table.sql
+        ## never gets them just by existing, and every insert then failed (0
+        ## rows, including requests that never set prediction_cluster_name)
+        ## the moment common#31 started writing them -- silently here, since
+        ## this used to report "already exists" and stop looking.
+        $has_columns = is_file( $runtime_table_alter_sql )
+            ? mysqli_query( $gdb, "SHOW COLUMNS FROM gfac.runtime_prediction LIKE 'prediction_cluster'" )
+            : null;
+
+        if ( $has_columns === null ) {
+            report( 'ok', "gfac.runtime_prediction already exists"
+                  . " ($runtime_table_alter_sql not present; skipping the column check)" );
+        } elseif ( $has_columns && mysqli_num_rows( $has_columns ) > 0 ) {
+            report( 'ok', "gfac.runtime_prediction already exists, with prediction_cluster columns" );
+        } elseif ( ! $apply && ! gfac_runtime_table_alter_privileged( mysqli_grant_rows( $gdb ) ) ) {
+            ## Same --check/--apply privilege-probe reasoning as the CREATE
+            ## case below, for ALTER instead: a roles-built gfac account has
+            ## neither, so without this, --check would report this as a
+            ## pending change forever that --apply could never actually make.
+            report( 'note', "gfac account lacks privilege to add the optional runtime advisory"
+                  . " pilot table's prediction_cluster columns (common#31); an account with ALTER"
+                  . " on gfac can run it by hand: mysql gfac < $runtime_table_alter_sql" );
+        } else {
+            report( 'todo', "add gfac.runtime_prediction.prediction_cluster[_source] columns"
+                  . " (runtime advisory pilot, common#31): $runtime_table_alter_sql" );
+            if ( $apply ) {
+                $lines = explode( "\n", (string) file_get_contents( $runtime_table_alter_sql ) );
+                $alter = trim( implode( "\n", array_filter( $lines,
+                    function ( $line ) { return !preg_match( '/^\s*--/', $line ); } ) ) );
+
+                $alter_ok = $alter !== '' ? mysqli_query( $gdb, $alter ) : false;
+                $errno    = 0;
+                $error    = '';
+                if ( $alter !== '' && !$alter_ok ) {
+                    $errno = mysqli_errno( $gdb );
+                    $error = mysqli_error( $gdb );
+                }
+                if ( $alter_ok ) {
+                    $changes++;
+                }
+
+                list( $status, $message ) = runtime_prediction_alter_outcome(
+                    $alter, $alter_ok, $errno, $error, $runtime_table_alter_sql );
+                report( $status, $message );
+            }
+        }
     } elseif ( ! $apply && ! gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
         ## --check never runs CREATE, so without this probe a roles-built
         ## gfac account (SELECT/INSERT/UPDATE/DELETE only) reports "1
