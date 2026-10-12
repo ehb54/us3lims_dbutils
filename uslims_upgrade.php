@@ -2185,10 +2185,14 @@ $elog_dir = "$us3_home/lims/etc";
 ## to $elog_dir itself, not just to the file being provisioned -- a
 ## provisioned .1 does not give the web account that on a split-account
 ## host (0755 us3:us3 $elog_dir), so this never actually let the web
-## account rotate. Worse, on that same host, every rotation leaves .1
-## owned us3:apache (whichever account's PHP-FPM worker happened to
-## rotate), so a provisioned 0660 us3:<web group> .1 would never stay
-## that way and --check would never converge.
+## account rotate -- there, .1 stays us3:us3 whenever us3 itself rotates,
+## and apache's own rotation attempt simply fails outright (no write
+## access to $elog_dir at all), so it never leaves a wrongly-owned file
+## behind either. Worse on a roles host instead (a single account, not a
+## split one, where PHP-FPM runs as us3 with secondary group apache):
+## every rotation there leaves .1 owned us3:apache, so a provisioned 0660
+## us3:<web group> .1 would never stay that way and --check would never
+## converge.
 ## See dbinst#75's elog.php for the accepted limitation this leaves: the
 ## web account cannot rotate elog.txt on a split-account host today.
 $elog_targets = [
