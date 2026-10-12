@@ -2138,10 +2138,20 @@ step( "4. SSH host keys and access (StrictHostKeyChecking=yes is the default)" )
 ## --activate), so without this they never got here: no host key was ever
 ## offered for them, and --activate's own ssh test above only ever ran as
 ## us3, leaving a separate web account with no key or known_hosts entry of
-## its own on the cluster that is about to go live for it too. Pools are
-## excluded (same reasoning as the env_script_lines/single_node checks
-## above): a pool has no login/host of its own for ssh to reach.
+## its own on the cluster that is about to go live for it too. Pools and
+## 'localhost' => true entries are excluded (same reasoning as the
+## env_script_lines/single_node checks above): a pool has no login/host of
+## its own for ssh to reach, and a localhost entry uses cp/local exec, never
+## ssh -- round-13 should-fix (us3lims-roles#24): a fresh us3lims-roles
+## build has no role installing an ssh key for the appliance to reach
+## itself, so this test failed step 4 on every fresh build even though the
+## appliance's own entry was never going to use ssh in the first place.
 $ssh_targets = array_diff_key( $active, $pools );
+foreach ( $ssh_targets as $name => $c ) {
+    if ( !empty( $c[ 'localhost' ] ) ) {
+        unset( $ssh_targets[ $name ] );
+    }
+}
 foreach ( $activate_want as $name ) {
     if ( isset( $ssh_targets[ $name ] ) || !is_array( $clusters[ $name ] ?? null ) ) {
         continue;
@@ -2153,6 +2163,10 @@ foreach ( $activate_want as $name ) {
     ## not 'http' -- the 4.3.0 template's entries carry no submittype key at
     ## all, so this used to skip ssh setup for every one of them too.
     if ( strtolower( (string) ( $clusters[ $name ][ 'submittype' ] ?? 'slurm' ) ) !== 'slurm' ) {
+        continue;
+    }
+    ## Same 'localhost' => true exemption as the already-active entries above.
+    if ( !empty( $clusters[ $name ][ 'localhost' ] ) ) {
         continue;
     }
     $ssh_targets[ $name ] = $clusters[ $name ];
