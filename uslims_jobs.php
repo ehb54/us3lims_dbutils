@@ -570,6 +570,14 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
     $gfacid_esc  = mysqli_real_escape_string( $db_handle, $gfacid );
     $stage       = $info[ 'stage' ] ?? null;
     $queue_status = $info[ 'queue_status' ] ?? null;
+    ## $stage/$queue_status come from the marker file's own recorded
+    ## content (round-12 nit, dbutils#52): the marker is written by this
+    ## same codebase, not an external input, but it still has to pass
+    ## through the SQL layer like any other value headed into a query --
+    ## escaped here rather than trusted as already-safe because of where
+    ## it came from.
+    $stage_esc        = $stage !== null ? mysqli_real_escape_string( $db_handle, $stage ) : null;
+    $queue_status_esc = $queue_status !== null ? mysqli_real_escape_string( $db_handle, $queue_status ) : null;
     $message_esc = mysqli_real_escape_string( $db_handle, (string) ( $info[ 'message' ] ?? '' ) );
     $autoflow_id = (int) ( $info[ 'autoflowAnalysisID' ] ?? 0 );
 
@@ -580,7 +588,7 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
         ## stage gridctl's own job_cleanup() resolves at this call site is
         ## always terminal (complete/failed/canceled/error), matching
         ## update_autoflow_status()'s own no-guard case for a terminal stage.
-        $query = "UPDATE $us3_db_esc.autoflowAnalysis SET status='$stage', statusMsg='$message_esc'"
+        $query = "UPDATE $us3_db_esc.autoflowAnalysis SET status='$stage_esc', statusMsg='$message_esc'"
                . " WHERE requestID=$autoflow_id AND currentGfacID='$gfacid_esc'";
         if ( mysqli_query( $db_handle, $query ) === false ) {
             echo "could not close out status-pending autoflowAnalysisID $autoflow_id for $gfacid: "
@@ -607,7 +615,7 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
     }
 
     if ( $queue_status !== null && $requestid > 0 ) {
-        $hpc_query = "UPDATE $us3_db_esc.HPCAnalysisResult SET queueStatus='$queue_status',"
+        $hpc_query = "UPDATE $us3_db_esc.HPCAnalysisResult SET queueStatus='$queue_status_esc',"
                    . " lastMessage='$message_esc' WHERE HPCAnalysisRequestID=$requestid"
                    . " AND gfacID='$gfacid_esc'";
         if ( mysqli_query( $db_handle, $hpc_query ) === false ) {
@@ -796,7 +804,12 @@ if ( $running || $restart || $restart_only ) {
         foreach ( finalizing_markers() as $marker ) {
             $info = json_decode( (string) @file_get_contents( $marker ), true );
             if ( !is_array( $info ) || empty( $info[ 'us3_db' ] ) || empty( $info[ 'gfacID' ] ) ) {
-                echo "ignoring unreadable finalizing marker $marker\n";
+                ## Removed, not just logged (round-12 nit, dbutils#52): nothing
+                ## about a marker this unreadable ever becomes parseable on a
+                ## later run, so leaving it in place meant every --restart
+                ## reported the exact same one forever, with no way to clear it.
+                echo "ignoring and removing unreadable finalizing marker $marker\n";
+                @unlink( $marker );
                 continue;
             }
             $gfacid = $info[ 'gfacID' ];
@@ -826,7 +839,13 @@ if ( $running || $restart || $restart_only ) {
         foreach ( status_pending_markers() as $marker ) {
             $info = json_decode( (string) @file_get_contents( $marker ), true );
             if ( !is_array( $info ) || empty( $info[ 'us3_db' ] ) || empty( $info[ 'gfacID' ] ) ) {
-                echo "ignoring unreadable status-pending marker $marker\n";
+                ## Removed, not just logged (round-12 nit, dbutils#52): same
+                ## reasoning as the finalizing-marker loop just above --
+                ## nothing about this ever becomes parseable later, so leaving
+                ## it meant every --restart reported the exact same marker
+                ## forever, with no way to clear it.
+                echo "ignoring and removing unreadable status-pending marker $marker\n";
+                @unlink( $marker );
                 continue;
             }
             close_out_status_pending_marker( $db_handle, $marker, $info );
