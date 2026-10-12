@@ -305,6 +305,18 @@ foreach ( $dbnames_used as $db => $val ) {
     } else {
         $ignore_tables = [];
     }
+    ## dbutils' own bookkeeping tables (_dbutils_people_audit_utc_migrated,
+    ## _dbutils_people_audit_utc_boundary), always ignored directly here --
+    ## not left to --only-extras above to discover on its own. They are
+    ## deliberately excluded from uslims_table_diffs.php's own comparison
+    ## (so a migrated instance does not read as structurally different),
+    ## which means --only-extras never reports them as extras either, so
+    ## without this they were never ignored and always ended up in the
+    ## dump -- source-host-specific bookkeeping with no meaning carried
+    ## verbatim to a different host, and ERROR 1146 the moment the import
+    ## side has not independently pre-created them (round-11 should-fix,
+    ## dbutils#52).
+    $ignore_tables = array_unique( array_merge( $ignore_tables, dbutils_owned_tables() ) );
     if ( count( $ignore_tables ) ) {
         $tables_ignored       = implode( "\n", $ignore_tables ) . "\n";
         $tables_ignored_fname = "export-$metadata_dbhost-$db-tables-ignored.txt";

@@ -168,9 +168,35 @@ foreach ( $targets as $label => $cfg ) {
     } elseif ( !$apply ) {
         echo "[todo] $label ({$cfg['dbname']}): would migrate people_audit.created_at to UTC"
            . " (rerun with --apply)\n";
+    } elseif ( people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] ) === null ) {
+        ## Refuse, rather than convert (round-11 should-fix, dbutils#52):
+        ## with no boundary recorded, migrate_people_audit_created_at_to_utc()
+        ## converts every row -- correct for a genuinely pre-4.3.0 instance
+        ## uslims_upgrade.php never got to run against, but just as
+        ## plausibly a brand-new 4.3.0 instance whose rows are already
+        ## correct UTC, which this script has no way to tell apart from
+        ## people_audit's own data alone. Drawing a boundary here instead
+        ## would be unsafe too: the right boundary is "the last row written
+        ## before the code actually went live", which this script cannot
+        ## reconstruct after the fact any better than a guess. Run
+        ## uslims_upgrade.php (which can tell the two cases apart via
+        ## dbutils_boundary_known_instances_path()) instead, or draw the
+        ## boundary by hand if this is genuinely a pre-4.3.0 instance.
+        echo "[FAIL] $label ({$cfg['dbname']}): no UTC boundary is recorded for this instance;"
+           . " refusing to guess whether every row needs converting or none do -- run"
+           . " uslims_upgrade.php --apply instead, or record a boundary by hand if this is"
+           . " genuinely a pre-4.3.0 instance\n";
+        $failures++;
     } else {
         echo "[apply] $label ({$cfg['dbname']}):\n";
-        migrate_people_audit_created_at_to_utc( $conn, $cfg[ 'dbname' ] );
+        if ( !migrate_people_audit_created_at_to_utc( $conn, $cfg[ 'dbname' ] ) ) {
+            ## Same reasoning as uslims_upgrade.php step 9: a skip (zone
+            ## tables not loaded, the marker table could not be created, or
+            ## the UPDATE itself failed) is a failure for this run's own exit
+            ## code, not a silent success -- the WARNING text above already
+            ## says why.
+            $failures++;
+        }
     }
     mysqli_close( $conn );
 }

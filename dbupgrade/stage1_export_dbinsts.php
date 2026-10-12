@@ -243,7 +243,7 @@ foreach ( $dbnames_used as $db => $val ) {
     # still the connection that actually wrote these rows -- stage2 cannot
     # ask the source host anything once this package is the only thing that
     # survives the trip, and without this it fell back to reading the
-    # *importing* host's own zone instead (round-11 should-fix, dbutils#52).
+    # *importing* host's own zone instead.
     # Read, not guessed, same as migrate_people_audit_created_at_to_utc()'s
     # own default would read if it ran locally on this host right now.
     $tzfile  = "export-$use_dbhost-$db-timezone.txt";
