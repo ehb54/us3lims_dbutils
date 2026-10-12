@@ -282,8 +282,17 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
         # Creating it now, before the import, costs nothing for a
         # dbinstance that was never migrated (its dump has no row for a
         # table it never had either).
+        #
+        # The boundary table (_dbutils_people_audit_utc_boundary) needs the
+        # exact same pre-creation, for the exact same reason: an in-place
+        # host upgraded (and so boundary-recorded) before being exported
+        # carries a row for THIS table in its dump too, and without this
+        # that INSERT failed the same way -- round-12 blocker, dbutils#52
+        # (round 10's abort, reintroduced here for the second bookkeeping
+        # table nothing had pre-created yet).
         check_db();
         create_people_audit_utc_migration_marker_table( $db_handle, $db );
+        create_people_audit_utc_boundary_table( $db_handle, $db );
 
         $cmds = [
     "$uncompresswith $sqldata | mysql --defaults-file=$cwd/my.cnf -u root $db"
@@ -298,7 +307,7 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
         }
 
         # The writer's own zone, captured at export time (stage1), not
-        # this (the importing) host's -- round-11 should-fix, dbutils#52.
+        # this (the importing) host's.
         # Missing for a package made before this file existed: null falls
         # back to migrate_people_audit_created_at_to_utc()'s original
         # behavior (this host's own session zone), same as every other

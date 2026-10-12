@@ -118,6 +118,17 @@ and adds a marker table there; this is a one-time, one-direction conversion with
 undo step of its own -- a pre-migration backup of each dbinstance's own database is
 the only way back if a conversion turns out to be wrong for some instance.
 
+Step 0 (run before step 9, before steps 1-8 do anything else) records a boundary --
+the highest people_audit.auditID already written at the moment this run started -- in
+its own table (_dbutils_people_audit_utc_boundary), used but never undone: step 9 only
+ever converts rows at or below it, on the assumption that everything above it was
+already written in UTC by dbinst's already-upgraded code. Rolling back to a release
+that writes local time again, then running this instance for a while before ever
+retrying the upgrade, breaks that assumption: a local-time row written during that
+rollback window gets an auditID above the boundary (which stays fixed at its original
+value) and so reads as already-UTC on the next run -- it is never converted, and
+stays wrong unless corrected by hand.
+
 Options
 
 --help                       : print this information and exit
@@ -963,7 +974,7 @@ if ( $missing ) {
                 . "\nNothing was changed" );
 }
 
-## dbinst#75's "in-place window" (round 10): a row dbinst's already-
+## dbinst#75's "in-place window": a row dbinst's already-
 ## upgraded code writes between code going live and step 9 actually
 ## running gets shifted a second time by step 9 itself, since step 9
 ## otherwise has no way to tell it apart from a genuinely pre-upgrade row.
@@ -979,6 +990,25 @@ if ( $missing ) {
 ## step 9 to report by name; this only ever records a boundary for an
 ## instance step 9 can also reach.
 if ( $apply ) {
+    ## See dbutils_boundary_known_instances_load()'s own comment: this run
+    ## tells a genuinely pre-existing dbinstance apart from one newinst
+    ## created since the host's first-ever step-0 run, so the latter gets
+    ## marked done outright instead of a boundary drawn from its current
+    ## (already-correct UTC) rows, which would shift every one of them --
+    ## round-12 blocker, dbutils#52. The file's own existence (checked here,
+    ## not inferred from load()'s return) is what actually says "first run":
+    ## load() returns [] both for that and for a later run whose list is
+    ## genuinely empty, which are not the same thing to this loop.
+    $known_path = dbutils_boundary_known_instances_path( $us3_home );
+    $first_run  = !is_file( $known_path );
+    $known      = dbutils_boundary_known_instances_load( $us3_home );
+    $seen_now   = [];
+
+    if ( $known === null ) {
+        report( 'note', "could not read $known_path; treating every dbinstance below as"
+                       . " pre-existing rather than risk marking a genuinely new one done" );
+    }
+
     foreach ( discover_lims_instance_configs( $wwwpath, $us3_home ) as $label => $cfg ) {
         if ( isset( $cfg[ 'error' ] ) || !is_sql_identifier( $cfg[ 'dbname' ] ) ) {
             continue;
@@ -987,8 +1017,25 @@ if ( $apply ) {
         if ( !$conn ) {
             continue;
         }
-        record_people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] );
+
+        $seen_now[] = $cfg[ 'dbname' ];
+
+        if ( $known !== null && !$first_run && !in_array( $cfg[ 'dbname' ], $known, true ) ) {
+            mark_people_audit_utc_migration_done( $conn, $cfg[ 'dbname' ],
+                'n/a (created after this host\'s first UTC-boundary run; nothing to convert)' );
+        } else {
+            record_people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] );
+        }
+
         mysqli_close( $conn );
+    }
+
+    ## Not attempted when $known could not be read: merging $seen_now onto
+    ## an empty list would overwrite whatever the file actually held with
+    ## only this run's names, discarding every name from before it instead
+    ## of leaving the unreadable file for an operator to look at.
+    if ( $known !== null ) {
+        dbutils_boundary_known_instances_save( $us3_home, array_merge( $known, $seen_now ) );
     }
 }
 
@@ -2906,12 +2953,23 @@ if ( !$instance_configs ) {
             report( 'todo', "$label ({$cfg['dbname']}): migrate people_audit.created_at to UTC" );
             if ( $apply ) {
                 ob_start();
-                migrate_people_audit_created_at_to_utc( $conn, $cfg[ 'dbname' ] );
+                $migrated = migrate_people_audit_created_at_to_utc( $conn, $cfg[ 'dbname' ] );
                 $out = trim( ob_get_clean() );
                 foreach ( $out !== '' ? explode( "\n", $out ) : [] as $line ) {
                     echo "    $line\n";
                 }
-                $changes++;
+                ## round-11 nit: a skip (false -- zone tables not loaded, the
+                ## marker table could not be created, or the UPDATE itself
+                ## failed) used to still count as "1 change(s) made" here,
+                ## right next to its own WARNING above saying nothing actually
+                ## happened. Reported as a failure instead, so it shows up in
+                ## the run's own summary, not just buried in the WARNING text.
+                if ( $migrated ) {
+                    $changes++;
+                } else {
+                    report( 'FAIL', "$label ({$cfg['dbname']}): people_audit.created_at was not migrated;"
+                                  . " see the WARNING above" );
+                }
             }
         }
         mysqli_close( $conn );
