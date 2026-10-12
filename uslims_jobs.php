@@ -320,6 +320,21 @@ function finalizing_markers() {
     return glob( "$base/*/*/finalizing" ) ?: [];
 }
 
+## Every status-pending marker (jobmonitor/cleanup.php's
+## cleanup_status_pending_begin()): results already imported, only the final
+## update_autoflow_status() write failed. Distinct from finalizing_markers()
+## above -- this is not evidence of a dead worker, so its close-out below
+## must not assume FAILED.
+function status_pending_markers() {
+    global $ll_base_dir;
+
+    $base = ( isset( $ll_base_dir ) && $ll_base_dir != "" )
+            ? $ll_base_dir
+            : ( exec( "ls -d ~us3/lims" ) . "/etc/joblog" );
+
+    return glob( "$base/*/*/status-pending" ) ?: [];
+}
+
 ## The real wall-clock time $pid started, or null when it cannot be
 ## determined. /proc/<pid>'s own ctime (the previous implementation here) is
 ## when the directory entry was last *looked up*, not when the process
@@ -540,6 +555,73 @@ function close_out_finalizing_marker( $db_handle, $marker, array $info ) {
     @unlink( $marker );
 }
 
+## Closes out one status-pending marker (results already imported, only the
+## final status write failed -- see jobmonitor/cleanup.php's
+## cleanup_status_pending_begin()). Unlike close_out_finalizing_marker() above,
+## this never assumes FAILED: 'stage'/'queue_status' are the real, already-
+## resolved outcome gridctl decided before the write failed, carried in the
+## marker since dbutils has no access to gridctl's status vocabulary maps.
+## No marker_process_alive() check -- the marker is evidence of a DB outage at
+## write time, not of a dead worker, so liveness is irrelevant here.
+function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
+    $gfacid      = $info[ 'gfacID' ];
+    $requestid   = (int) ( $info[ 'requestID' ] ?? 0 );
+    $us3_db_esc  = mysqli_real_escape_string( $db_handle, $info[ 'us3_db' ] );
+    $gfacid_esc  = mysqli_real_escape_string( $db_handle, $gfacid );
+    $stage       = $info[ 'stage' ] ?? null;
+    $queue_status = $info[ 'queue_status' ] ?? null;
+    $message_esc = mysqli_real_escape_string( $db_handle, (string) ( $info[ 'message' ] ?? '' ) );
+    $autoflow_id = (int) ( $info[ 'autoflowAnalysisID' ] ?? 0 );
+
+    if ( $autoflow_id > 0 && $stage !== null ) {
+        ## Same keys as close_out_finalizing_marker()'s autoflow branch
+        ## (requestID is the HPCAnalysisRequestID, not autoflowAnalysisID --
+        ## see that function's own comment). No terminal-status guard: the
+        ## stage gridctl's own job_cleanup() resolves at this call site is
+        ## always terminal (complete/failed/canceled/error), matching
+        ## update_autoflow_status()'s own no-guard case for a terminal stage.
+        $query = "UPDATE $us3_db_esc.autoflowAnalysis SET status='$stage', statusMsg='$message_esc'"
+               . " WHERE requestID=$autoflow_id AND currentGfacID='$gfacid_esc'";
+        if ( mysqli_query( $db_handle, $query ) === false ) {
+            echo "could not close out status-pending autoflowAnalysisID $autoflow_id for $gfacid: "
+               . mysqli_error( $db_handle ) . "\n";
+            return;
+        }
+        if ( mysqli_affected_rows( $db_handle ) === 0 ) {
+            ## 0 affected is ambiguous: the row may not exist (leave the
+            ## marker, something is genuinely wrong), or it may already carry
+            ## this exact stage (a prior --restart's write landed but its
+            ## marker cleanup did not; nothing left to do, safe to drop it).
+            ## Same disambiguation close_out_finalizing_marker() does above.
+            $found = db_obj_result( $db_handle,
+                "select status from $us3_db_esc.autoflowAnalysis where requestID=$autoflow_id"
+              . " and currentGfacID='$gfacid_esc'", false, true );
+            if ( $found === false ) {
+                echo "no autoflowAnalysis row for autoflowAnalysisID $autoflow_id / $gfacid;"
+                   . " leaving its status-pending marker for the next --restart\n";
+                return;
+            }
+            echo "autoflowAnalysisID $autoflow_id for $gfacid is already '$stage';"
+               . " its status-pending write already landed\n";
+        }
+    }
+
+    if ( $queue_status !== null && $requestid > 0 ) {
+        $hpc_query = "UPDATE $us3_db_esc.HPCAnalysisResult SET queueStatus='$queue_status',"
+                   . " lastMessage='$message_esc' WHERE HPCAnalysisRequestID=$requestid"
+                   . " AND gfacID='$gfacid_esc'";
+        if ( mysqli_query( $db_handle, $hpc_query ) === false ) {
+            echo "could not close out status-pending HPCAnalysisResult for $gfacid: "
+               . mysqli_error( $db_handle ) . "\n";
+            return;
+        }
+    }
+
+    echo "closed out status-pending write for $gfacid (stage="
+       . ( $stage ?? 'n/a' ) . ", queueStatus=" . ( $queue_status ?? 'n/a' ) . ")\n";
+    @unlink( $marker );
+}
+
 ## "php:<path>", matched no row, and the job read as unmonitored: --restart then
 ## started a second monitor for a job that already had one, and two monitors
 ## import the same results twice.
@@ -736,6 +818,18 @@ if ( $running || $restart || $restart_only ) {
                 continue;
             }
             close_out_finalizing_marker( $db_handle, $marker, $info );
+        }
+
+        ## Results already imported for these -- gfac.analysis is gone for
+        ## good, there is no row to come back and no worker liveness to
+        ## check. Just retry the write every --restart until it lands.
+        foreach ( status_pending_markers() as $marker ) {
+            $info = json_decode( (string) @file_get_contents( $marker ), true );
+            if ( !is_array( $info ) || empty( $info[ 'us3_db' ] ) || empty( $info[ 'gfacID' ] ) ) {
+                echo "ignoring unreadable status-pending marker $marker\n";
+                continue;
+            }
+            close_out_status_pending_marker( $db_handle, $marker, $info );
         }
     }
 
