@@ -2213,7 +2213,8 @@ foreach ( $ssh_targets as $name => $c ) {
 
 ## ------------------------------------------------------------- 5. breaker directory
 
-step( "5. Circuit-breaker, ssh-control and elog directories, and the runtime-advisory pilot table" );
+step( "5. Circuit-breaker, ssh-control and elog directories, the runtime-advisory pilot table,"
+    . " and the metascheduler pick_cluster() tables" );
 
 $web_group_entry = posix_getgrnam( $web_group );
 if ( $web_group_entry === false ) {
@@ -2405,6 +2406,32 @@ function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_err
                         . " mysql gfac < $runtime_table_sql" ];
     }
     return [ 'FAIL', "could not create gfac.runtime_prediction: " . reason( (string) $create_error ) ];
+}
+
+## Same classification as runtime_prediction_create_outcome(), generalized to
+## either of the metascheduler pick_cluster() tables (metascheduler_decision,
+## cluster_status_nudge), which share the exact same "purely additive, a
+## missing-privilege error is a note, not a FAIL" reasoning: neither is read
+## or written at all on a host that never configures a metascheduler
+## pseudo-cluster entry.
+function metascheduler_table_create_outcome( $table, $sql_file, $create_sql, $create_ok,
+                                              $create_errno, $create_error ) {
+    if ( trim( (string) $create_sql ) === '' ) {
+        return [ 'FAIL', "gfac.$table's SQL file has no SQL left after stripping comments" ];
+    }
+    if ( $create_ok ) {
+        return [ 'done', "gfac.$table created" ];
+    }
+    if ( in_array( (int) $create_errno, [ 1142, 1044 ], true ) ) {
+        ## 1142 (command denied) / 1044 (access denied to database): see
+        ## runtime_prediction_create_outcome()'s own comment -- the gfac
+        ## account lacking CREATE is an expected, optional gap here too.
+        return [ 'note', "gfac account lacks privilege to create gfac.$table (metascheduler"
+                        . " pick_cluster()): " . reason( (string) $create_error )
+                        . "; an account with CREATE on gfac can run it by hand:"
+                        . " mysql gfac < $sql_file" ];
+    }
+    return [ 'FAIL', "could not create gfac.$table: " . reason( (string) $create_error ) ];
 }
 
 ## Same classification as runtime_prediction_create_outcome(), for the
@@ -2618,6 +2645,70 @@ if ( !is_file( $runtime_table_sql ) ) {
                 $create, $create_ok, $errno, $error, $runtime_table_sql );
             report( $status, $message );
         }
+    }
+}
+
+## -- metascheduler pick_cluster() tables (gridctl/pick_cluster.php,
+## -- pick_cluster_reserve.php -- see METASCHEDULER-DESIGN.md). Both purely
+## -- additive, same reasoning as the runtime advisory pilot table above: a
+## -- host that never configures a metascheduler pseudo-cluster entry in
+## -- global_config.php never writes to either, and CREATE TABLE IF NOT
+## -- EXISTS is safe to run on every upgrade regardless of whether it does.
+## -- Without this, the first metascheduler pseudo-cluster submission on an
+## -- upgraded host would fail outright (metascheduler_decision) or silently
+## -- lose its double-booking protection (cluster_status_nudge), neither of
+## -- which gridctl's own code can create for itself at runtime.
+foreach ( [
+    'metascheduler_decision' => "$gridctl_dir/metascheduler_decision_table.sql",
+    'cluster_status_nudge'   => "$gridctl_dir/cluster_status_nudge_table.sql",
+] as $metascheduler_table => $metascheduler_table_sql ) {
+    if ( !is_file( $metascheduler_table_sql ) ) {
+        ## An old gridctl checkout that predates the metascheduler feature:
+        ## not required for this upgrade, same reasoning as the runtime
+        ## advisory pilot table's own missing-file case above.
+        report( 'note', "$metascheduler_table_sql not present; skipping the optional metascheduler"
+              . " gfac.$metascheduler_table table -- not required for this upgrade" );
+        continue;
+    }
+
+    $exists = mysqli_query( $gdb, "SHOW TABLES IN gfac LIKE '$metascheduler_table'" );
+    if ( $exists && mysqli_num_rows( $exists ) > 0 ) {
+        report( 'ok', "gfac.$metascheduler_table already exists" );
+        continue;
+    }
+
+    ## Reuses the runtime-advisory pilot table's own CREATE-on-gfac probe:
+    ## its check (ALL PRIVILEGES or CREATE, at gfac or global scope) has
+    ## nothing runtime-prediction-specific in it, and a roles-built gfac
+    ## account (SELECT/INSERT/UPDATE/DELETE only) is exactly the same account
+    ## either table would be missing CREATE on.
+    if ( ! $apply && ! gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
+        report( 'note', "gfac account lacks privilege to create gfac.$metascheduler_table"
+              . " (metascheduler pick_cluster()); an account with CREATE on gfac can run it by"
+              . " hand: mysql gfac < $metascheduler_table_sql" );
+        continue;
+    }
+
+    report( 'todo', "create gfac.$metascheduler_table (metascheduler pick_cluster())" );
+    if ( $apply ) {
+        $lines  = explode( "\n", (string) file_get_contents( $metascheduler_table_sql ) );
+        $create = trim( implode( "\n", array_filter( $lines,
+            function ( $line ) { return !preg_match( '/^\s*--/', $line ); } ) ) );
+
+        $create_ok = $create !== '' ? mysqli_query( $gdb, $create ) : false;
+        $errno = 0;
+        $error = '';
+        if ( $create !== '' && !$create_ok ) {
+            $errno = mysqli_errno( $gdb );
+            $error = mysqli_error( $gdb );
+        }
+        if ( $create_ok ) {
+            $changes++;
+        }
+
+        list( $status, $message ) = metascheduler_table_create_outcome(
+            $metascheduler_table, $metascheduler_table_sql, $create, $create_ok, $errno, $error );
+        report( $status, $message );
     }
 }
 
