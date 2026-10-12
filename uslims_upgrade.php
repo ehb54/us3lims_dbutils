@@ -386,6 +386,15 @@ function backup_path( $name ) {
     return ensure_backup_dir() . '/' . basename( $name );
 }
 
+## The $common_dir value every other on-disk default already assumes for a
+## us3lims-roles-laid-out host: webinfo's and newinst's own config templates
+## both hardcode '/srv/www/htdocs/common/' for exactly this reason (the
+## real roles layout, not the dev Docker container's /var/www/html/common/).
+## Pure so step 9's instance catch-up can be tested without a live host.
+function common_dir_default( $wwwpath ) {
+    return rtrim( $wwwpath, '/' ) . '/common/';
+}
+
 ## A copy of a file this script appends to, taken once per file, so the append can
 ## be undone. write_file() already backs up what it rewrites; the ssh files are
 ## appended to instead, and were the one change with nothing to roll back to.
@@ -3130,7 +3139,7 @@ if ( !$apply ) {
     }
 }
 
-step( "9. people_audit UTC migration" );
+step( "9. Per-instance catch-up (\$common_dir, people_audit UTC migration)" );
 
 ## Unlike dbupgrade/stage2_import_dbinsts.php (which imports a 4.2.0
 ## dbinstance wholesale onto a new host), this upgrade runs against the
@@ -3147,8 +3156,10 @@ step( "9. people_audit UTC migration" );
 ## the site itself depends on, never root or a separate db_config.php.
 ## discover_lims_instance_configs() (utility.php) is shared with the
 ## standalone migrate_people_audit_utc.php, so both agree on what "every
-## instance on this host" means.
-$instance_configs = discover_lims_instance_configs( $wwwpath, $us3_home );
+## instance on this host" means. $instance_paths (by reference) gets the
+## real file each entry's config was actually read from -- needed below to
+## write $common_dir back to the right file, not guessed from $wwwpath.
+$instance_configs = discover_lims_instance_configs( $wwwpath, $us3_home, $instance_paths );
 
 if ( !$instance_configs ) {
     report( 'note', "no $wwwpath/uslims3 config.php found; nothing to migrate" );
@@ -3157,6 +3168,38 @@ if ( !$instance_configs ) {
         if ( isset( $cfg[ 'error' ] ) ) {
             report( 'note', "$label: " . reason( $cfg[ 'error' ] ) . "; convert people_audit by hand" );
             continue;
+        }
+
+        ## THE BUG this answers (round-13 blocking item, dbinst#57/newinst#27/
+        ## webinfo#17): round 12 added $common_dir to the base+overlay v1
+        ## contract and to newinst's generator, so every NEW instance gets it.
+        ## Nothing ever set it for an instance that already existed before
+        ## that round landed -- the upgrade migrates no instance's config.php
+        ## at all today, so every pre-existing instance keeps rendering pages
+        ## with no shared header, footer or CSS, forever, until someone edits
+        ## the file by hand. Fixed the same way the ssh host-key/authorized-
+        ## key appends above do it: back up, then append one line.
+        if ( empty( $cfg[ 'common_dir' ] ) ) {
+            $common_dir_value = common_dir_default( $wwwpath );
+            $instance_path    = $instance_paths[ $label ] ?? null;
+            report( 'todo', "$label: set \$common_dir (missing -- pages render with no shared"
+                           . " header, footer or CSS) to " . var_export( $common_dir_value, true ) );
+            if ( $apply && $instance_path !== null && confirm( "Append \$common_dir to $instance_path?" ) ) {
+                $saved = backup_append_target( $instance_path, "config.$label" );
+                if ( $saved === '' ) {
+                    report( 'FAIL', "$label: could not back up $instance_path, so \$common_dir was not added" );
+                } elseif ( file_put_contents( $instance_path,
+                           "\n\$common_dir = " . var_export( $common_dir_value, true ) . ";\n", FILE_APPEND ) === false ) {
+                    report( 'FAIL', "$label: could not append \$common_dir to $instance_path" );
+                } else {
+                    $changes++;
+                    report( 'done', "$label: \$common_dir added to $instance_path (previous version in $saved)" );
+                }
+            } elseif ( $apply && $instance_path === null ) {
+                report( 'FAIL', "$label: resolved no config file path to append \$common_dir to" );
+            }
+        } else {
+            report( 'ok', "$label: \$common_dir is set" );
         }
 
         ## Checked here, not left to migrate_people_audit_created_at_to_utc()'s

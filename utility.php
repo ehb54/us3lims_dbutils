@@ -179,7 +179,15 @@ function config_vars( $file, &$why = null ) {
 ## Returns [ label => [ 'dbname'|'dbhost'|'dbusername'|'dbpasswd' => ..., ... ]
 ## or [ 'error' => string ], ... ]. A per-instance error does not stop the
 ## others from being reported.
-function discover_lims_instance_configs( $wwwpath, $us3_home ) {
+## $paths, when passed by reference, is populated with label => the real
+## config file path actually read (the overlay file for a migrated
+## instance, the raw config.php otherwise) -- the same resolution this
+## function already does internally to read $cfg, exposed so a caller that
+## needs to write a missing setting back (uslims_upgrade.php's step 9) can
+## target the exact file this function itself would read next time, not
+## guess at one of the two possible paths.
+function discover_lims_instance_configs( $wwwpath, $us3_home, &$paths = null ) {
+    $paths = [];
     $instance_configs = [];
     if ( is_file( "$wwwpath/uslims3/config.php" ) ) {
         ## Single-tenant: one instance, directly under uslims3/.
@@ -219,6 +227,7 @@ function discover_lims_instance_configs( $wwwpath, $us3_home ) {
             continue;
         }
         $resolved[ $label ] = $cfg;
+        $paths[ $label ]    = $real_path;
     }
     return $resolved;
 }
