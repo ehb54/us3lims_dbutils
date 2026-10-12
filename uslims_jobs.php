@@ -973,7 +973,20 @@ if ( $running || $restart || $restart_only ) {
     foreach ( $jm_restart_db as $index => $db ) {
         $gfacid   = $jm_restart_gfacid  [ $index ];
         $hpcreqid = $jm_restart_hpcreqid[ $index ];
-        $cmd = "php $us3bin/jobmonitor/jobmonitor.php $db $gfacid $hpcreqid";
+        ## This script itself can run as either root (an operator's manual
+        ## --restart) or us3 (us3lims-roles' boot-time us3-listen.service,
+        ## the only account gridctl#33's refuse-root-start even permits to
+        ## reach this code path). A monitor launched as root instead of us3
+        ## breaks it the same way a bare unconditional wrap once did when
+        ## this ran as us3: common's account-match gate
+        ## (remote_exec::is_local()) sends every call over ssh as root
+        ## instead of locally, root has no key for the cluster, every poll
+        ## fails with "No ECDSA host key", and the stuck monitor holds the
+        ## job lock so a later --restart as us3 cannot replace it either.
+        ## runuser_wrap_if_root() picks the right one instead of assuming
+        ## root unconditionally.
+        $inner_cmd = "php $us3bin/jobmonitor/jobmonitor.php $db $gfacid $hpcreqid";
+        $cmd       = runuser_wrap_if_root( $inner_cmd );
         echo "restarting: $cmd\n";
         run_cmd( $cmd );
         if ( $restart_only && ++$restarted >= $restart_only ) {
@@ -1229,6 +1242,59 @@ function hpcreqout( $reqid ) {
         ;
 }    
 
+## Resolve runuser's real path instead of relying on PATH: with an empty
+## environment (cron's default PATH, or a bare `env -i`), PATH may not
+## include /usr/sbin, where runuser normally lives, and a bare "runuser"
+## then fails to exec at all (rc 255). Falls back to the bare name only if
+## neither candidate exists, so a host with it somewhere else still tries
+## rather than failing outright on a resolution this function can't do.
+function runuser_bin() {
+    foreach ( array( '/usr/sbin/runuser', '/sbin/runuser' ) as $candidate ) {
+        if ( is_executable( $candidate ) ) {
+            return $candidate;
+        }
+    }
+
+    return 'runuser';
+}
+
+## Wrap $innerCmd in `runuser -l us3 -c` only when this process is actually
+## root; run it directly otherwise, since it then already IS us3 and needs
+## no privilege change at all.
+##
+## THE BUG this replaces: every subcommand that spawns a background
+## process (most visibly --restart's monitor spawn, below) unconditionally
+## wrapped it in `runuser -l us3 -c ...`. runuser refuses a non-root caller
+## outright ("may not be used by non-root users"), so this script failing
+## as us3 (not root) meant rc 255 and the wrapped command never ran at all
+## -- confirmed for real: us3lims-roles' us3-listen.service runs
+## services.php start as us3, which runs uslims_jobs.php --restart, so
+## after every reboot zero monitors came back for jobs that were running
+## when the host went down. gridctl#33 now refuses to even start the
+## daemons as root, so running this script as root to sidestep the bug
+## is no longer an option either -- us3 is the only account that can ever
+## reach this code path.
+function runuser_wrap_if_root( $innerCmd ) {
+    if ( function_exists( 'posix_geteuid' ) && posix_geteuid() === 0 ) {
+        return runuser_bin() . ' -l us3 -c ' . escapeshellarg( $innerCmd );
+    }
+
+    return $innerCmd;
+}
+
+## The shell command --getrun uses to check $rundir exists on the cluster
+## before attempting either rsync fetch. Pure (string building only, no
+## exec), so the escaping is testable without a real connection. Always
+## wrapped (not runuser_wrap_if_root()): --getrun's own rsync fetches just
+## below are unconditionally wrapped too, matching this call's existing
+## behavior, which the round-11 fix deliberately left alone -- --getrun is
+## an interactive debugging subcommand run by an operator, not part of the
+## boot-time --restart path runuser_wrap_if_root() exists for.
+function remote_dir_check_command( $login, $rundir ) {
+    return runuser_bin() . ' -l us3 -c '
+         . escapeshellarg( "ssh " . escapeshellarg( $login ) . " test -d " . escapeshellarg( $rundir ) );
+}
+
 function hpcresbyreqout( $reqid, $reqisgfac = false ) {
     global $fullrpt;
     global $db;
@@ -1398,9 +1464,11 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## top-level name is asked for too in case a layout ever puts it there,
     ## same order gridctl's own fetch tries them in (jobmonitor/cleanup.php's
     ## $tar_candidates). Asking for both is harmless either way.
-    ## These all sit directly in $rundir, which exists from submission
-    ## onward, so --ignore-missing-args below cleanly covers every one that
-    ## simply isn't there yet.
+    ## These all sit directly in $rundir once a job has been staged, so
+    ## --ignore-missing-args below cleanly covers every one that simply
+    ## isn't there yet -- but $rundir itself only exists from staging
+    ## onward, not from submission: a job whose submission failed before
+    ## scp ever ran (or a stale/bad --reqid) has no $rundir at all.
     $getfiles = [
         "us3.slurm"
         ,$inputfile
@@ -1408,6 +1476,26 @@ if ( $getrundir || $getrun || $copyrun ) {
         ,"stderr"
         ,"analysis-results.tar"
         ];
+
+    ## Checked before either rsync call below: --ignore-missing-args only
+    ## covers a missing FILE inside an existing directory (see output/'s own
+    ## comment further down, which hits the same gap for its one file) -- a
+    ## missing $rundir itself still has rsync print its own "change_dir ...
+    ## failed" once per brace-expanded file above (five lines), at rc 0,
+    ## which reads as noise instead of the one simple fact it stands for.
+    exec( remote_dir_check_command( $login, $rundir ) . " 2>&1", $remoteDirCheckOutput, $remoteDirCheckStatus );
+
+    ## 255 is ssh's own transport-failure exit code, not test -d's: a host
+    ## that could not be reached at all reads very differently from one
+    ## that answered and genuinely has no such directory, but both used to
+    ## print the same "never staged" line -- round-11 nit (dbutils#45).
+    if ( $remoteDirCheckStatus === 255 ) {
+        echo "could not reach $login to check $rundir: " . implode( "\n", $remoteDirCheckOutput ) . "\n";
+        echoline();
+    } elseif ( $remoteDirCheckStatus !== 0 ) {
+        echo "$rundir does not exist on $login -- this job was never staged there\n";
+        echoline();
+    } else {
 
     ## $login and $rundir are quoted; the resulting runuser -c argument is
     ## quoted as a whole too, instead of the previous hand-rolled double
@@ -1423,7 +1511,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## the file that mattered, output/analysis-results.tar, arrived just
     ## fine.
     $inner_cmd   = "rsync -avz --ignore-missing-args $remote_spec " . escapeshellarg( $tdir );
-    $cmd         = "runuser -l us3 -c " . escapeshellarg( $inner_cmd );
+    $cmd         = runuser_wrap_if_root( $inner_cmd );
 
     echoline();
     echo "$cmd\n";
@@ -1445,7 +1533,8 @@ if ( $getrundir || $getrun || $copyrun ) {
     $output_spec = escapeshellarg( $login ) . ':'
                  . escapeshellarg( "$rundir/output/analysis-results.tar" );
     $output_cmd  = "rsync -avz --ignore-missing-args $output_spec " . escapeshellarg( $tdir );
-    run_cmd( "runuser -l us3 -c " . escapeshellarg( $output_cmd ), false );
+    run_cmd( runuser_wrap_if_root( $output_cmd ), false );
+    }
 
     echo "results in:\n$tdir\n";
     echoline();
@@ -1498,7 +1587,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## (cluster_details' login/workdir), the same risk category $login/
     ## $rundir already were above.
     $inner_cmd = "ssh " . escapeshellarg( $dlogin ) . " mkdir -p " . escapeshellarg( $dworkdir );
-    $cmd = "runuser -l us3 -c " . escapeshellarg( $inner_cmd );
+    $cmd = runuser_wrap_if_root( $inner_cmd );
     echoline();
     echo "$cmd\n";
     echoline();
@@ -1507,7 +1596,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## rsync to workdir/../test/db/reqid
     $inner_cmd = "rsync -avz " . escapeshellarg( "$tdir/" ) . "* "
                . escapeshellarg( $dlogin ) . ':' . escapeshellarg( $dworkdir );
-    $cmd = "runuser -l us3 -c " . escapeshellarg( $inner_cmd );
+    $cmd = runuser_wrap_if_root( $inner_cmd );
     echoline();
     echo "$cmd\n";
     echoline();

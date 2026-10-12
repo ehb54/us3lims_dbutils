@@ -70,7 +70,8 @@ Steps
     the national HPC ones to SSH instead, then sets the global_config.php
     settings the new code requires (queue time, tenant scope, local cluster,
     env_script_lines per cluster, single_node on one-node appliances)
-4 : records each cluster's host key (and, for the host's own cluster, authorizes
+4 : records the host key for each active cluster and any cluster named with
+    --activate that isn't active yet (and, for the host's own cluster, authorizes
     the key) and checks ssh for us3 and the web account
 5 : creates the shared circuit-breaker directory, the shared ssh-control directory
     (common#24, sticky bit so one account cannot rename another's subdirectory
@@ -509,6 +510,52 @@ function run_as( $account, $cmd, &$output = null, &$errors = null ) {
     $output = trim( $out );
     $errors = trim( $err );
     return $rc;
+}
+
+## Classify the us3-listen systemd unit's configured account from
+## systemctl's own raw output, pure so the decision is testable without a
+## live systemd. $rc is systemctl show's own exit status; $loadState and
+## $user are 'systemctl show -p LoadState -p User --value us3-listen.service'
+## own two output lines, in that order.
+##
+## $rc stays 0 and $user stays '' for a unit that was never installed at
+## all (a dev/test host, or one not built by us3lims-roles, or a fresh
+## host before roles has run yet) -- systemctl show still succeeds and
+## reports default/empty property values rather than failing outright, so
+## $loadState ('not-found' instead of 'loaded') is what actually
+## distinguishes "not installed" from "installed with no User= line",
+## which $user alone cannot tell apart (both read '').
+##
+## THE BUG this answers (round-11/12 should-fix, dbutils#45): --check
+## reported "All checks passed" on a host whose us3-listen unit had no
+## User= line at all. gridctl#33's services.php now refuses to start as
+## root, so that host could never actually start the gridctl services --
+## not a style nit, a host that can never come up after a reboot.
+function us3_listen_unit_user_outcome( $rc, $loadState, $user ) {
+    if ( $rc !== 0 ) {
+        return [ 'note', "could not query the us3-listen systemd unit (systemctl exited $rc);"
+                        . " skipping the User= check" ];
+    }
+
+    if ( $loadState !== 'loaded' ) {
+        return [ 'note', "us3-listen.service is not installed on this host ($loadState);"
+                        . " skipping the User= check" ];
+    }
+
+    if ( $user === '' || $user === 'root' ) {
+        return [ 'FAIL', "the us3-listen systemd unit has no User=us3 ("
+                        . ( $user === '' ? 'unset, defaults to root' : 'explicitly set to root' )
+                        . "); services.php now refuses to start as root, so gridctl can never actually"
+                        . " start on this host until the unit is fixed: systemctl edit us3-listen"
+                        . " and add 'User=us3' under [Service], then systemctl daemon-reload" ];
+    }
+
+    if ( $user !== 'us3' ) {
+        return [ 'FAIL', "the us3-listen systemd unit runs as '$user', not us3; services.php refuses"
+                        . " to start as anything but us3" ];
+    }
+
+    return [ 'ok', "the us3-listen systemd unit runs as us3" ];
 }
 
 ## A cron line driving gridctl, under any of its names. A commented one counts
@@ -1100,6 +1147,19 @@ if ( $listeners === null ) {
     report( 'ok', "no gridctl service (listen, manage-us3-pipe, submitctl, esign) is running" );
 }
 
+## -- the us3-listen unit's own account, round-11/12 should-fix: gridctl#33
+## now refuses to start as root, so a unit with no User=us3 means this host
+## can never actually bring the gridctl services up at all. Not an idle-host
+## precondition (so it does not add to $busy[]) -- a mistake here is a
+## standing problem on every future reboot, not something to retry once a
+## current run finishes.
+[ $unit_show_out, , $unit_show_rc ] = capture(
+    'systemctl show -p LoadState -p User --value us3-listen.service' );
+$unit_show_lines = explode( "\n", $unit_show_out );
+list( $unit_status, $unit_msg ) = us3_listen_unit_user_outcome(
+    $unit_show_rc, $unit_show_lines[ 0 ] ?? '', $unit_show_lines[ 1 ] ?? '' );
+report( $unit_status, $unit_msg );
+
 ## -- jobmonitors. One per job on the new contract, none on an idle host.
 $monitors = jobmonitors( $jm_error );
 if ( $jm_error !== '' ) {
@@ -1280,9 +1340,9 @@ if ( !$res ) {
 ## Whether $grants (one string per SHOW GRANTS row for the connected
 ## account) includes the global-only PROCESS or SUPER privilege (or ALL
 ## PRIVILEGES at global scope, which implies both). Pure, no DB access, so
-## it is pinned down by a real unit test instead of only ever being
-## exercised against whatever privileges the account running this script
-## happens to have.
+## it is pinned down by a real unit test (in the lims aggregator's test
+## suite, not this repo) instead of only ever being exercised against
+## whatever privileges the account running this script happens to have.
 function has_global_process_or_super_privilege( array $grants ) {
     foreach ( $grants as $grant ) {
         $grant = (string) $grant;
@@ -1310,8 +1370,9 @@ function has_global_process_or_super_privilege( array $grants ) {
 ## SHOW PROCESSLIST call. Pure, no DB access, so the false FAIL this
 ## produced for any gfac account with PROCESS privilege -- MariaDB's own
 ## system threads always being present and always reported as "system
-## user"@"" -- is pinned down by a real unit test instead of only ever being
-## exercised against a live account's actual threads.
+## user"@"" -- is pinned down by a real unit test (in the lims aggregator's test
+## suite, not this repo) instead of only ever being exercised against a
+## live account's actual threads.
 function other_db_connections( array $rows ) {
     $others = [];
     foreach ( $rows as $row ) {
@@ -2307,8 +2368,9 @@ foreach ( $elog_targets as $path => $spec ) {
 ## CREATE TABLE (common#31's pilot table), given facts the caller has
 ## already gathered -- pure, no DB access, no globals -- so the "optional,
 ## pilot-scoped" downgrade below (a missing-privilege error is a note, not a
-## FAIL) is pinned down by a real unit test instead of only ever being
-## exercised against a live gfac account's actual privileges, the same gap
+## FAIL) is pinned down by a real unit test (in the lims aggregator's test
+## suite, not this repo) instead of only ever being exercised against a
+## live gfac account's actual privileges, the same gap
 ## that let single_node_sizing() above regress repeatedly. This
 ## step FAILed outright the first time it existed (744eef1), on every
 ## roles-built host, for exactly the two reasons this now downgrades to a
@@ -2377,8 +2439,9 @@ function runtime_prediction_alter_outcome( $alter_sql, $alter_ok, $alter_errno, 
 ## either schema or global scope. Pure, no DB access, so the roles-host
 ## false positive below (--check always claiming this table is a pending
 ## change, forever, on an account that --apply could never actually create
-## it for either) is pinned down by a real unit test instead of only ever
-## being exercised against a live account's actual grants.
+## it for either) is pinned down by a real unit test (in the lims
+## aggregator's test suite, not this repo) instead of only ever being
+## exercised against a live account's actual grants.
 function gfac_runtime_table_create_privileged( array $grants ) {
     foreach ( $grants as $line ) {
         if ( ! preg_match( '/^GRANT\s+(.+?)\s+ON\s+(\S+)\s+TO\s/i', $line, $m ) ) {
@@ -2473,14 +2536,20 @@ if ( !is_file( $runtime_table_sql ) ) {
         ## rows, including requests that never set prediction_cluster_name)
         ## the moment common#31 started writing them -- silently here, since
         ## this used to report "already exists" and stop looking.
+        ## 'prediction_cluster%', not the exact name: the bare LIKE only ever
+        ## matched prediction_cluster itself, so a table with that column but
+        ## not prediction_cluster_source (a half-migrated state -- the same
+        ## kind of state this whole ALTER exists to repair) still reported
+        ## 'ok' and skipped it. >= 2, not > 0, for the same reason: one
+        ## column matching is exactly the half-migrated case, not "done".
         $has_columns = is_file( $runtime_table_alter_sql )
-            ? mysqli_query( $gdb, "SHOW COLUMNS FROM gfac.runtime_prediction LIKE 'prediction_cluster'" )
+            ? mysqli_query( $gdb, "SHOW COLUMNS FROM gfac.runtime_prediction LIKE 'prediction_cluster%'" )
             : null;
 
         if ( $has_columns === null ) {
             report( 'ok', "gfac.runtime_prediction already exists"
                   . " ($runtime_table_alter_sql not present; skipping the column check)" );
-        } elseif ( $has_columns && mysqli_num_rows( $has_columns ) > 0 ) {
+        } elseif ( $has_columns && mysqli_num_rows( $has_columns ) >= 2 ) {
             report( 'ok', "gfac.runtime_prediction already exists, with prediction_cluster columns" );
         } elseif ( ! $apply && ! gfac_runtime_table_alter_privileged( mysqli_grant_rows( $gdb ) ) ) {
             ## Same --check/--apply privilege-probe reasoning as the CREATE
