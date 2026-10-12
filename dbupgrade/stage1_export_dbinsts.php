@@ -238,6 +238,20 @@ foreach ( $dbnames_used as $db => $val ) {
     }
     echo "completed: exporting $db autoincrements to $autoincfile\n";
     $extra_files[] = $autoincfile;
+
+    # This host's own session time zone, captured now while $db_handle is
+    # still the connection that actually wrote these rows -- stage2 cannot
+    # ask the source host anything once this package is the only thing that
+    # survives the trip, and without this it fell back to reading the
+    # *importing* host's own zone instead (round-11 should-fix, dbutils#52).
+    # Read, not guessed, same as migrate_people_audit_created_at_to_utc()'s
+    # own default would read if it ran locally on this host right now.
+    $tzfile  = "export-$use_dbhost-$db-timezone.txt";
+    $tz_res  = mysqli_query( $db_handle, "SELECT @@session.time_zone AS tz" );
+    $tz_row  = $tz_res ? mysqli_fetch_assoc( $tz_res ) : null;
+    $from_tz = ( $tz_row && $tz_row[ 'tz' ] !== '' ) ? $tz_row[ 'tz' ] : 'SYSTEM';
+    file_put_contents( $tzfile, $from_tz );
+    $extra_files[] = $tzfile;
 }
 
 # package

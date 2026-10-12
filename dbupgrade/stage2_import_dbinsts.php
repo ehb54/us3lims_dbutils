@@ -297,8 +297,17 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
             }
         }
 
+        # The writer's own zone, captured at export time (stage1), not
+        # this (the importing) host's -- round-11 should-fix, dbutils#52.
+        # Missing for a package made before this file existed: null falls
+        # back to migrate_people_audit_created_at_to_utc()'s original
+        # behavior (this host's own session zone), same as every other
+        # caller.
+        $tzfile = "export-$use_dbhost-$db-timezone.txt";
+        $writer_tz = file_exists( $tzfile ) ? trim( file_get_contents( $tzfile ) ) : null;
+
         check_db();
-        migrate_people_audit_created_at_to_utc( $db_handle, $db );
+        migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz );
     }
 }
 

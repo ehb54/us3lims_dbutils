@@ -854,7 +854,15 @@ function record_people_audit_utc_boundary( $db_handle, $db ) {
                              . " VALUES ( $max_id )" );
 }
 
-function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
+## $writer_tz: the zone the row's own writer actually ran in, when the
+## caller knows it and it differs from $db_handle's own session zone --
+## stage2 (importing a dbinstance exported from a different host) is the
+## one caller that can supply this, read from the export package's own
+## per-db timezone file (see dbupgrade/stage1_export_dbinsts.php). null
+## (every other caller: uslims_upgrade.php step 9, the standalone script,
+## and stage2 itself when the export package predates this field) keeps the
+## original behavior of reading $db_handle's own session.time_zone.
+function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = null ) {
     sql_identifier_or_die( $db );
 
     if ( people_audit_utc_migration_done( $db_handle, $db ) ) {
@@ -900,26 +908,33 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db ) {
         return;
     }
 
-    # $db_handle's own session time zone, not a value this function guesses
-    # or hardcodes, and not necessarily the zone the rows were actually
-    # written in if $db_handle is not the same connection/host that wrote
-    # them (stage2: that information does not survive the export/import
-    # round trip, so this reads whatever zone the server running stage2
-    # itself is in -- the caller is responsible for that being the right
-    # zone for its own scenario). 'SYSTEM' (the common default) defers to
-    # the OS's own tz rules via CONVERT_TZ, so DST in the historical data
-    # is still handled correctly without needing mysql.time_zone_* loaded --
-    # except for a row genuinely written during the repeated local hour
-    # when clocks fall back (e.g. 1:30am occurring twice): that instant is
-    # ambiguous by nature, and the original data carries no way to tell
-    # which of the two occurrences a given row meant. Confirmed directly
-    # (MariaDB, mysql.time_zone_name loaded, 'America/Chicago'): CONVERT_TZ()
-    # resolves the ambiguous hour to daylight time (the first occurrence),
-    # not standard -- a row that actually meant the second (standard-time)
-    # occurrence converts up to 60 minutes off. Accepted (README).
-    $tz_res  = mysqli_query( $db_handle, "SELECT @@session.time_zone AS tz" );
-    $tz_row  = $tz_res ? mysqli_fetch_assoc( $tz_res ) : null;
-    $from_tz = ( $tz_row && $tz_row[ 'tz' ] !== '' ) ? $tz_row[ 'tz' ] : 'SYSTEM';
+    # $writer_tz, when supplied, is the writer's own real zone (see the
+    # function-level comment above) and takes priority over $db_handle's
+    # session zone -- for stage2, that session zone is only ever the
+    # *importing* host's own zone, not necessarily the host that actually
+    # wrote the rows; round-11 should-fix, dbutils#52. Every other caller
+    # (uslims_upgrade.php step 9, the standalone script, and stage2 itself
+    # against an export package made before this parameter existed) has no
+    # $writer_tz and keeps the original behavior: $db_handle's own session
+    # time zone, not a value this function guesses or hardcodes. 'SYSTEM'
+    # (the common default) defers to the OS's own tz rules via CONVERT_TZ,
+    # so DST in the historical data is still handled correctly without
+    # needing mysql.time_zone_* loaded -- except for a row genuinely written
+    # during the repeated local hour when clocks fall back (e.g. 1:30am
+    # occurring twice): that instant is ambiguous by nature, and the
+    # original data carries no way to tell which of the two occurrences a
+    # given row meant. Confirmed directly (MariaDB, mysql.time_zone_name
+    # loaded, 'America/Chicago'): CONVERT_TZ() resolves the ambiguous hour
+    # to daylight time (the first occurrence), not standard -- a row that
+    # actually meant the second (standard-time) occurrence converts up to
+    # 60 minutes off. Accepted (README).
+    if ( $writer_tz !== null && $writer_tz !== '' ) {
+        $from_tz = $writer_tz;
+    } else {
+        $tz_res  = mysqli_query( $db_handle, "SELECT @@session.time_zone AS tz" );
+        $tz_row  = $tz_res ? mysqli_fetch_assoc( $tz_res ) : null;
+        $from_tz = ( $tz_row && $tz_row[ 'tz' ] !== '' ) ? $tz_row[ 'tz' ] : 'SYSTEM';
+    }
 
     # A named zone (e.g. 'America/Chicago') needs mysql.time_zone_name
     # loaded (mysql_tzinfo_to_sql) to resolve; 'SYSTEM' and a numeric offset
