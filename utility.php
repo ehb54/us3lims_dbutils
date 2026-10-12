@@ -791,11 +791,22 @@ function create_people_audit_utc_migration_marker_table( $db_handle, $db ) {
 ## records @@system_time_zone alongside $note's session-level value, since
 ## a session zone of 'SYSTEM' alone does not say which actual zone that
 ## resolved to on this server.
+##
+## @return bool whether the marker row was actually written. Every caller
+##              used to ignore this (the INSERT's own result was never even
+##              kept) -- round-13 blocker, dbutils#52: one caller's $note
+##              was 74 characters into a VARCHAR(64) column, which fails
+##              outright under strict sql_mode, so the instance was never
+##              actually marked done and kept getting re-examined on every
+##              later run, silently. $note is truncated defensively here
+##              too (not only fixed at that one call site), so a future
+##              caller with the same mistake fails loudly via this return
+##              value instead of reintroducing the identical silent miss.
 function mark_people_audit_utc_migration_done( $db_handle, $db, $note, $max_audit_id = null ) {
     sql_identifier_or_die( $db );
     create_people_audit_utc_migration_marker_table( $db_handle, $db );
 
-    $note_esc   = mysqli_real_escape_string( $db_handle, $note );
+    $note_esc   = mysqli_real_escape_string( $db_handle, substr( $note, 0, 64 ) );
     $sys_res    = mysqli_query( $db_handle, "SELECT @@system_time_zone AS tz" );
     $sys_row    = $sys_res ? mysqli_fetch_assoc( $sys_res ) : null;
     $sys_tz_sql = ( $sys_row && $sys_row[ 'tz' ] !== '' )
@@ -803,7 +814,7 @@ function mark_people_audit_utc_migration_done( $db_handle, $db, $note, $max_audi
                 : 'NULL';
     $max_id_sql = $max_audit_id === null ? 'NULL' : (int) $max_audit_id;
 
-    mysqli_query( $db_handle, "INSERT INTO $db._dbutils_people_audit_utc_migrated" // NOSONAR $db is validated above by sql_identifier_or_die(); $note_esc is mysqli_real_escape_string()'d
+    return (bool) mysqli_query( $db_handle, "INSERT INTO $db._dbutils_people_audit_utc_migrated" // NOSONAR $db is validated above by sql_identifier_or_die(); $note_esc is mysqli_real_escape_string()'d
                              . " ( from_time_zone, system_time_zone, max_audit_id )"
                              . " VALUES ( '$note_esc', $sys_tz_sql, $max_id_sql )" );
 }
@@ -890,58 +901,21 @@ function record_people_audit_utc_boundary( $db_handle, $db ) {
                              . " VALUES ( $max_id )" );
 }
 
-## Where uslims_upgrade.php step 0 records every dbinstance name it has
-## ever drawn a boundary for -- round-12 blocker, dbutils#52: "new
-## instances are still shifted". record_people_audit_utc_boundary() alone
-## cannot tell a genuinely pre-existing dbinstance (whose rows at or below
-## the boundary are real pre-4.3.0 local-time rows, needing conversion)
-## from one newinst created AFTER this host's first ever step-0 run (whose
-## rows, including everything up to "the current max auditID" step 0
-## would otherwise record as its boundary, are already correct UTC and
-## need no conversion at all) -- both look identical from people_audit's
-## own data alone. This file is that missing context.
-function dbutils_boundary_known_instances_path( $us3_home ) {
-    return "$us3_home/lims/etc/.dbutils_people_audit_utc_boundary_known_instances";
-}
-
-## [] means the file does not exist at all -- "never run before", not an
-## error: the caller distinguishes that (the very first time step 0 has
-## ever run on this host, so every dbinstance discovered during THIS run
-## is presumptively pre-existing) from a later run by checking the file's
-## own existence separately, since an existing-but-genuinely-empty list
-## reads identically here otherwise. null means the file exists but could
-## not be read (e.g. a permission problem) -- distinct from both, since
-## treating an unreadable file as "nothing known yet" would make every
-## dbinstance, new and old, look pre-existing again on that run, silently
-## reopening the exact bug this mechanism exists to close.
-function dbutils_boundary_known_instances_load( $us3_home ) {
-    $path = dbutils_boundary_known_instances_path( $us3_home );
-
-    if ( !is_file( $path ) ) {
-        return [];
-    }
-
-    $raw = @file_get_contents( $path );
-    if ( $raw === false ) {
-        return null;
-    }
-
-    $decoded = $raw !== '' ? json_decode( $raw, true ) : [];
-    return is_array( $decoded ) ? array_values( $decoded ) : null;
-}
-
-function dbutils_boundary_known_instances_save( $us3_home, array $names ) {
-    $path = dbutils_boundary_known_instances_path( $us3_home );
-    $dir  = dirname( $path );
-    if ( !is_dir( $dir ) ) {
-        @mkdir( $dir, 0770, true );
-    }
-    $ok = @file_put_contents( $path, json_encode( array_values( array_unique( $names ) ) ) );
-    if ( $ok !== false ) {
-        @chmod( $path, 0600 );
-    }
-    return $ok !== false;
-}
+## dbutils_boundary_known_instances_path()/_load()/_save() used to live
+## here: a host-level file tracking every dbinstance name step 0 had ever
+## drawn a boundary for, so a name missing from it was presumed created
+## after the host's first-ever step-0 run (round-12 blocker, dbutils#52).
+## Removed (round 13, dbutils#52): that signal was "is this instance absent
+## from every step-0 run before this one", which breaks in both directions
+## -- a genuinely pre-existing instance unreachable on every earlier run (a
+## stale password, a restored backup) looked exactly like a brand-new one,
+## and every instance on a host's first-ever --apply went through the
+## boundary path unconditionally, even one created fresh under already-
+## current code moments earlier. uslims_upgrade.php now asks
+## instance_is_new_under_required_version() instead, which reads the
+## instance's own VERSION file directly -- the real answer to "has this
+## instance ever run older code", with no dependence on this host's
+## step-0 run history at all.
 
 ## $writer_tz: the zone the row's own writer actually ran in, when the
 ## caller knows it and it differs from $db_handle's own session zone --

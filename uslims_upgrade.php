@@ -986,6 +986,42 @@ function version_at_least( $version, $minimum ) {
                             $minimum, '>=' );
 }
 
+## discover_lims_instance_configs()'s own path resolution, mirrored here:
+## single-tenant lives directly under uslims3/, multi-tenant under its own
+## named subdirectory.
+function instance_dbinst_dir( $wwwpath, $label ) {
+    return $label === 'default' ? "$wwwpath/uslims3" : "$wwwpath/uslims3/$label";
+}
+
+## True when $label's own dbinst checkout is already at $required_version
+## or newer -- the only way that can be true is that create_instance.php
+## cloned it from an already-$required_version-or-newer dbinst, so this
+## instance has never run older code and every people_audit row it has (if
+## any) was written by that version's own always-UTC write_audit_row() from
+## the moment the instance was created.
+##
+## THE BUG this answers (round-13 blocking item, dbutils#52): a flat,
+## host-level "known instance names" file used to answer this instead (see
+## dbutils_boundary_known_instances_* below -- removed). Its signal was "is
+## this instance absent from every step-0 run before this one", which is
+## not the same question and breaks in both directions: a genuinely
+## pre-existing instance that simply failed to connect on every earlier run
+## (a stale password, a restored backup) looked exactly like a brand-new
+## one and was wrongly marked done with nothing converted; conversely,
+## every instance on a host's first-ever --apply was run through the
+## boundary path unconditionally, even one created fresh under already-
+## $required_version code moments earlier, whose already-correct rows then
+## got shifted by step 9's later conversion. Reading this instance's own
+## VERSION file instead answers the real question directly, with no
+## dependence on step-0's run history on this host at all: a missing or
+## unreadable VERSION file is treated as "not new" (needs a boundary) --
+## the safe default, same as repo_version()'s own "missing file, not a
+## known version" return and step 0's own stale-code check above.
+function instance_is_new_under_required_version( $wwwpath, $label, $required_version ) {
+    $version = repo_version( instance_dbinst_dir( $wwwpath, $label ) );
+    return $version !== null && version_at_least( $version, $required_version );
+}
+
 $stack = [ 'gridctl' => $gridctl_dir,
            'dbutils' => __DIR__,
            'common'  => "$wwwpath/common",
@@ -1076,25 +1112,6 @@ if ( $missing ) {
 ## step 9 to report by name; this only ever records a boundary for an
 ## instance step 9 can also reach.
 if ( $apply ) {
-    ## See dbutils_boundary_known_instances_load()'s own comment: this run
-    ## tells a genuinely pre-existing dbinstance apart from one newinst
-    ## created since the host's first-ever step-0 run, so the latter gets
-    ## marked done outright instead of a boundary drawn from its current
-    ## (already-correct UTC) rows, which would shift every one of them --
-    ## round-12 blocker, dbutils#52. The file's own existence (checked here,
-    ## not inferred from load()'s return) is what actually says "first run":
-    ## load() returns [] both for that and for a later run whose list is
-    ## genuinely empty, which are not the same thing to this loop.
-    $known_path = dbutils_boundary_known_instances_path( $us3_home );
-    $first_run  = !is_file( $known_path );
-    $known      = dbutils_boundary_known_instances_load( $us3_home );
-    $seen_now   = [];
-
-    if ( $known === null ) {
-        report( 'note', "could not read $known_path; treating every dbinstance below as"
-                       . " pre-existing rather than risk marking a genuinely new one done" );
-    }
-
     foreach ( discover_lims_instance_configs( $wwwpath, $us3_home ) as $label => $cfg ) {
         if ( isset( $cfg[ 'error' ] ) || !is_sql_identifier( $cfg[ 'dbname' ] ) ) {
             continue;
@@ -1104,24 +1121,29 @@ if ( $apply ) {
             continue;
         }
 
-        $seen_now[] = $cfg[ 'dbname' ];
+        ## Already resolved in an earlier run -- checked against this
+        ## instance's own persistent, per-database markers (set by this
+        ## same block, or by step 9), never against step-0's run history on
+        ## this host. An instance that failed to connect on every earlier
+        ## run (a stale password, a restored backup) is still correctly
+        ## recognized here the first time it finally does.
+        if ( people_audit_utc_migration_done( $conn, $cfg[ 'dbname' ] )
+             || people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] ) !== null ) {
+            mysqli_close( $conn );
+            continue;
+        }
 
-        if ( $known !== null && !$first_run && !in_array( $cfg[ 'dbname' ], $known, true ) ) {
-            mark_people_audit_utc_migration_done( $conn, $cfg[ 'dbname' ],
-                'n/a (created after this host\'s first UTC-boundary run; nothing to convert)' );
+        if ( instance_is_new_under_required_version( $wwwpath, $label, $required_version ) ) {
+            if ( !mark_people_audit_utc_migration_done( $conn, $cfg[ 'dbname' ],
+                     "n/a ($required_version+ instance)" ) ) {
+                report( 'FAIL', "$label ({$cfg['dbname']}): could not record the UTC migration"
+                               . " marker (" . reason( mysqli_error( $conn ) ) . ")" );
+            }
         } else {
             record_people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] );
         }
 
         mysqli_close( $conn );
-    }
-
-    ## Not attempted when $known could not be read: merging $seen_now onto
-    ## an empty list would overwrite whatever the file actually held with
-    ## only this run's names, discarding every name from before it instead
-    ## of leaving the unreadable file for an operator to look at.
-    if ( $known !== null ) {
-        dbutils_boundary_known_instances_save( $us3_home, array_merge( $known, $seen_now ) );
     }
 }
 

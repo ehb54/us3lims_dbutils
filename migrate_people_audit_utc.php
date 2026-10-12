@@ -179,9 +179,10 @@ foreach ( $targets as $label => $cfg ) {
         ## would be unsafe too: the right boundary is "the last row written
         ## before the code actually went live", which this script cannot
         ## reconstruct after the fact any better than a guess. Run
-        ## uslims_upgrade.php (which can tell the two cases apart via
-        ## dbutils_boundary_known_instances_path()) instead, or draw the
-        ## boundary by hand if this is genuinely a pre-4.3.0 instance.
+        ## uslims_upgrade.php (which can tell the two cases apart by reading
+        ## the instance's own VERSION file, instance_is_new_under_required_
+        ## version()) instead, or draw the boundary by hand if this is
+        ## genuinely a pre-4.3.0 instance.
         echo "[FAIL] $label ({$cfg['dbname']}): no UTC boundary is recorded for this instance;"
            . " refusing to guess whether every row needs converting or none do -- run"
            . " uslims_upgrade.php --apply instead, or record a boundary by hand if this is"
