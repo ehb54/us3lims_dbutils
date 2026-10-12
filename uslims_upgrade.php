@@ -522,6 +522,52 @@ function run_as( $account, $cmd, &$output = null, &$errors = null ) {
     return $rc;
 }
 
+## Classify the us3-listen systemd unit's configured account from
+## systemctl's own raw output, pure so the decision is testable without a
+## live systemd. $rc is systemctl show's own exit status; $loadState and
+## $user are 'systemctl show -p LoadState -p User --value us3-listen.service'
+## own two output lines, in that order.
+##
+## $rc stays 0 and $user stays '' for a unit that was never installed at
+## all (a dev/test host, or one not built by us3lims-roles, or a fresh
+## host before roles has run yet) -- systemctl show still succeeds and
+## reports default/empty property values rather than failing outright, so
+## $loadState ('not-found' instead of 'loaded') is what actually
+## distinguishes "not installed" from "installed with no User= line",
+## which $user alone cannot tell apart (both read '').
+##
+## THE BUG this answers (round-11/12 should-fix, dbutils#45): --check
+## reported "All checks passed" on a host whose us3-listen unit had no
+## User= line at all. gridctl#33's services.php now refuses to start as
+## root, so that host could never actually start the gridctl services --
+## not a style nit, a host that can never come up after a reboot.
+function us3_listen_unit_user_outcome( $rc, $loadState, $user ) {
+    if ( $rc !== 0 ) {
+        return [ 'note', "could not query the us3-listen systemd unit (systemctl exited $rc);"
+                        . " skipping the User= check" ];
+    }
+
+    if ( $loadState !== 'loaded' ) {
+        return [ 'note', "us3-listen.service is not installed on this host ($loadState);"
+                        . " skipping the User= check" ];
+    }
+
+    if ( $user === '' || $user === 'root' ) {
+        return [ 'FAIL', "the us3-listen systemd unit has no User=us3 ("
+                        . ( $user === '' ? 'unset, defaults to root' : 'explicitly set to root' )
+                        . "); services.php now refuses to start as root, so gridctl can never actually"
+                        . " start on this host until the unit is fixed: systemctl edit us3-listen"
+                        . " and add 'User=us3' under [Service], then systemctl daemon-reload" ];
+    }
+
+    if ( $user !== 'us3' ) {
+        return [ 'FAIL', "the us3-listen systemd unit runs as '$user', not us3; services.php refuses"
+                        . " to start as anything but us3" ];
+    }
+
+    return [ 'ok', "the us3-listen systemd unit runs as us3" ];
+}
+
 ## A cron line driving gridctl, under any of its names. A commented one counts
 ## too: step 1 has the operator comment the LIMS entries out for the upgrade, so
 ## skipping comments here would leave the entry behind for them to re-enable
@@ -1045,6 +1091,19 @@ if ( $listeners === null ) {
 } else {
     report( 'ok', "no gridctl service (listen, manage-us3-pipe, submitctl, esign) is running" );
 }
+
+## -- the us3-listen unit's own account, round-11/12 should-fix: gridctl#33
+## now refuses to start as root, so a unit with no User=us3 means this host
+## can never actually bring the gridctl services up at all. Not an idle-host
+## precondition (so it does not add to $busy[]) -- a mistake here is a
+## standing problem on every future reboot, not something to retry once a
+## current run finishes.
+[ $unit_show_out, , $unit_show_rc ] = capture(
+    'systemctl show -p LoadState -p User --value us3-listen.service' );
+$unit_show_lines = explode( "\n", $unit_show_out );
+list( $unit_status, $unit_msg ) = us3_listen_unit_user_outcome(
+    $unit_show_rc, $unit_show_lines[ 0 ] ?? '', $unit_show_lines[ 1 ] ?? '' );
+report( $unit_status, $unit_msg );
 
 ## -- jobmonitors. One per job on the new contract, none on an idle host.
 $monitors = jobmonitors( $jm_error );
@@ -2420,14 +2479,20 @@ if ( !is_file( $runtime_table_sql ) ) {
         ## rows, including requests that never set prediction_cluster_name)
         ## the moment common#31 started writing them -- silently here, since
         ## this used to report "already exists" and stop looking.
+        ## 'prediction_cluster%', not the exact name: the bare LIKE only ever
+        ## matched prediction_cluster itself, so a table with that column but
+        ## not prediction_cluster_source (a half-migrated state -- the same
+        ## kind of state this whole ALTER exists to repair) still reported
+        ## 'ok' and skipped it. >= 2, not > 0, for the same reason: one
+        ## column matching is exactly the half-migrated case, not "done".
         $has_columns = is_file( $runtime_table_alter_sql )
-            ? mysqli_query( $gdb, "SHOW COLUMNS FROM gfac.runtime_prediction LIKE 'prediction_cluster'" )
+            ? mysqli_query( $gdb, "SHOW COLUMNS FROM gfac.runtime_prediction LIKE 'prediction_cluster%'" )
             : null;
 
         if ( $has_columns === null ) {
             report( 'ok', "gfac.runtime_prediction already exists"
                   . " ($runtime_table_alter_sql not present; skipping the column check)" );
-        } elseif ( $has_columns && mysqli_num_rows( $has_columns ) > 0 ) {
+        } elseif ( $has_columns && mysqli_num_rows( $has_columns ) >= 2 ) {
             report( 'ok', "gfac.runtime_prediction already exists, with prediction_cluster columns" );
         } elseif ( ! $apply && ! gfac_runtime_table_alter_privileged( mysqli_grant_rows( $gdb ) ) ) {
             ## Same --check/--apply privilege-probe reasoning as the CREATE

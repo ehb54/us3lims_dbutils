@@ -1372,7 +1372,14 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## which reads as noise instead of the one simple fact it stands for.
     exec( remote_dir_check_command( $login, $rundir ) . " 2>&1", $remoteDirCheckOutput, $remoteDirCheckStatus );
 
-    if ( $remoteDirCheckStatus !== 0 ) {
+    ## 255 is ssh's own transport-failure exit code, not test -d's: a host
+    ## that could not be reached at all reads very differently from one
+    ## that answered and genuinely has no such directory, but both used to
+    ## print the same "never staged" line -- round-11 nit (dbutils#45).
+    if ( $remoteDirCheckStatus === 255 ) {
+        echo "could not reach $login to check $rundir: " . implode( "\n", $remoteDirCheckOutput ) . "\n";
+        echoline();
+    } elseif ( $remoteDirCheckStatus !== 0 ) {
         echo "$rundir does not exist on $login -- this job was never staged there\n";
         echoline();
     } else {
