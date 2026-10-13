@@ -456,6 +456,25 @@ function marker_process_alive( $pid, $marker_started = 0 ) {
     return true;
 }
 
+## How long a marker can sit unresolved (its own row genuinely never comes
+## back -- not just a timing race with the worker that is about to finish
+## writing it) before --restart calls it out distinctly, instead of
+## printing the exact same "leaving it for the next --restart" line forever
+## with nothing to tell an operator this one is different (round-13 nit,
+## dbutils#52).
+## A function, not a top-level const: this script's functions are pulled
+## out for unit testing by a tokenizer-based extractor (see tests/support/
+## dbutils/load-uslims-jobs.php) that does not also pull out const
+## declarations.
+function orphan_marker_age_seconds() {
+    return 86400;
+}
+
+function marker_is_orphaned( $marker ) {
+    $mtime = @filemtime( $marker );
+    return $mtime !== false && ( time() - $mtime ) > orphan_marker_age_seconds();
+}
+
 ## Closes out one finalizing marker whose worker is confirmed gone (--restart's
 ## caller already checked marker_process_alive() and the gfac.analysis row).
 ## $info is the marker's decoded JSON: 'gfacID', 'us3_db', and 'autoflowAnalysisID'
@@ -542,6 +561,10 @@ function close_out_finalizing_marker( $db_handle, $marker, array $info ) {
             echo "autoflowAnalysisID $autoflow_id for $gfacid is already"
                . " '{$found->status}'; removing its marker\n";
             @unlink( $marker );
+        } elseif ( marker_is_orphaned( $marker ) ) {
+            echo "no autoflowAnalysis row for autoflowAnalysisID $autoflow_id / $gfacid after more"
+               . " than " . (int) ( orphan_marker_age_seconds() / 3600 ) . "h; this marker looks"
+               . " orphaned, not merely early -- review it by hand: $marker\n";
         } else {
             echo "no autoflowAnalysis row yet for autoflowAnalysisID $autoflow_id / $gfacid;"
                . " leaving its marker for the next --restart\n";
@@ -627,8 +650,15 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
                 "select status from $us3_db_esc.autoflowAnalysis where requestID=$autoflow_id"
               . " and currentGfacID='$gfacid_esc'", false, true );
             if ( $found === false ) {
-                echo "no autoflowAnalysis row for autoflowAnalysisID $autoflow_id / $gfacid;"
-                   . " leaving its status-pending marker for the next --restart\n";
+                if ( marker_is_orphaned( $marker ) ) {
+                    echo "no autoflowAnalysis row for autoflowAnalysisID $autoflow_id / $gfacid after"
+                       . " more than " . (int) ( orphan_marker_age_seconds() / 3600 ) . "h; this"
+                       . " status-pending marker looks orphaned, not merely early -- review it by"
+                       . " hand: $marker\n";
+                } else {
+                    echo "no autoflowAnalysis row for autoflowAnalysisID $autoflow_id / $gfacid;"
+                       . " leaving its status-pending marker for the next --restart\n";
+                }
                 return;
             }
             echo "autoflowAnalysisID $autoflow_id for $gfacid is already '$stage';"
