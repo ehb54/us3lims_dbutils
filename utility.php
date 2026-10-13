@@ -4,6 +4,55 @@
 
 $STDERR = STDERR;
 
+## This host's real IANA zone name (e.g. 'America/Chicago'), for a caller
+## that read MySQL's own @@session.time_zone and got back the literal
+## string 'SYSTEM' -- which means "whatever this host's OS zone is" and
+## resolves differently depending on which host later evaluates it. That
+## is harmless for a query that runs and completes on the same host, but
+## wrong the moment the string itself is carried somewhere else to be
+## interpreted later (round-13 should-fix, dbutils#52: stage1 recorded the
+## literal word 'SYSTEM' in its export package, so stage2 importing to a
+## different time zone applied CONVERT_TZ(..., 'SYSTEM', ...) on ITS OWN
+## connection -- the importing host's zone, not the exporting host's that
+## actually wrote the rows -- silently shifting by the difference between
+## the two, with no error at all).
+##
+## /etc/localtime is the standard symlink to the real zoneinfo file on
+## every Linux distribution this stack targets (both the Debian/Ubuntu and
+## RHEL/EL-family dbutils has ever run on); its target's path, relative to
+## zoneinfo's own root, IS the IANA name. /etc/timezone (Debian/Ubuntu
+## only) is tried first since it is a plain file with nothing to resolve.
+## Returns null, not a guess, when neither can be read -- a caller must
+## decide for itself whether "SYSTEM, unresolved" is acceptable to still
+## record (interactive, same-host use) or a hard stop (exporting to a
+## package another host will read).
+##
+## $etc_timezone/$etc_localtime default to the real paths; a test passes
+## its own fixture files/symlinks instead of touching the real host's.
+function resolve_system_timezone( $etc_timezone = '/etc/timezone', $etc_localtime = '/etc/localtime' ) {
+    $tzFile = @file_get_contents( $etc_timezone );
+    if ( $tzFile !== false ) {
+        $tzFile = trim( $tzFile );
+        if ( $tzFile !== '' && in_array( $tzFile, timezone_identifiers_list(), true ) ) {
+            return $tzFile;
+        }
+    }
+
+    $link = @readlink( $etc_localtime );
+    if ( $link !== false ) {
+        $marker = '/zoneinfo/';
+        $pos    = strrpos( $link, $marker );
+        if ( $pos !== false ) {
+            $name = substr( $link, $pos + strlen( $marker ) );
+            if ( in_array( $name, timezone_identifiers_list(), true ) ) {
+                return $name;
+            }
+        }
+    }
+
+    return null;
+}
+
 function write_logl( $msg, $this_level = 0 ) {
     global $logging_level;
     global $self;
