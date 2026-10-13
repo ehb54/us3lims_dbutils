@@ -92,12 +92,17 @@ function migrations_for_range( $scope, $from, $to, $only_ids = null ) {
     return $out;
 }
 
-## Runs every host-scope migration due for $to, in order, against $gdb
-## (gfac's own connection -- already what uslims_upgrade.php holds
-## throughout).
-function run_host_migrations( $gdb, $to, $apply, $from = null ) {
-    foreach ( migrations_for_range( 'host', $from, $to ) as $m ) {
-        $m[ 'run' ]( $gdb, 'gfac', $apply, [] );
+## Runs every host-scope migration due for $to, in order. $gdb/'gfac' are
+## passed to every one for the migrations that are genuinely database
+## work (gfac's own connection -- already what uslims_upgrade.php holds
+## throughout); a host-scope migration that is really a file rewrite
+## (listen-config.php, global_config.php) ignores them and reads whatever
+## it needs from $context instead, the same pattern common_dir_backfill
+## already uses for an instance-scope migration with no real use for a
+## connection either.
+function run_host_migrations( $gdb, $to, $apply, $context = [], $only_ids = null, $from = null ) {
+    foreach ( migrations_for_range( 'host', $from, $to, $only_ids ) as $m ) {
+        $m[ 'run' ]( $gdb, 'gfac', $apply, $context );
     }
 }
 
