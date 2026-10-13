@@ -1,5 +1,35 @@
 # us3lims_dbutils
 
+## Upgrading a host
+
+This procedure doesn't change from release to release -- what `uslims_upgrade.php` itself
+checks and fixes does, and is documented under its own entry below, not here.
+
+1. Stop the web server (or otherwise block access), so nothing can write to any LIMS
+   database while the upgrade runs.
+2. Take a full sql dump (`uslims_binary_db_backup.php`, or your own backup process).
+3. Pull the new code for common, every instance's dbinst, gridctl and this repo
+   (dbutils). Host configuration and code/schema are upgraded separately, and the code
+   has to be in place first.
+4. `php uslims_upgrade.php --check` to see what it would do, then `--apply` to make the
+   changes.
+5. Restart the web server, confirm the host is actually serving again, and test (log
+   in, submit a job, check queue_viewer.php) before considering the host upgraded.
+
+Steps 1-3 happen before `--apply` ever runs, with nothing serving requests in between --
+that's what makes step 9 of `--apply` (the UTC migration) and every config rewrite in
+between safe: there is no window where new code could write a row, or read a config
+file, before the migration has run. `uslims_upgrade.php` doesn't defend against that
+window itself; its own preflight (step 1) checks that the host is idle -- no jobs, no
+other DB client, cron entries commented out -- the same way, without also needing to
+account for live web traffic, because this procedure already guarantees that.
+
+No separate script is needed for a host starting from an older release than the
+previous one, or several releases behind at once: every step in `uslims_upgrade.php`
+checks the host's own current state and decides whether it has anything to do, rather
+than assuming a specific starting point. A host several releases behind just sees more
+`todo`s in one `--apply`, not a different tool.
+
 ## Various utilities for managing the database
 
  - general tools, can be used with any mysql database
@@ -50,7 +80,7 @@
      8. verifies the result, including that every active cluster passes the submission sizing gate rather than refusing every job
      9. migrates each dbinstance's people_audit.created_at to UTC if not already done (dbutils#52), using the running config.php (or overlay) each instance already connects with -- idempotent, so a host dbupgrade/stage1+stage2 already migrated is reported 'ok' here, not migrated again
    - ```--activate cluster[,cluster]``` brings a converted entry live: sets active=true in global_config.php and turns on its cluster_config.php probe, together, once its env_script_lines are real and ssh to it succeeds (as us3, and as the web account if different). --activate checks ssh before step 4, which records the host key (and, for the host's own cluster, authorizes the key). So the first --apply --activate for a cluster records its host key, and the next one activates it -- not only for a cluster converted in this very run, but any cluster whose host key is not recorded yet. For a remote cluster, authorize the account's own key on the cluster by hand first; step 4 only ever records that cluster's host key, never authorizes this account's key on the far end
-   - dry run by default; ```php uslims_upgrade.php --apply``` makes the changes, backing up each file first; safe to rerun
+   - dry run by default; ```php uslims_upgrade.php --apply``` makes the changes, backing up each file first; safe to rerun. See "Upgrading a host" below for the actual procedure this fits into
  - uslims_git_info.php
    - for all expected and discovered repos, reports path, url, branch, use, rev#, rev date, local changes, and deltas
    - also allows updating to expected branches, git pull, and build (for gui & mpi)
