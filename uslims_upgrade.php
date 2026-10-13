@@ -3238,6 +3238,8 @@ step( "9. Per-instance catch-up (\$common_dir, people_audit UTC migration)" );
 ## instance on this host" means. $instance_paths (by reference) gets the
 ## real file each entry's config was actually read from -- needed below to
 ## write $common_dir back to the right file, not guessed from $wwwpath.
+require_once __DIR__ . '/migrations.php';
+
 $instance_configs = discover_lims_instance_configs( $wwwpath, $us3_home, $instance_paths );
 
 if ( !$instance_configs ) {
@@ -3249,40 +3251,26 @@ if ( !$instance_configs ) {
             continue;
         }
 
-        ## THE BUG this answers (round-13 blocking item, dbinst#57/newinst#27/
-        ## webinfo#17): round 12 added $common_dir to the base+overlay v1
-        ## contract and to newinst's generator, so every NEW instance gets it.
-        ## Nothing ever set it for an instance that already existed before
-        ## that round landed -- the upgrade migrates no instance's config.php
-        ## at all today, so every pre-existing instance keeps rendering pages
-        ## with no shared header, footer or CSS, forever, until someone edits
-        ## the file by hand. Fixed the same way the ssh host-key/authorized-
-        ## key appends above do it: back up, then append one line.
-        if ( empty( $cfg[ 'common_dir' ] ) ) {
-            $common_dir_value = common_dir_default( $wwwpath );
-            $instance_path    = $instance_paths[ $label ] ?? null;
-            report( 'todo', "$label: set \$common_dir (missing -- pages render with no shared"
-                           . " header, footer or CSS) to " . var_export( $common_dir_value, true ) );
-            if ( $apply && $instance_path !== null && confirm( "Append \$common_dir to $instance_path?" ) ) {
-                $saved = backup_append_target( $instance_path, "config.$label" );
-                if ( $saved === '' ) {
-                    report( 'FAIL', "$label: could not back up $instance_path, so \$common_dir was not added" );
-                } elseif ( file_put_contents( $instance_path,
-                           "\n\$common_dir = " . var_export( $common_dir_value, true ) . ";\n", FILE_APPEND ) === false ) {
-                    report( 'FAIL', "$label: could not append \$common_dir to $instance_path" );
-                } else {
-                    $changes++;
-                    report( 'done', "$label: \$common_dir added to $instance_path (previous version in $saved)" );
-                }
-            } elseif ( $apply && $instance_path === null ) {
-                report( 'FAIL', "$label: resolved no config file path to append \$common_dir to" );
-            }
-        } else {
-            report( 'ok', "$label: \$common_dir is set" );
-        }
+        $context = [
+            'label'         => $label,
+            'cfg'           => $cfg,
+            'instance_path' => $instance_paths[ $label ] ?? null,
+            'wwwpath'       => $wwwpath,
+        ];
 
-        ## Checked here, not left to migrate_people_audit_created_at_to_utc()'s
-        ## own sql_identifier_or_die(): that one exits the whole script, which
+        ## common_dir_backfill (migrations/4.3.0_common_dir_backfill.php)
+        ## needs no live connection -- it only reads $cfg, already parsed
+        ## by discover_lims_instance_configs() above -- and must run even
+        ## when this instance's own connection, checked next, fails: a
+        ## misconfigured dbname should not also block the config fix.
+        run_instance_migrations( null, null, $required_version, $apply, $context,
+                                  [ 'common_dir_backfill' ] );
+
+        ## people_audit_utc (migrations/4.3.0_people_audit_utc.php) needs
+        ## its own connection to this one instance's database, same as the
+        ## inline code it replaces always opened here. Checked here, not
+        ## left to migrate_people_audit_created_at_to_utc()'s own
+        ## sql_identifier_or_die(): that one exits the whole script, which
         ## would skip every later instance in this loop over one malformed
         ## name -- after steps 1-8 have already applied. report()+continue
         ## instead, same as every other per-instance failure in this loop.
@@ -3298,31 +3286,9 @@ if ( !$instance_configs ) {
             continue;
         }
 
-        if ( people_audit_utc_migration_done( $conn, $cfg[ 'dbname' ] ) ) {
-            report( 'ok', "$label ({$cfg['dbname']}): people_audit already migrated to UTC" );
-        } else {
-            report( 'todo', "$label ({$cfg['dbname']}): migrate people_audit.created_at to UTC" );
-            if ( $apply ) {
-                ob_start();
-                $migrated = migrate_people_audit_created_at_to_utc( $conn, $cfg[ 'dbname' ] );
-                $out = trim( ob_get_clean() );
-                foreach ( $out !== '' ? explode( "\n", $out ) : [] as $line ) {
-                    echo "    $line\n";
-                }
-                ## A skip (false -- zone tables not loaded, the
-                ## marker table could not be created, or the UPDATE itself
-                ## failed) used to still count as "1 change(s) made" here,
-                ## right next to its own WARNING above saying nothing actually
-                ## happened. Reported as a failure instead, so it shows up in
-                ## the run's own summary, not just buried in the WARNING text.
-                if ( $migrated ) {
-                    $changes++;
-                } else {
-                    report( 'FAIL', "$label ({$cfg['dbname']}): people_audit.created_at was not migrated;"
-                                  . " see the WARNING above" );
-                }
-            }
-        }
+        run_instance_migrations( $conn, $cfg[ 'dbname' ], $required_version, $apply, $context,
+                                  [ 'people_audit_utc' ] );
+
         mysqli_close( $conn );
     }
 }
