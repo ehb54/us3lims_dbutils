@@ -311,6 +311,19 @@ if ( get_yn_answer( "create dbinstances" ) ) {
             }
         }
 
+        ## us3.sql, just loaded above, does not define these tables -- they
+        ## are created by dbutils itself inside whichever dbinstance a
+        ## previous run already migrated. The export dump is data-only
+        ## (--no-create-info) and, since round-13 (dbutils#52), dumps every
+        ## table the source dbinstance actually has, including these two --
+        ## so a dbinstance already migrated before export carries a row for
+        ## each in its dump, with nowhere to land unless they exist here
+        ## first. Same pre-creation, same reasoning, as
+        ## stage2_import_dbinsts.php's own copy of this exact comment for
+        ## the dbupgrade path.
+        create_people_audit_utc_migration_marker_table( $db_handle, $db );
+        create_people_audit_utc_boundary_table( $db_handle, $db );
+
         $cmds = [
     "$uncompresswith $sqldata | mysql --defaults-file=$cwd/my.cnf -u root $db"
     ,"mysql --defaults-file=$cwd/my.cnf -u root $db < export-$export_dbhost-$db-autoincrements.sql"

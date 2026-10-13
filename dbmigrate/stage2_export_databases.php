@@ -306,16 +306,19 @@ foreach ( $dbnames_used as $db => $val ) {
         $ignore_tables = [];
     }
     ## dbutils' own bookkeeping tables (_dbutils_people_audit_utc_migrated,
-    ## _dbutils_people_audit_utc_boundary), always ignored directly here --
-    ## not left to --only-extras above to discover on its own. They are
-    ## deliberately excluded from uslims_table_diffs.php's own comparison
-    ## (so a migrated instance does not read as structurally different),
-    ## which means --only-extras never reports them as extras either, so
-    ## without this they were never ignored and always ended up in the
-    ## dump -- source-host-specific bookkeeping with no meaning carried
-    ## verbatim to a different host, and ERROR 1146 the moment the import
-    ## side has not independently pre-created them.
-    $ignore_tables = array_unique( array_merge( $ignore_tables, dbutils_owned_tables() ) );
+    ## _dbutils_people_audit_utc_boundary) are NOT excluded here (round-13
+    ## should fix, dbutils#52): they answer "has this instance's own data
+    ## already been converted to UTC", which is a property of the data
+    ## itself and stays meaningful on whatever host ends up storing it --
+    ## the same reasoning dbupgrade's stage1 (stage1_export_dbinsts.php)
+    ## already relies on, which dumps every table a dbinstance has with no
+    ## exclusion at all. Excluding them here used to mean a dbmigrate target
+    ## had no record a source instance was ever migrated, so it converted
+    ## every row a second time on its first --apply, and again on a later
+    ## stage2. stage3_import_databases.php now pre-creates both tables
+    ## before loading this dump's data, the same way stage2_import_dbinsts.php
+    ## already does for the dbupgrade path -- see that function's own comment
+    ## for why ERROR 1146 would otherwise abort mid-import.
     if ( count( $ignore_tables ) ) {
         $tables_ignored       = implode( "\n", $ignore_tables ) . "\n";
         $tables_ignored_fname = "export-$metadata_dbhost-$db-tables-ignored.txt";
