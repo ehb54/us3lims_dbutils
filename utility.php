@@ -785,7 +785,55 @@ function squash($array, $prefix = '') {
 ## --only-extras export filter -- without this, each of those saw a
 ## migrated dbinstance as carrying an unexpected extra table.
 function dbutils_owned_tables() {
-    return [ '_dbutils_people_audit_utc_migrated', '_dbutils_people_audit_utc_boundary' ];
+    return [ '_dbutils_people_audit_utc_migrated', '_dbutils_people_audit_utc_boundary',
+             '_dbutils_migrations_applied' ];
+}
+
+## Generic one-time migration ledger, for a migration with no better native
+## signal of its own. Some migrations already have one and keep using it
+## directly instead of this table -- people_audit_utc's dedicated marker
+## table (richer: it also records the zone and the row count converted),
+## or listen_config_v2's own $listen_config_version marker embedded in the
+## file it describes, which travels with that file even on its own. This
+## exists for every migration that doesn't have something that good.
+##
+## One row per migration actually applied; a migration this ledger has
+## never heard of and one definitely not done both read the same way:
+## absent. Lives inside the thing being migrated (an instance's own
+## database for a per-instance migration, gfac for a host-level one), not
+## a file on the host's filesystem -- the same reasoning
+## dbutils_owned_tables()'s own callers already rely on: a migration's
+## applied/not-applied status is a property of the data, and has to travel
+## with it across a backup/restore or an export to a different host the
+## same way the data itself does.
+function create_migration_ledger_table( $db_handle, $db ) {
+    sql_identifier_or_die( $db );
+    return mysqli_query( $db_handle, "CREATE TABLE IF NOT EXISTS $db._dbutils_migrations_applied (" // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+                                    . " migration_id VARCHAR(128) NOT NULL PRIMARY KEY,"
+                                    . " applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+                                    . " note VARCHAR(255) NULL )" );
+}
+
+function migration_applied( $db_handle, $db, $migration_id ) {
+    sql_identifier_or_die( $db );
+    $has = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE '_dbutils_migrations_applied'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+    if ( !$has || mysqli_num_rows( $has ) === 0 ) {
+        return false;
+    }
+    $id_esc = mysqli_real_escape_string( $db_handle, $migration_id );
+    $row = mysqli_query( $db_handle, "SELECT 1 FROM $db._dbutils_migrations_applied" // NOSONAR $db is validated above by sql_identifier_or_die(); $id_esc is mysqli_real_escape_string()'d
+                                    . " WHERE migration_id = '$id_esc' LIMIT 1" );
+    return (bool) ( $row && mysqli_num_rows( $row ) > 0 );
+}
+
+function mark_migration_applied( $db_handle, $db, $migration_id, $note = null ) {
+    sql_identifier_or_die( $db );
+    create_migration_ledger_table( $db_handle, $db );
+    $id_esc   = mysqli_real_escape_string( $db_handle, $migration_id );
+    $note_sql = $note === null ? 'NULL'
+              : "'" . mysqli_real_escape_string( $db_handle, substr( (string) $note, 0, 255 ) ) . "'";
+    return (bool) mysqli_query( $db_handle, "INSERT INTO $db._dbutils_migrations_applied" // NOSONAR $db is validated above by sql_identifier_or_die(); $id_esc/$note_sql are escaped
+                                           . " ( migration_id, note ) VALUES ( '$id_esc', $note_sql )" );
 }
 
 ## Whether $db's people_audit was already migrated by a previous call,
