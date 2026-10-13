@@ -522,11 +522,29 @@ function run_as( $account, $cmd, &$output = null, &$errors = null ) {
     return $rc;
 }
 
+## Parses 'systemctl show -p A -p B ... unit' output into an associative
+## array, independent of line order or which properties were asked for.
+## Deliberately NOT using --value (which prints only the bare values, one per
+## line, in whatever order systemd feels like -- see the bug note below):
+## the labeled 'Property=value' form this parses is the only shape systemd
+## actually documents a contract for, so a caller can pick a property out by
+## name and never again depend on an ordering systemd doesn't promise.
+function systemctl_show_properties( $output ) {
+    $props = [];
+    foreach ( explode( "\n", (string) $output ) as $line ) {
+        if ( preg_match( '/^([A-Za-z0-9_]+)=(.*)$/', $line, $m ) ) {
+            $props[ $m[ 1 ] ] = $m[ 2 ];
+        }
+    }
+    return $props;
+}
+
 ## Classify the us3-listen systemd unit's configured account from
 ## systemctl's own raw output, pure so the decision is testable without a
 ## live systemd. $rc is systemctl show's own exit status; $loadState and
-## $user are 'systemctl show -p LoadState -p User --value us3-listen.service'
-## own two output lines, in that order.
+## $user are the unit's LoadState/User property values, already picked out
+## by name (systemctl_show_properties() above) -- never assumed to be in any
+## particular line order.
 ##
 ## $rc stays 0 and $user stays '' for a unit that was never installed at
 ## all (a dev/test host, or one not built by us3lims-roles, or a fresh
@@ -541,6 +559,18 @@ function run_as( $account, $cmd, &$output = null, &$errors = null ) {
 ## User= line at all. gridctl#33's services.php now refuses to start as
 ## root, so that host could never actually start the gridctl services --
 ## not a style nit, a host that can never come up after a reboot.
+##
+## THE FOLLOW-UP BUG (round 13): the first fix read $loadState/$user
+## positionally off 'systemctl show -p LoadState -p User --value''s two
+## output lines, assuming systemd always prints them in the -p flag order.
+## On systemd 239 it prints User before LoadState -- the reverse -- so
+## every host on that version read $user into $loadState's slot and vice
+## versa, and the check passed on every one of 12 variants tried, including
+## a unit with no User= line at all: the exact case this was written to
+## catch. Fixed by dropping --value for the labeled 'Property=value' form
+## (systemctl_show_properties() above) and reading each property by name,
+## which cannot be thrown off by any ordering systemd chooses on any
+## version, past or future.
 function us3_listen_unit_user_outcome( $rc, $loadState, $user ) {
     if ( $rc !== 0 ) {
         return [ 'note', "could not query the us3-listen systemd unit (systemctl exited $rc);"
@@ -1099,10 +1129,10 @@ if ( $listeners === null ) {
 ## standing problem on every future reboot, not something to retry once a
 ## current run finishes.
 [ $unit_show_out, , $unit_show_rc ] = capture(
-    'systemctl show -p LoadState -p User --value us3-listen.service' );
-$unit_show_lines = explode( "\n", $unit_show_out );
+    'systemctl show -p LoadState -p User us3-listen.service' );
+$unit_show_props = systemctl_show_properties( $unit_show_out );
 list( $unit_status, $unit_msg ) = us3_listen_unit_user_outcome(
-    $unit_show_rc, $unit_show_lines[ 0 ] ?? '', $unit_show_lines[ 1 ] ?? '' );
+    $unit_show_rc, $unit_show_props[ 'LoadState' ] ?? '', $unit_show_props[ 'User' ] ?? '' );
 report( $unit_status, $unit_msg );
 
 ## -- jobmonitors. One per job on the new contract, none on an idle host.
@@ -1538,19 +1568,46 @@ $managed = [];     ## PHP assignments for the managed block, in order
 $clusters = is_array( $gc[ 'cluster_details' ] ?? null ) ? $gc[ 'cluster_details' ] : [];
 $active   = array_filter( $clusters, function ( $c ) { return is_array( $c ) && ( $c[ 'active' ] ?? false ); } );
 
-## Entries the Slurm code cannot submit to, left active from an older host: a
-## metascheduler entry (one that fans out to a list of clusters) or one named
-## for another scheduler. 'submittype' no longer exists in the submission code,
-## so an active 'pbs' or 'http' entry is now treated as though it were Slurm.
-## They are dropped from $active as well, so the checks below do not go looking
-## for env_script_lines, nodes or SSH on a cluster that is being retired.
+## A metascheduler pool (pick_cluster.php, gridctl#35) is recognized the one
+## and only way anything in this stack recognizes it -- a 'clusters' list --
+## which is this function's exact copy of pick_cluster_is_metascheduler_entry()
+## (gridctl's pick_cluster.php) and require_cluster.php's own copy of the same
+## check. It has no host of its own to run env_script_lines/node-sizing/SSH
+## checks against, so it is set aside from $active before any of those run,
+## but -- unlike the submittype-based retirement below -- it is never
+## deactivated or reported as retired: a pool IS the Slurm-submittable path
+## now (pick_cluster_reserve() resolves it to a real cluster before Slurm
+## ever sees the submission), not something the Slurm code cannot submit to.
+function is_metascheduler_pool_entry( $c ) {
+    return is_array( $c ) && isset( $c[ 'clusters' ] ) && is_array( $c[ 'clusters' ] );
+}
+$pools = array_filter( $active, 'is_metascheduler_pool_entry' );
+foreach ( $pools as $name => $c ) {
+    report( 'ok', "'$name' is a metascheduler pool (fans out to " . implode( ', ', $c[ 'clusters' ] )
+                 . "); left active, excluded from the per-host checks below" );
+}
+
+## Entries the Slurm code cannot submit to, left active from an older host:
+## one named for another scheduler. 'submittype' no longer exists in the
+## submission code, so an active 'pbs' or 'http' entry is now treated as
+## though it were Slurm. They are dropped from $active as well, so the
+## checks below do not go looking for env_script_lines, nodes or SSH on a
+## cluster that is being retired. (THE BUG this answers, round 13: this loop
+## used to also retire anything with a 'clusters' list, back when that shape
+## only ever meant a dead Airavata-era fan-out entry. gridctl#35 made
+## 'clusters' a first-class, currently-supported pool shape, so that
+## retirement now wrongly deactivated every pool the operator had
+## configured on every upgrade. Pools are filtered out into $pools above,
+## before this loop runs, and this loop no longer looks at 'clusters' at
+## all -- only submittype decides retirement here now.)
 $converted = [];
 foreach ( $active as $name => $c ) {
+    if ( isset( $pools[ $name ] ) ) {
+        continue;
+    }
     $retired = null;
     $is_http = isset( $c[ 'submittype' ] ) && strtolower( (string) $c[ 'submittype' ] ) === 'http';
-    if ( isset( $c[ 'clusters' ] ) && is_array( $c[ 'clusters' ] ) ) {
-        $retired = "it is a metascheduler entry, fanning out to " . implode( ', ', $c[ 'clusters' ] );
-    } elseif ( isset( $c[ 'submittype' ] ) && strtolower( (string) $c[ 'submittype' ] ) !== 'slurm' ) {
+    if ( isset( $c[ 'submittype' ] ) && strtolower( (string) $c[ 'submittype' ] ) !== 'slurm' ) {
         $retired = "its submittype is '" . $c[ 'submittype' ] . "', which the Slurm code does not implement";
     }
     if ( $retired === null ) {
@@ -1745,7 +1802,8 @@ if ( !isset( $gc[ 'default_local_cluster' ] ) || !isset( $active[ $gc[ 'default_
 $host_cluster = $proposal ?? $gc[ 'default_local_cluster' ] ?? null;
 
 ## Every active cluster needs the env_script_lines key ('' when it needs no setup)
-foreach ( $active as $name => $c ) {
+## -- excluding pools, which have no host of their own to set this on.
+foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
     $given = isset( $env_values[ $name ] ) ? str_replace( '\n', "\n", $env_values[ $name ] ) : null;
     if ( array_key_exists( 'env_script_lines', $c ) ) {
         if ( $given !== null && $given !== $c[ 'env_script_lines' ] ) {
@@ -1773,8 +1831,10 @@ foreach ( $active as $name => $c ) {
 }
 
 ## One-node appliances: resource sizing needs single_node to keep a job on one node,
-## and no more tasks per node or per job than the node has CPUs.
-foreach ( $active as $name => $c ) {
+## and no more tasks per node or per job than the node has CPUs. Excluding
+## pools here too -- sinfo is queried against a real host below, and a pool
+## has none.
+foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
     if ( empty( $c[ 'single_node' ] ) && empty( $c[ 'localhost' ] ) && empty( $c[ 'fixed_capacity' ] ) ) {
         continue;
     }
@@ -2012,8 +2072,20 @@ step( "4. SSH host keys and access (StrictHostKeyChecking=yes is the default)" )
 ## --activate), so without this they never got here: no host key was ever
 ## offered for them, and --activate's own ssh test above only ever ran as
 ## us3, leaving a separate web account with no key or known_hosts entry of
-## its own on the cluster that is about to go live for it too.
-$ssh_targets = $active;
+## its own on the cluster that is about to go live for it too. Pools and
+## 'localhost' => true entries are excluded (same reasoning as the
+## env_script_lines/single_node checks above): a pool has no login/host of
+## its own for ssh to reach, and a localhost entry uses cp/local exec, never
+## ssh -- round-13 should-fix (us3lims-roles#24): a fresh us3lims-roles
+## build has no role installing an ssh key for the appliance to reach
+## itself, so this test failed step 4 on every fresh build even though the
+## appliance's own entry was never going to use ssh in the first place.
+$ssh_targets = array_diff_key( $active, $pools );
+foreach ( $ssh_targets as $name => $c ) {
+    if ( !empty( $c[ 'localhost' ] ) ) {
+        unset( $ssh_targets[ $name ] );
+    }
+}
 foreach ( $activate_want as $name ) {
     if ( isset( $ssh_targets[ $name ] ) || !is_array( $clusters[ $name ] ?? null ) ) {
         continue;
@@ -2025,6 +2097,10 @@ foreach ( $activate_want as $name ) {
     ## not 'http' -- the 4.3.0 template's entries carry no submittype key at
     ## all, so this used to skip ssh setup for every one of them too.
     if ( strtolower( (string) ( $clusters[ $name ][ 'submittype' ] ?? 'slurm' ) ) !== 'slurm' ) {
+        continue;
+    }
+    ## Same 'localhost' => true exemption as the already-active entries above.
+    if ( !empty( $clusters[ $name ][ 'localhost' ] ) ) {
         continue;
     }
     $ssh_targets[ $name ] = $clusters[ $name ];
