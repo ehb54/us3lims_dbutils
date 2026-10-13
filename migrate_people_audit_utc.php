@@ -163,8 +163,19 @@ foreach ( $targets as $label => $cfg ) {
         continue;
     }
 
+    ## THE BUG this answers (round-13 nit, dbutils#52): the dry run used to
+    ## print "would migrate... (rerun with --apply)" for every not-yet-done
+    ## instance alike, regardless of whether a boundary is recorded --
+    ## giving no warning for exactly the instances --apply then goes on to
+    ## refuse outright (the no-boundary case just below), so an operator
+    ## ran --apply expecting a migration and got a FAIL they had no reason
+    ## to expect from the dry run.
     if ( people_audit_utc_migration_done( $conn, $cfg[ 'dbname' ] ) ) {
         echo "[ok] $label ({$cfg['dbname']}): people_audit already migrated to UTC\n";
+    } elseif ( !$apply && people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] ) === null ) {
+        echo "[todo] $label ({$cfg['dbname']}): --apply would REFUSE this instance (no UTC boundary"
+           . " recorded) -- run uslims_upgrade.php --apply instead, or record a boundary by hand"
+           . " first if this is genuinely a pre-4.3.0 instance\n";
     } elseif ( !$apply ) {
         echo "[todo] $label ({$cfg['dbname']}): would migrate people_audit.created_at to UTC"
            . " (rerun with --apply)\n";
