@@ -470,7 +470,20 @@ function close_out_finalizing_marker( $db_handle, $marker, array $info ) {
     ## row must not touch today's row for that gfacID.
     $requestid = (int) ( $info[ 'requestID' ] ?? 0 );
 
-    $us3_db_esc  = mysqli_real_escape_string( $db_handle, $info[ 'us3_db' ] );
+    ## us3_db goes into the queries below unquoted, as a database-name
+    ## prefix (round-13 nit, dbutils#52) -- mysqli_real_escape_string()
+    ## protects a value placed INSIDE quotes, which an identifier position
+    ## never is, so it offered no actual protection here. Validated the
+    ## same way every other identifier interpolated into SQL in this
+    ## codebase is (is_sql_identifier(), utility.php); report-and-leave-the-
+    ## marker, not die, matching this loop's own handling of an unreadable
+    ## marker just above its caller.
+    if ( !is_sql_identifier( $info[ 'us3_db' ] ) ) {
+        echo "marker $marker names an invalid us3_db (" . var_export( $info[ 'us3_db' ], true )
+           . "); leaving it for the next --restart\n";
+        return;
+    }
+    $us3_db_esc  = $info[ 'us3_db' ];
     $gfacid_esc  = mysqli_real_escape_string( $db_handle, $gfacid );
     $message     = "Results handling did not finish: the worker stopped after the job"
                   . " record was removed. Check the job log for $gfacid and resubmit if"
@@ -566,7 +579,16 @@ function close_out_finalizing_marker( $db_handle, $marker, array $info ) {
 function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
     $gfacid      = $info[ 'gfacID' ];
     $requestid   = (int) ( $info[ 'requestID' ] ?? 0 );
-    $us3_db_esc  = mysqli_real_escape_string( $db_handle, $info[ 'us3_db' ] );
+    ## us3_db goes into the queries below unquoted, as a database-name
+    ## prefix (round-13 nit, dbutils#52) -- see close_out_finalizing_
+    ## marker()'s own identical fix for why mysqli_real_escape_string()
+    ## offered no real protection in this position.
+    if ( !is_sql_identifier( $info[ 'us3_db' ] ) ) {
+        echo "marker $marker names an invalid us3_db (" . var_export( $info[ 'us3_db' ], true )
+           . "); leaving it for the next --restart\n";
+        return;
+    }
+    $us3_db_esc  = $info[ 'us3_db' ];
     $gfacid_esc  = mysqli_real_escape_string( $db_handle, $gfacid );
     $stage       = $info[ 'stage' ] ?? null;
     $queue_status = $info[ 'queue_status' ] ?? null;
