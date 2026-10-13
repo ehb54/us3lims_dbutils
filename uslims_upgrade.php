@@ -110,12 +110,17 @@ To roll back, with the services stopped:
      first), and reload Apache -- step 7 never backs this one up, since it is
      new, not rewritten.
 
-Nothing else to undo in the database, with two exceptions. Step 5's gfac.runtime_prediction
+Nothing else to undo in the database, with three exceptions. Step 5's gfac.runtime_prediction
 (see step 5 above) is optional, pilot-scoped and empty until the pilot is turned on;
 dropping it is a separate, deliberate operator step (the teardown statement is documented
 in common's class/prediction/runtime_pilot_table.sql), not part of rolling back this script.
+Step 5 also creates gfac.metascheduler_decision and gfac.cluster_status_nudge (gridctl's
+pick_cluster.php tables) the same optional, purely-additive way -- empty and unused unless
+a metascheduler pseudo-cluster is actually configured; dropping them, if ever wanted, is
+also a separate operator step, not part of rolling back this script.
 Step 9 (see step 9 above) rewrites people_audit.created_at in every dbinstance it migrates
-and adds a marker table there; this is a one-time, one-direction conversion with no
+and adds two marker tables there (_dbutils_people_audit_utc_migrated,
+_dbutils_people_audit_utc_boundary); this is a one-time, one-direction conversion with no
 undo step of its own -- a pre-migration backup of each dbinstance's own database is
 the only way back if a conversion turns out to be wrong for some instance.
 
