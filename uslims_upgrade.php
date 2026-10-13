@@ -2181,20 +2181,18 @@ step( "4. SSH host keys and access (StrictHostKeyChecking=yes is the default)" )
 ## --activate), so without this they never got here: no host key was ever
 ## offered for them, and --activate's own ssh test above only ever ran as
 ## us3, leaving a separate web account with no key or known_hosts entry of
-## its own on the cluster that is about to go live for it too. Pools and
-## 'localhost' => true entries are excluded (same reasoning as the
-## env_script_lines/single_node checks above): a pool has no login/host of
-## its own for ssh to reach, and a localhost entry uses cp/local exec, never
-## ssh -- round-13 should-fix (us3lims-roles#24): a fresh us3lims-roles
-## build has no role installing an ssh key for the appliance to reach
-## itself, so this test failed step 4 on every fresh build even though the
-## appliance's own entry was never going to use ssh in the first place.
+## its own on the cluster that is about to go live for it too. Pools are
+## excluded (same reasoning as the env_script_lines/single_node checks
+## above): a pool has no login/host of its own for ssh to reach. A
+## 'localhost' => true entry is NOT excluded wholesale -- remote_exec's
+## is_local() only skips ssh for the account that actually matches the
+## entry's login user (round-13 should-fix, us3lims-roles#24: on a fresh
+## build the appliance's own account reaches itself via cp/exec and never
+## needs a key, but php-fpm commonly runs as a separate web account that
+## does not match the login user, and that account still falls back to
+## ssh for the same entry). Which accounts get skipped is decided per
+## entry, per account, below -- not here.
 $ssh_targets = array_diff_key( $active, $pools );
-foreach ( $ssh_targets as $name => $c ) {
-    if ( !empty( $c[ 'localhost' ] ) ) {
-        unset( $ssh_targets[ $name ] );
-    }
-}
 foreach ( $activate_want as $name ) {
     if ( isset( $ssh_targets[ $name ] ) || !is_array( $clusters[ $name ] ?? null ) ) {
         continue;
@@ -2206,10 +2204,6 @@ foreach ( $activate_want as $name ) {
     ## not 'http' -- the 4.3.0 template's entries carry no submittype key at
     ## all, so this used to skip ssh setup for every one of them too.
     if ( strtolower( (string) ( $clusters[ $name ][ 'submittype' ] ?? 'slurm' ) ) !== 'slurm' ) {
-        continue;
-    }
-    ## Same 'localhost' => true exemption as the already-active entries above.
-    if ( !empty( $clusters[ $name ][ 'localhost' ] ) ) {
         continue;
     }
     $ssh_targets[ $name ] = $clusters[ $name ];
@@ -2243,7 +2237,20 @@ foreach ( $ssh_targets as $name => $c ) {
     if ( $web_user !== 'us3' ) {
         $accounts[ $web_user ] = $web_entry;
     }
+    ## 'name'/'login' may be a bare host with no account part (the default
+    ## is "us3@$host" above, but a config can override 'login' to just the
+    ## host) -- in that case the login user is implicitly 'us3'.
+    $login_user = strpos( $login, '@' ) !== false
+                ? substr( $login, 0, strpos( $login, '@' ) )
+                : 'us3';
     foreach ( $accounts as $account => $entry ) {
+        ## is_local() in remote_exec.php only takes the local cp/exec path
+        ## when the calling account matches the entry's login user; every
+        ## other account still falls back to ssh for this same entry, so
+        ## only the matching account's key setup is skipped here.
+        if ( !empty( $c[ 'localhost' ] ) && $account === $login_user ) {
+            continue;
+        }
         $known  = $entry[ 'dir' ] . "/.ssh/known_hosts";
         $lookup = $port === 22 ? $ssh_host : "[$ssh_host]:$port";
         ## Changes proposed but not yet made. They explain a failing ssh test, which
