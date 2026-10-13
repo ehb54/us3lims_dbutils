@@ -3029,9 +3029,24 @@ if ( $apache === null ) {
                     @unlink( $apache[ 'conf' ] );
                     report( 'FAIL', "Apache rejected the policy, so it was removed: " . reason( $t_err !== '' ? $t_err : $t_out ) );
                 } else {
-                    list( $r_out, $r_err, $r_rc ) = capture( 'systemctl reload ' . $apache[ 'service' ] );
-                    report( $r_rc === 0 ? 'done' : 'FAIL', "Report-Only policy installed"
-                            . ( $r_rc === 0 ? "; {$apache['service']} reloaded" : "; reload {$apache['service']} by hand: " . reason( $r_err ) ) );
+                    ## THE BUG this answers (round-13 nit, dbutils#52):
+                    ## 'systemctl reload' only ever works on an already-
+                    ## running unit -- on a stopped httpd (a fresh host
+                    ## before its first start, or one deliberately down for
+                    ## other maintenance) it fails every time, regardless of
+                    ## whether the config itself is fine, and this used to
+                    ## report that as a FAIL even though apachectl configtest
+                    ## just above already confirmed the installed policy is
+                    ## valid and needs nothing further once httpd does start.
+                    list( , , $active_rc ) = capture( 'systemctl is-active ' . $apache[ 'service' ] );
+                    if ( $active_rc !== 0 ) {
+                        report( 'ok', "Report-Only policy installed; {$apache['service']} is not"
+                                . " running, so it will take effect the next time it starts" );
+                    } else {
+                        list( $r_out, $r_err, $r_rc ) = capture( 'systemctl reload ' . $apache[ 'service' ] );
+                        report( $r_rc === 0 ? 'done' : 'FAIL', "Report-Only policy installed"
+                                . ( $r_rc === 0 ? "; {$apache['service']} reloaded" : "; reload {$apache['service']} by hand: " . reason( $r_err ) ) );
+                    }
                 }
             }
         }
