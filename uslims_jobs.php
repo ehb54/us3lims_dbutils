@@ -797,10 +797,41 @@ if ( $running || $restart || $restart_only ) {
         ## monitor for it and the stage sits at 'running'. cleanup leaves a marker
         ## across that span; a marker with no row means the worker died in it.
         ##
+        ## THE BUG this answers (round-13 should-fix, dbutils#52): a job that
+        ## crashed during results handling and a job whose results already
+        ## landed but whose own final status write then failed can both
+        ## leave markers for the SAME job at once -- cleanup.php never clears
+        ## the original finalizing marker until the whole span, including the
+        ## final write, completes. Running this loop first used to mark such
+        ## a job FAILED (its gfac.analysis row is already gone by this point
+        ## either way, so the guard below never catches it), with the
+        ## status-pending loop below only correcting it to the real outcome
+        ## a moment later in the same run -- a real, if momentary, wrong
+        ## state, and a misleading "results handling was interrupted"
+        ## message for a job that was not actually a failure.
+        ##
+        ## Status-pending runs first now (below is reordered): it already
+        ## carries the real, already-resolved terminal outcome, so letting
+        ## it land first means a job with both markers is never marked
+        ## FAILED at all -- this loop's own guard (status NOT IN (...,
+        ## 'COMPLETE', ...)) then correctly finds 0 rows to affect for it,
+        ## and falls through to "already 'COMPLETE'; removing its marker"
+        ## instead of writing anything.
+        ##
         ## Run before the gfac.analysis select below, not after: that select
         ## returns false, not an empty result, when the table has no rows (the
         ## usual state on a quiet host after a crash), and the code that used to
         ## follow it there exited on that before ever reaching this loop.
+        foreach ( status_pending_markers() as $marker ) {
+            $info = json_decode( (string) @file_get_contents( $marker ), true );
+            if ( !is_array( $info ) || empty( $info[ 'us3_db' ] ) || empty( $info[ 'gfacID' ] ) ) {
+                echo "ignoring and removing unreadable status-pending marker $marker\n";
+                @unlink( $marker );
+                continue;
+            }
+            close_out_status_pending_marker( $db_handle, $marker, $info );
+        }
+
         foreach ( finalizing_markers() as $marker ) {
             $info = json_decode( (string) @file_get_contents( $marker ), true );
             if ( !is_array( $info ) || empty( $info[ 'us3_db' ] ) || empty( $info[ 'gfacID' ] ) ) {
@@ -831,24 +862,6 @@ if ( $running || $restart || $restart_only ) {
                 continue;
             }
             close_out_finalizing_marker( $db_handle, $marker, $info );
-        }
-
-        ## Results already imported for these -- gfac.analysis is gone for
-        ## good, there is no row to come back and no worker liveness to
-        ## check. Just retry the write every --restart until it lands.
-        foreach ( status_pending_markers() as $marker ) {
-            $info = json_decode( (string) @file_get_contents( $marker ), true );
-            if ( !is_array( $info ) || empty( $info[ 'us3_db' ] ) || empty( $info[ 'gfacID' ] ) ) {
-                ## Removed, not just logged (round-12 nit, dbutils#52): same
-                ## reasoning as the finalizing-marker loop just above --
-                ## nothing about this ever becomes parseable later, so leaving
-                ## it meant every --restart reported the exact same marker
-                ## forever, with no way to clear it.
-                echo "ignoring and removing unreadable status-pending marker $marker\n";
-                @unlink( $marker );
-                continue;
-            }
-            close_out_status_pending_marker( $db_handle, $marker, $info );
         }
     }
 
