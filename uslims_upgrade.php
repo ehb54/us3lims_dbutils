@@ -2570,8 +2570,8 @@ function metascheduler_table_create_outcome( $table, $sql_file, $create_sql, $cr
 }
 
 ## Same classification as runtime_prediction_create_outcome(), for the
-## additive ALTER an existing (pre-common#31) table needs instead of the
-## CREATE above. Without this, an existing pilot table silently lost every
+## additive ALTER an existing (pre-common#31) table needs instead of a
+## CREATE. Without this, an existing pilot table silently lost every
 ## insert (0 rows, including requests that never set prediction_cluster_name)
 ## the moment common#31 started writing those two columns, and step 5 reported
 ## "already exists" regardless since it only ever checked the table, never
