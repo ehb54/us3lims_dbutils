@@ -751,8 +751,7 @@ function people_audit_utc_migration_done( $db_handle, $db ) {
     if ( !$marker || mysqli_num_rows( $marker ) === 0 ) {
         return false;
     }
-    ## An actual marker ROW, not just the table existing (round-12 blocker,
-    ## dbutils#52): stage2 now has to pre-create this table empty, before
+    ## An actual marker ROW, not just the table existing: stage2 now has to pre-create this table empty, before
     ## importing the dump (see stage2_import_dbinsts.php's own comment), so
     ## the table existing no longer means a marker row was ever written --
     ## checking table existence alone made every freshly-imported dbinstance
@@ -869,9 +868,9 @@ function people_audit_utc_boundary( $db_handle, $db ) {
 ## already had a boundary row recorded (an in-place host upgraded before
 ## being exported) has nowhere for that row to land: the INSERT in the
 ## dump fails against a table that does not exist yet, after every
-## dbinstance already imported in this run has already been dropped --
-## round-12 blocker, dbutils#52 (round 10's abort, reintroduced for this
-## second bookkeeping table).
+## dbinstance already imported in this run has already been dropped
+## (the same class of abort as the migration-marker table, reintroduced
+## for this second bookkeeping table).
 function create_people_audit_utc_boundary_table( $db_handle, $db ) {
     sql_identifier_or_die( $db );
     return mysqli_query( $db_handle, "CREATE TABLE IF NOT EXISTS $db._dbutils_people_audit_utc_boundary (" // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
@@ -904,8 +903,8 @@ function record_people_audit_utc_boundary( $db_handle, $db ) {
 ## dbutils_boundary_known_instances_path()/_load()/_save() used to live
 ## here: a host-level file tracking every dbinstance name step 0 had ever
 ## drawn a boundary for, so a name missing from it was presumed created
-## after the host's first-ever step-0 run (round-12 blocker, dbutils#52).
-## Removed (round 13, dbutils#52): that signal was "is this instance absent
+## after the host's first-ever step-0 run.
+## Removed: that signal was "is this instance absent
 ## from every step-0 run before this one", which breaks in both directions
 ## -- a genuinely pre-existing instance unreachable on every earlier run (a
 ## stale password, a restored backup) looked exactly like a brand-new one,

@@ -169,8 +169,8 @@ foreach ( $targets as $label => $cfg ) {
         echo "[todo] $label ({$cfg['dbname']}): would migrate people_audit.created_at to UTC"
            . " (rerun with --apply)\n";
     } elseif ( people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] ) === null ) {
-        ## Refuse, rather than convert (round-11 should-fix, dbutils#52):
-        ## with no boundary recorded, migrate_people_audit_created_at_to_utc()
+        ## Refuse, rather than convert: with no boundary recorded,
+        ## migrate_people_audit_created_at_to_utc()
         ## converts every row -- correct for a genuinely pre-4.3.0 instance
         ## uslims_upgrade.php never got to run against, but just as
         ## plausibly a brand-new 4.3.0 instance whose rows are already

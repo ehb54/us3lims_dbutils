@@ -314,8 +314,7 @@ foreach ( $dbnames_used as $db => $val ) {
     ## without this they were never ignored and always ended up in the
     ## dump -- source-host-specific bookkeeping with no meaning carried
     ## verbatim to a different host, and ERROR 1146 the moment the import
-    ## side has not independently pre-created them (round-11 should-fix,
-    ## dbutils#52).
+    ## side has not independently pre-created them.
     $ignore_tables = array_unique( array_merge( $ignore_tables, dbutils_owned_tables() ) );
     if ( count( $ignore_tables ) ) {
         $tables_ignored       = implode( "\n", $ignore_tables ) . "\n";

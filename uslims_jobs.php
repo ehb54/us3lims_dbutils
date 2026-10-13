@@ -593,7 +593,7 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
     $stage       = $info[ 'stage' ] ?? null;
     $queue_status = $info[ 'queue_status' ] ?? null;
     ## $stage/$queue_status come from the marker file's own recorded
-    ## content (round-12 nit, dbutils#52): the marker is written by this
+    ## content: the marker is written by this
     ## same codebase, not an external input, but it still has to pass
     ## through the SQL layer like any other value headed into a query --
     ## escaped here rather than trusted as already-safe because of where
@@ -857,7 +857,7 @@ if ( $running || $restart || $restart_only ) {
         foreach ( finalizing_markers() as $marker ) {
             $info = json_decode( (string) @file_get_contents( $marker ), true );
             if ( !is_array( $info ) || empty( $info[ 'us3_db' ] ) || empty( $info[ 'gfacID' ] ) ) {
-                ## Removed, not just logged (round-12 nit, dbutils#52): nothing
+                ## Removed, not just logged: nothing
                 ## about a marker this unreadable ever becomes parseable on a
                 ## later run, so leaving it in place meant every --restart
                 ## reported the exact same one forever, with no way to clear it.
@@ -1533,7 +1533,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## 255 is ssh's own transport-failure exit code, not test -d's: a host
     ## that could not be reached at all reads very differently from one
     ## that answered and genuinely has no such directory, but both used to
-    ## print the same "never staged" line -- round-11 nit (dbutils#45).
+    ## print the same "never staged" line.
     if ( $remoteDirCheckStatus === 255 ) {
         echo "could not reach $login to check $rundir: " . implode( "\n", $remoteDirCheckOutput ) . "\n";
         echoline();

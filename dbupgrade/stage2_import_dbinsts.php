@@ -287,9 +287,9 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
         # exact same pre-creation, for the exact same reason: an in-place
         # host upgraded (and so boundary-recorded) before being exported
         # carries a row for THIS table in its dump too, and without this
-        # that INSERT failed the same way -- round-12 blocker, dbutils#52
-        # (round 10's abort, reintroduced here for the second bookkeeping
-        # table nothing had pre-created yet).
+        # that INSERT failed the same way (the same class of abort,
+        # reintroduced here for the second bookkeeping table nothing had
+        # pre-created yet).
         check_db();
         create_people_audit_utc_migration_marker_table( $db_handle, $db );
         create_people_audit_utc_boundary_table( $db_handle, $db );

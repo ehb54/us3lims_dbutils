@@ -553,7 +553,7 @@ function systemctl_show_properties( $output ) {
 ## distinguishes "not installed" from "installed with no User= line",
 ## which $user alone cannot tell apart (both read '').
 ##
-## THE BUG this answers (round-11/12 should-fix, dbutils#45): --check
+## THE BUG this answers: --check
 ## reported "All checks passed" on a host whose us3-listen unit had no
 ## User= line at all. gridctl#33's services.php now refuses to start as
 ## root, so that host could never actually start the gridctl services --
@@ -1208,7 +1208,7 @@ if ( $listeners === null ) {
     report( 'ok', "no gridctl service (listen, manage-us3-pipe, submitctl, esign) is running" );
 }
 
-## -- the us3-listen unit's own account, round-11/12 should-fix: gridctl#33
+## -- the us3-listen unit's own account: gridctl#33
 ## now refuses to start as root, so a unit with no User=us3 means this host
 ## can never actually bring the gridctl services up at all. Not an idle-host
 ## precondition (so it does not add to $busy[]) -- a mistake here is a
@@ -3266,7 +3266,7 @@ if ( !$instance_configs ) {
                 foreach ( $out !== '' ? explode( "\n", $out ) : [] as $line ) {
                     echo "    $line\n";
                 }
-                ## round-11 nit: a skip (false -- zone tables not loaded, the
+                ## A skip (false -- zone tables not loaded, the
                 ## marker table could not be created, or the UPDATE itself
                 ## failed) used to still count as "1 change(s) made" here,
                 ## right next to its own WARNING above saying nothing actually
