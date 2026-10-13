@@ -1134,13 +1134,20 @@ if ( $apply ) {
         }
 
         if ( instance_is_new_under_required_version( $wwwpath, $label, $required_version ) ) {
-            if ( !mark_people_audit_utc_migration_done( $conn, $cfg[ 'dbname' ],
+            if ( mark_people_audit_utc_migration_done( $conn, $cfg[ 'dbname' ],
                      "n/a ($required_version+ instance)" ) ) {
+                ## Counted (round-13 nit, dbutils#52): this block runs before
+                ## step 1's idle check below, which used to tell an operator
+                ## "Nothing was changed" on refusing a busy host -- not true
+                ## once this real write already landed moments earlier.
+                $changes++;
+            } else {
                 report( 'FAIL', "$label ({$cfg['dbname']}): could not record the UTC migration"
                                . " marker (" . reason( mysqli_error( $conn ) ) . ")" );
             }
         } else {
             record_people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] );
+            $changes++;
         }
 
         mysqli_close( $conn );
@@ -1153,8 +1160,12 @@ if ( $apply ) {
 ## nothing is running. Handling live jobs was the earlier design; with the
 ## gridctl.php sweep gone and no claimless pre-upgrade monitor left to guard
 ## against, an idle host is the only state worth reasoning about, and it is the
-## state an operator can actually confirm. Nothing is changed until all of these
-## pass.
+## state an operator can actually confirm. Nothing else below this point is
+## changed until all of these pass -- the UTC-boundary recording immediately
+## above this step is the one exception, deliberately run first so every
+## reachable instance's boundary is drawn as early as this script can reach
+## it (see that block's own comment); its own $changes is accounted for
+## below, not assumed away.
 step( "1. Preflight: the host must be idle" );
 
 if ( !is_file( $listen_config ) ) {
@@ -1535,7 +1546,12 @@ if ( $live_crons ) {
 
 if ( $busy ) {
     error_exit( "the host is not idle (" . implode( '; ', $busy ) . ").\n"
-                . "Quiet it down and rerun. Nothing was changed" );
+                . "Quiet it down and rerun. "
+                . ( $changes
+                  ? "$changes change(s) were already made (the UTC-boundary recording above this"
+                    . " step); nothing past that point was"
+                  : "Nothing was" )
+                . " changed" );
 }
 
 ## ------------------------------------------------------------- 2. listen-config.php
