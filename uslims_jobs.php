@@ -1284,15 +1284,25 @@ function runuser_wrap_if_root( $innerCmd ) {
 
 ## The shell command --getrun uses to check $rundir exists on the cluster
 ## before attempting either rsync fetch. Pure (string building only, no
-## exec), so the escaping is testable without a real connection. Always
-## wrapped (not runuser_wrap_if_root()): --getrun's own rsync fetches just
-## below are unconditionally wrapped too, matching this call's existing
-## behavior, which the round-11 fix deliberately left alone -- --getrun is
-## an interactive debugging subcommand run by an operator, not part of the
-## boot-time --restart path runuser_wrap_if_root() exists for.
+## exec), so the escaping is testable without a real connection.
+##
+## THE BUG this answers (round-13 should-fix, dbutils#45): this used to
+## wrap unconditionally, on the stated reasoning that --getrun's own rsync
+## fetches just below were unconditionally wrapped too, so this matched
+## their existing behavior. That stopped being true once those fetches
+## switched to runuser_wrap_if_root() (below, $cmd = runuser_wrap_if_root(
+## $inner_cmd)) -- this function's comment kept citing a consistency that
+## no longer existed in the code it was citing. Run as us3 directly (not
+## root -- the normal way an operator runs an interactive debugging
+## subcommand like --getrun), the unconditional runuser call failed
+## outright ("runuser: may not be used by non-root users"), which this
+## function's own caller then misread as rc !== 0, printing "does not
+## exist on $login -- this job was never staged there" for a directory
+## that was never actually checked at all, root or not, reachable host or
+## not.
 function remote_dir_check_command( $login, $rundir ) {
-    return runuser_bin() . ' -l us3 -c '
-         . escapeshellarg( "ssh " . escapeshellarg( $login ) . " test -d " . escapeshellarg( $rundir ) );
+    return runuser_wrap_if_root(
+        "ssh " . escapeshellarg( $login ) . " test -d " . escapeshellarg( $rundir ) );
 }
 
 function hpcresbyreqout( $reqid, $reqisgfac = false ) {
