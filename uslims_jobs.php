@@ -1365,9 +1365,23 @@ function runuser_wrap_if_root( $innerCmd ) {
 ## exist on $login -- this job was never staged there" for a directory
 ## that was never actually checked at all, root or not, reachable host or
 ## not.
-function remote_dir_check_command( $login, $rundir ) {
-    return runuser_wrap_if_root(
-        "ssh " . escapeshellarg( $login ) . " test -d " . escapeshellarg( $rundir ) );
+function remote_dir_check_command( $login, $rundir, $local = false ) {
+    $inner_cmd = $local
+               ? "test -d " . escapeshellarg( $rundir )
+               : "ssh " . escapeshellarg( $login ) . " test -d " . escapeshellarg( $rundir );
+    return runuser_wrap_if_root( $inner_cmd );
+}
+
+## An rsync remote-spec prefix ("user@host:") for $login, or '' for the
+## local entry -- rsync treats a bare path as local on its own, so this is
+## the whole difference between going over ssh and not. Shared by --getrun
+## and --copyrun's own spec-building below (round-14 should-fix,
+## dbutils#52): both always went over ssh, even for 'localhost' => true,
+## failing with "Host key verification failed" on a host built without
+## ssh to itself -- the same entry common#33's own remote_exec calls
+## already skip ssh for.
+function rsync_remote_prefix( $login, $local ) {
+    return $local ? '' : escapeshellarg( $login ) . ':';
 }
 
 function hpcresbyreqout( $reqid, $reqisgfac = false ) {
@@ -1473,6 +1487,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     $queue   = false;
     $login   = false;
     $workdir = false;
+    $local   = false;
 
     foreach ( $cluster_details as $k => $v ) {
         if (
@@ -1484,6 +1499,14 @@ if ( $getrundir || $getrun || $copyrun ) {
             ## 'login' still has an ssh identity, just the default one.
             $login   = $v['login'] ?? ( 'us3@' . $v['name'] );
             $workdir = $v['workdir'];
+            ## ROUND-14 SHOULD-FIX (dbutils#52): 'localhost' => true means
+            ## this cluster is reached without ssh everywhere else in this
+            ## stack (common#33's own remote_exec calls, uslims_upgrade.php
+            ## step 4) -- --getrun/--copyrun never read it at all, so they
+            ## always went over ssh even for the local entry, failing with
+            ## "Host key verification failed" on a host built without ssh
+            ## to itself.
+            $local   = !empty( $v[ 'localhost' ] );
             break;
         }
     }
@@ -1558,7 +1581,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## missing $rundir itself still has rsync print its own "change_dir ...
     ## failed" once per brace-expanded file above (five lines), at rc 0,
     ## which reads as noise instead of the one simple fact it stands for.
-    exec( remote_dir_check_command( $login, $rundir ) . " 2>&1", $remoteDirCheckOutput, $remoteDirCheckStatus );
+    exec( remote_dir_check_command( $login, $rundir, $local ) . " 2>&1", $remoteDirCheckOutput, $remoteDirCheckStatus );
 
     ## 255 is ssh's own transport-failure exit code, not test -d's: a host
     ## that could not be reached at all reads very differently from one
@@ -1578,7 +1601,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## instance-derived) ever contained one. The curly-brace file list stays
     ## bare: it is bash's own brace expansion, not something escapeshellarg()
     ## can be applied to without disabling it.
-    $remote_spec = escapeshellarg( $login ) . ':' . escapeshellarg( $rundir )
+    $remote_spec = rsync_remote_prefix( $login, $local ) . escapeshellarg( $rundir )
                  . '/{' . implode( ",", $getfiles ) . '}';
     ## --ignore-missing-args: the top-level analysis-results.tar is the one
     ## that is never actually there (see above) -- without this, rsync
@@ -1605,7 +1628,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## call so that expected, routine noise for an unfinished job never
     ## reaches the output above; a real transfer problem for a job that has
     ## reached this stage would still show up as a missing file below.
-    $output_spec = escapeshellarg( $login ) . ':'
+    $output_spec = rsync_remote_prefix( $login, $local )
                  . escapeshellarg( "$rundir/output/analysis-results.tar" );
     $output_cmd  = "rsync -avz --ignore-missing-args $output_spec " . escapeshellarg( $tdir );
     run_cmd( runuser_wrap_if_root( $output_cmd ), false );
@@ -1656,12 +1679,16 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     $dworkdir = $cluster_details[ $copyrun ]['workdir'] . "/test/$db/$reqid";
     $dlogin   = $cluster_details[ $copyrun ]['login'];
+    ## Round-14 should-fix, dbutils#52 -- same reasoning as $local above,
+    ## for the --copyrun destination cluster.
+    $dlocal   = !empty( $cluster_details[ $copyrun ][ 'localhost' ] );
 
     ## mkdir workdir/../test/db/reqid
     ## $dlogin/$dworkdir quoted: both are config-derived
     ## (cluster_details' login/workdir), the same risk category $login/
     ## $rundir already were above.
-    $inner_cmd = "ssh " . escapeshellarg( $dlogin ) . " mkdir -p " . escapeshellarg( $dworkdir );
+    $inner_cmd = ( $dlocal ? '' : "ssh " . escapeshellarg( $dlogin ) . " " )
+               . "mkdir -p " . escapeshellarg( $dworkdir );
     $cmd = runuser_wrap_if_root( $inner_cmd );
     echoline();
     echo "$cmd\n";
@@ -1670,7 +1697,7 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     ## rsync to workdir/../test/db/reqid
     $inner_cmd = "rsync -avz " . escapeshellarg( "$tdir/" ) . "* "
-               . escapeshellarg( $dlogin ) . ':' . escapeshellarg( $dworkdir );
+               . rsync_remote_prefix( $dlogin, $dlocal ) . escapeshellarg( $dworkdir );
     $cmd = runuser_wrap_if_root( $inner_cmd );
     echoline();
     echo "$cmd\n";
