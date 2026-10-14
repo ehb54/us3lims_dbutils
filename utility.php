@@ -29,11 +29,33 @@ $STDERR = STDERR;
 ##
 ## $etc_timezone/$etc_localtime default to the real paths; a test passes
 ## its own fixture files/symlinks instead of touching the real host's.
-function resolve_system_timezone( $etc_timezone = '/etc/timezone', $etc_localtime = '/etc/localtime' ) {
+## $zoneinfo_root defaults to the real tree; a test passes its own, for
+## the content-comparison fallback below.
+##
+## ROUND-14 SHOULD-FIX (dbutils#52): three distinct, common, valid server
+## configurations all resolved to null here, forcing stage1 to hard-stop
+## on every one of them --
+## 1. /etc/localtime as a plain copy of the zoneinfo file, not a symlink
+##    (some distributions do this instead of symlinking) -- readlink()
+##    simply fails for a non-symlink, falling through to null with no
+##    other attempt made.
+## 2. /etc/localtime symlinked to .../zoneinfo/Etc/UTC -- a common,
+##    explicit way to set UTC -- rejected because timezone_identifiers_
+##    list()'s own default group (DateTimeZone::ALL) excludes the "Etc/*"
+##    backward-compatibility zones entirely; DateTimeZone::ALL_WITH_BC
+##    includes them.
+## 3. /etc/localtime symlinked under .../zoneinfo/posix/America/Chicago
+##    (the POSIX-rules variant of the same tree, identical data, a
+##    distribution choice) -- the extracted name keeps its "posix/"
+##    prefix, which is never in the identifiers list on its own.
+function resolve_system_timezone( $etc_timezone = '/etc/timezone', $etc_localtime = '/etc/localtime',
+                                   $zoneinfo_root = '/usr/share/zoneinfo' ) {
+    $known = timezone_identifiers_list( DateTimeZone::ALL_WITH_BC );
+
     $tzFile = @file_get_contents( $etc_timezone );
     if ( $tzFile !== false ) {
         $tzFile = trim( $tzFile );
-        if ( $tzFile !== '' && in_array( $tzFile, timezone_identifiers_list(), true ) ) {
+        if ( $tzFile !== '' && in_array( $tzFile, $known, true ) ) {
             return $tzFile;
         }
     }
@@ -44,13 +66,62 @@ function resolve_system_timezone( $etc_timezone = '/etc/timezone', $etc_localtim
         $pos    = strrpos( $link, $marker );
         if ( $pos !== false ) {
             $name = substr( $link, $pos + strlen( $marker ) );
-            if ( in_array( $name, timezone_identifiers_list(), true ) ) {
+            if ( in_array( $name, $known, true ) ) {
                 return $name;
+            }
+            ## "posix/America/Chicago" and "right/America/Chicago" are the
+            ## same zone data under zoneinfo's two rule variants -- strip
+            ## the variant directory and retry.
+            foreach ( [ 'posix/', 'right/' ] as $variant_prefix ) {
+                if ( strpos( $name, $variant_prefix ) === 0 ) {
+                    $stripped = substr( $name, strlen( $variant_prefix ) );
+                    if ( in_array( $stripped, $known, true ) ) {
+                        return $stripped;
+                    }
+                }
+            }
+        }
+    }
+
+    ## /etc/localtime is a regular file (not a symlink): readlink() above
+    ## returned false, and there is no path string to extract a name from
+    ## at all. The only way left to identify the zone is by content: every
+    ## real zoneinfo file for a given zone is byte-identical across a
+    ## distribution, so an exact match against the installed tree is
+    ## reliable, not a guess -- not cheap (hundreds of files), but this
+    ## runs once per stage1 invocation, never in a hot path.
+    if ( is_file( $etc_localtime ) && !is_link( $etc_localtime ) ) {
+        $localtime_contents = @file_get_contents( $etc_localtime );
+        if ( $localtime_contents !== false && $localtime_contents !== '' ) {
+            foreach ( $known as $id ) {
+                $candidate = "$zoneinfo_root/$id";
+                if ( is_file( $candidate )
+                     && @file_get_contents( $candidate ) === $localtime_contents ) {
+                    return $id;
+                }
             }
         }
     }
 
     return null;
+}
+
+## Appends a PHP statement to a config file's contents, keeping it inside
+## the existing PHP block rather than landing it after a closing tag.
+## ROUND-14 REGRESSION (dbutils#52 blocking #3): a config.php ending in a
+## closing tag is common (every config newinst wrote before mid-2024, plus
+## dbinst's own config.php.template) -- blindly appending to EOF lands the
+## new statement outside any PHP block, where it prints as literal text
+## instead of ever executing, and the variable it was meant to set is never
+## actually defined. Shared by every migration that appends a single
+## assignment to an existing config file (migrations/4.3.0_common_dir_
+## backfill.php and migrations/4.3.0_webinfo_newinst_common_dir_backfill.php),
+## so the two can never diverge on this.
+function php_append_statement_before_closing_tag( $contents, $statement ) {
+    if ( preg_match( '/\?>\s*$/', $contents ) ) {
+        return preg_replace( '/\?>\s*$/', $statement . '?>', $contents, 1 );
+    }
+    return $contents . $statement;
 }
 
 function write_logl( $msg, $this_level = 0 ) {
@@ -235,8 +306,20 @@ function config_vars( $file, &$why = null ) {
 ## needs to write a missing setting back (uslims_upgrade.php's step 9) can
 ## target the exact file this function itself would read next time, not
 ## guess at one of the two possible paths.
-function discover_lims_instance_configs( $wwwpath, $us3_home, &$paths = null ) {
+##
+## $newus3_configs, when passed by reference, is populated with the entries
+## this function itself would otherwise silently discard (dbname 'newus3' --
+## see the skip below): label => [ 'path' => real config path, 'cfg' =>
+## the resolved vars ]. webinfo's and newinst's own host-level config.php
+## both resolve here (same glob, same 'newus3' dbname), so a caller that
+## needs to reach exactly those two files -- and no others, on any layout --
+## does not have to hardcode their paths or guess which glob hits they are;
+## it gets exactly what this function already found and was going to throw
+## away (round-14 fix, dbutils#52/dbinst#57/newinst#27/webinfo#17: nothing
+## previously had a way to reach these two files at all).
+function discover_lims_instance_configs( $wwwpath, $us3_home, &$paths = null, &$newus3_configs = null ) {
     $paths = [];
+    $newus3_configs = [];
     $instance_configs = [];
     if ( is_file( "$wwwpath/uslims3/config.php" ) ) {
         ## Single-tenant: one instance, directly under uslims3/.
@@ -273,6 +356,7 @@ function discover_lims_instance_configs( $wwwpath, $us3_home, &$paths = null ) {
         ## apply recheck never settled. Skipped outright, not reported as
         ## an error: this is expected, not a problem to flag.
         if ( strcasecmp( $cfg[ 'dbname' ], 'newus3' ) === 0 ) {
+            $newus3_configs[ $label ] = [ 'path' => $real_path, 'cfg' => $cfg ];
             continue;
         }
         $resolved[ $label ] = $cfg;
@@ -785,55 +869,7 @@ function squash($array, $prefix = '') {
 ## --only-extras export filter -- without this, each of those saw a
 ## migrated dbinstance as carrying an unexpected extra table.
 function dbutils_owned_tables() {
-    return [ '_dbutils_people_audit_utc_migrated', '_dbutils_people_audit_utc_boundary',
-             '_dbutils_migrations_applied' ];
-}
-
-## Generic one-time migration ledger, for a migration with no better native
-## signal of its own. Some migrations already have one and keep using it
-## directly instead of this table -- people_audit_utc's dedicated marker
-## table (richer: it also records the zone and the row count converted),
-## or listen_config_v2's own $listen_config_version marker embedded in the
-## file it describes, which travels with that file even on its own. This
-## exists for every migration that doesn't have something that good.
-##
-## One row per migration actually applied; a migration this ledger has
-## never heard of and one definitely not done both read the same way:
-## absent. Lives inside the thing being migrated (an instance's own
-## database for a per-instance migration, gfac for a host-level one), not
-## a file on the host's filesystem -- the same reasoning
-## dbutils_owned_tables()'s own callers already rely on: a migration's
-## applied/not-applied status is a property of the data, and has to travel
-## with it across a backup/restore or an export to a different host the
-## same way the data itself does.
-function create_migration_ledger_table( $db_handle, $db ) {
-    sql_identifier_or_die( $db );
-    return mysqli_query( $db_handle, "CREATE TABLE IF NOT EXISTS $db._dbutils_migrations_applied (" // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
-                                    . " migration_id VARCHAR(128) NOT NULL PRIMARY KEY,"
-                                    . " applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,"
-                                    . " note VARCHAR(255) NULL )" );
-}
-
-function migration_applied( $db_handle, $db, $migration_id ) {
-    sql_identifier_or_die( $db );
-    $has = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE '_dbutils_migrations_applied'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
-    if ( !$has || mysqli_num_rows( $has ) === 0 ) {
-        return false;
-    }
-    $id_esc = mysqli_real_escape_string( $db_handle, $migration_id );
-    $row = mysqli_query( $db_handle, "SELECT 1 FROM $db._dbutils_migrations_applied" // NOSONAR $db is validated above by sql_identifier_or_die(); $id_esc is mysqli_real_escape_string()'d
-                                    . " WHERE migration_id = '$id_esc' LIMIT 1" );
-    return (bool) ( $row && mysqli_num_rows( $row ) > 0 );
-}
-
-function mark_migration_applied( $db_handle, $db, $migration_id, $note = null ) {
-    sql_identifier_or_die( $db );
-    create_migration_ledger_table( $db_handle, $db );
-    $id_esc   = mysqli_real_escape_string( $db_handle, $migration_id );
-    $note_sql = $note === null ? 'NULL'
-              : "'" . mysqli_real_escape_string( $db_handle, substr( (string) $note, 0, 255 ) ) . "'";
-    return (bool) mysqli_query( $db_handle, "INSERT INTO $db._dbutils_migrations_applied" // NOSONAR $db is validated above by sql_identifier_or_die(); $id_esc/$note_sql are escaped
-                                           . " ( migration_id, note ) VALUES ( '$id_esc', $note_sql )" );
+    return [ '_dbutils_people_audit_utc_migrated', '_dbutils_people_audit_utc_boundary' ];
 }
 
 ## Whether $db's people_audit was already migrated by a previous call,
@@ -1111,26 +1147,21 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
         $from_tz = ( $tz_row && $tz_row[ 'tz' ] !== '' ) ? $tz_row[ 'tz' ] : 'SYSTEM';
     }
 
-    # A named zone (e.g. 'America/Chicago') needs mysql.time_zone_name
-    # loaded (mysql_tzinfo_to_sql) to resolve; 'SYSTEM' and a numeric offset
-    # (e.g. '+05:00', a valid session.time_zone value on its own, never a
-    # named zone) do not -- checking "!== 'SYSTEM'" alone treated every
-    # numeric-offset host as if it needed zone tables too, and skipped the
-    # migration entirely for one even when the tables were loaded fine
-    # (confirmed: SELECT CONVERT_TZ(..., '+05:00', '+00:00') resolves with
-    # no zone tables present at all). Rather than let CONVERT_TZ() silently
-    # return NULL into a NOT NULL column, check up front and skip loudly
-    # instead -- but only when $from_tz is actually a named zone.
-    if ( $from_tz !== 'SYSTEM' && !preg_match( '/^[+-]\d{2}:\d{2}$/', $from_tz ) ) {
-        $loaded = mysqli_query( $db_handle, "SELECT 1 FROM mysql.time_zone_name LIMIT 1" );
-        if ( !$loaded || mysqli_num_rows( $loaded ) === 0 ) {
-            echo "WARNING: $db.people_audit: session time_zone is '$from_tz' but"
-               . " mysql.time_zone_name is not loaded on this server (run"
-               . " mysql_tzinfo_to_sql); skipping the UTC migration for $db --"
-               . " convert it by hand once the time zone tables are loaded.\n";
-            return false;
-        }
-    }
+    # A named zone (e.g. 'America/Chicago') used to need mysql.time_zone_name
+    # loaded (mysql_tzinfo_to_sql) to resolve via CONVERT_TZ(); 'SYSTEM' and a
+    # numeric offset (e.g. '+05:00', a valid session.time_zone value on its
+    # own, never a named zone) still do not and still convert via CONVERT_TZ
+    # below unchanged. ROUND-14 REGRESSION (dbutils#52 blocking #2): the
+    # named-zone case used to just warn and skip when the tables were not
+    # loaded -- true of every host us3lims-roles builds, so stage1+stage2's
+    # named zone (dbupgrade/stage1_export_dbinsts.php's resolve_system_
+    # timezone(), always a PHP-recognized IANA identifier, by construction)
+    # converted 0 rows there every time. PHP's own tzdata (timezone_
+    # identifiers_list(), the same list resolve_system_timezone() validated
+    # this zone against) already knows this zone with no dependency on
+    # MariaDB's copy at all, so a named zone converts per row in PHP
+    # instead, never touching mysql.time_zone_name.
+    $is_named_zone = $from_tz !== 'SYSTEM' && !preg_match( '/^[+-]\d{2}:\d{2}$/', $from_tz );
 
     # Rows above the boundary (if one was recorded -- see
     # record_people_audit_utc_boundary()) already existed after dbinst's
@@ -1164,53 +1195,83 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
         return false;
     }
 
-    # '+00:00', not the named zone 'UTC': a named zone on EITHER side of
-    # CONVERT_TZ() needs mysql.time_zone_name loaded, same as checked above
-    # for $from_tz -- but that check only ever covered the source side, so
-    # an account with SYSTEM (or any numeric-offset) $from_tz and no zone
-    # tables loaded still hit this as the destination and got NULL into a
-    # NOT NULL column. A numeric offset needs no zone tables at all, on
-    # either side, so this cannot happen here any more for a real
-    # timestamp -- but the WHERE clause below still excludes any row where
-    # it would, rather than let the UPDATE attempt it at all. Confirmed
-    # directly (MariaDB 10.3, no zone tables loaded, STRICT_ALL_TABLES):
-    # assigning CONVERT_TZ()'s NULL to this NOT NULL column raises
-    # ERROR 1048 and leaves that row's created_at unchanged -- not the
-    # silent run-time substitution originally suspected here. Either way,
-    # excluding the row up front rather than writing it and checking
-    # afterward is exact regardless of which failure mode a given server
-    # version and sql_mode actually produces.
-    $cmd = "UPDATE $db.people_audit"
-         . " SET created_at = CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' )"
-         . " WHERE created_at != '0000-00-00 00:00:00'"
-         . "   AND CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' ) IS NOT NULL"
-         . $bound_clause;
-    $res = mysqli_query( $db_handle, $cmd );
-    if ( !$res ) {
-        # Not error_exit(): stage2's caller has already dropped and
-        # recreated this (and every other) dbinstance by the time this
-        # runs, so aborting the whole import here would leave every
-        # dbinstance after this one in the list missing entirely, over a
-        # problem confined to one table in one of them. uslims_upgrade.php
-        # does not touch other dbinstances at all, so the same non-fatal
-        # return is simply the right call there too.
-        echo "WARNING: $db.people_audit: could not convert created_at to UTC ("
-           . mysqli_error( $db_handle ) . "); this dbinstance's data is otherwise fully"
-           . " imported -- convert people_audit by hand once the time zone is resolvable.\n";
-        return false;
-    }
+    if ( $is_named_zone ) {
+        # Per-row, in PHP: DateTimeZone already knows this zone (resolve_
+        # system_timezone() only ever hands this function a value from
+        # timezone_identifiers_list(), the same list DateTimeZone itself
+        # uses), so this needs no MariaDB zone tables at all. DST is
+        # handled correctly per row (each row's own local instant resolves
+        # its own offset), with the same accepted fall-back-hour ambiguity
+        # as the CONVERT_TZ path below (README).
+        $select_res = mysqli_query( $db_handle,
+            "SELECT auditID, created_at FROM $db.people_audit"
+          . " WHERE created_at != '0000-00-00 00:00:00'" . $bound_clause );
+        $rows = [];
+        while ( $select_res && ( $row = mysqli_fetch_assoc( $select_res ) ) ) {
+            $rows[] = $row;
+        }
+        $unresolved = 0;
+        $zone = new DateTimeZone( $from_tz );
+        $utc  = new DateTimeZone( 'UTC' );
+        foreach ( $rows as $row ) {
+            try {
+                $local = new DateTime( $row[ 'created_at' ], $zone );
+            } catch ( Exception $e ) {
+                ## A value CONVERT_TZ() would also have refused (not a real
+                ## calendar instant) -- left untouched, same as that path.
+                $unresolved++;
+                continue;
+            }
+            $local->setTimezone( $utc );
+            $converted = $local->format( 'Y-m-d H:i:s' );
+            $update = mysqli_query( $db_handle,
+                "UPDATE $db.people_audit SET created_at = '" // NOSONAR $db is validated above by sql_identifier_or_die(); $converted is a formatted DateTime, not user input
+                . mysqli_real_escape_string( $db_handle, $converted ) . "' WHERE auditID = "
+                . (int) $row[ 'auditID' ] );
+            if ( !$update ) {
+                echo "WARNING: $db.people_audit: could not convert created_at to UTC for"
+                   . " auditID {$row['auditID']} (" . mysqli_error( $db_handle ) . "); this"
+                   . " dbinstance's data is otherwise fully imported -- convert this row by hand.\n";
+                return false;
+            }
+        }
+    } else {
+        # 'SYSTEM' and a numeric offset: CONVERT_TZ() resolves both with no
+        # MariaDB zone tables loaded, confirmed directly (MariaDB 10.3, no
+        # zone tables, STRICT_ALL_TABLES): assigning its NULL to this NOT
+        # NULL column raises ERROR 1048 and leaves that row untouched --
+        # the WHERE clause below excludes any such row up front instead of
+        # letting the UPDATE attempt it at all.
+        $cmd = "UPDATE $db.people_audit"
+             . " SET created_at = CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' )"
+             . " WHERE created_at != '0000-00-00 00:00:00'"
+             . "   AND CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' ) IS NOT NULL"
+             . $bound_clause;
+        $res = mysqli_query( $db_handle, $cmd );
+        if ( !$res ) {
+            # Not error_exit(): stage2's caller has already dropped and
+            # recreated this (and every other) dbinstance by the time this
+            # runs, so aborting the whole import here would leave every
+            # dbinstance after this one in the list missing entirely, over a
+            # problem confined to one table in one of them. uslims_upgrade.php
+            # does not touch other dbinstances at all, so the same non-fatal
+            # return is simply the right call there too.
+            echo "WARNING: $db.people_audit: could not convert created_at to UTC ("
+               . mysqli_error( $db_handle ) . "); this dbinstance's data is otherwise fully"
+               . " imported -- convert people_audit by hand once the time zone is resolvable.\n";
+            return false;
+        }
 
-    # Rows excluded above (zero dates, and any CONVERT_TZ() genuinely
-    # cannot resolve) are untouched, not corrupted -- still worth a warning
-    # so an operator knows to look, since a non-zero row landing here would
-    # mean $from_tz is wrong or unresolvable in some way the guard above
-    # did not anticipate.
-    $unresolved_res = mysqli_query( $db_handle, // NOSONAR $db is validated above by sql_identifier_or_die(); $from_tz_esc is mysqli_real_escape_string()'d
-        "SELECT COUNT(*) AS n FROM $db.people_audit WHERE created_at != '0000-00-00 00:00:00'"
-      . "   AND CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' ) IS NULL"
-      . $bound_clause );
-    $unresolved_row = $unresolved_res ? mysqli_fetch_assoc( $unresolved_res ) : null;
-    $unresolved = $unresolved_row ? (int) $unresolved_row[ 'n' ] : 0;
+        # Rows excluded above (zero dates, and any CONVERT_TZ() genuinely
+        # cannot resolve) are untouched, not corrupted -- still worth a
+        # warning so an operator knows to look.
+        $unresolved_res = mysqli_query( $db_handle, // NOSONAR $db is validated above by sql_identifier_or_die(); $from_tz_esc is mysqli_real_escape_string()'d
+            "SELECT COUNT(*) AS n FROM $db.people_audit WHERE created_at != '0000-00-00 00:00:00'"
+          . "   AND CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' ) IS NULL"
+          . $bound_clause );
+        $unresolved_row = $unresolved_res ? mysqli_fetch_assoc( $unresolved_res ) : null;
+        $unresolved = $unresolved_row ? (int) $unresolved_row[ 'n' ] : 0;
+    }
     if ( $unresolved > 0 ) {
         echo "WARNING: $db.people_audit: $unresolved row(s) could not be resolved to UTC from"
            . " '$from_tz' and were left unchanged -- verify by hand.\n";

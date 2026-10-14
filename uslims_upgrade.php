@@ -57,6 +57,13 @@ pre-upgrade config, and the listener has to be stopped with "systemctl stop us3-
 instead. Then let the queues drain and comment out the LIMS cron entries. Step 1 checks all
 of this and refuses rather than work around a running system.
 
+Also stop the web server (or otherwise block access) before pulling the new code, so
+nothing can write to any LIMS database while this runs -- README.md's "Upgrading a host"
+documents why that is what makes step 9's UTC migration and every config rewrite below
+safe. Step 1 cannot tell this host's first --apply after a pull apart from a routine
+re-run on an already-upgraded host, so it only notes the web server's state rather than
+refusing on it; for that first run specifically, stop it.
+
 Steps
 
 0 : every stack checkout is at $required_version or newer (read from each repository's VERSION),
@@ -603,6 +610,65 @@ function us3_listen_unit_user_outcome( $rc, $loadState, $user ) {
     return [ 'ok', "the us3-listen systemd unit runs as us3" ];
 }
 
+## A gridctl daemon script's basename, matched against an ExecStart=/cron/
+## rc.local line.
+function gridctl_daemon_script_pattern() {
+    return '#\b(listen|manage-us3-pipe|submitctl|esign)\.php\b#';
+}
+
+## ROUND-14 SHOULD-FIX (dbutils#52). us3_listen_unit_user_outcome() above
+## only ever checked the one unit us3lims-roles itself installs
+## (us3-listen.service) -- a DIFFERENT systemd unit someone else added
+## with no User= line, a root crontab's @reboot entry, or an /etc/rc.local
+## line, could each just as easily start a gridctl daemon as root on the
+## next reboot, with nothing here to catch any of them.
+##
+## Pure (no systemctl/cron/file-read calls of its own), so the decision is
+## testable without a live system -- same reasoning as every other
+## process/unit check in this file. Each input is already-gathered data:
+## $service_units is [ unit_name => [ 'ExecStart' => ..., 'User' => ... ] ]
+## for every OTHER installed .service unit (us3-listen.service itself is
+## excluded by the caller, already checked above); $cron_lines is every
+## line from /etc/crontab and /etc/cron.d/*, concatenated; $rc_local is
+## /etc/rc.local's contents, or '' if it does not exist.
+##
+## @return list<string> one message per risk found; empty when none are.
+function other_root_start_risks( array $service_units, array $cron_lines, $rc_local ) {
+    $pattern = gridctl_daemon_script_pattern();
+    $risks   = [];
+
+    foreach ( $service_units as $unit => $props ) {
+        if ( !preg_match( $pattern, $props[ 'ExecStart' ] ?? '' ) ) {
+            continue;
+        }
+        $user = $props[ 'User' ] ?? '';
+        if ( $user === '' || $user === 'root' ) {
+            $risks[] = "$unit starts a gridctl daemon with no User=us3 ("
+                     . ( $user === '' ? 'unset, defaults to root' : 'explicitly set to root' ) . ')';
+        }
+    }
+
+    ## /etc/crontab's own column layout names the user directly (minute hour
+    ## dom month dow user command); a @reboot line keeps the same shape, just
+    ## with the time fields replaced by the one word "@reboot". /etc/cron.d/*
+    ## files share this system-crontab shape (unlike a per-user crontab,
+    ## which has no user column at all -- cron already runs those as their
+    ## owner, never root, unless the owner itself is root).
+    foreach ( $cron_lines as $line ) {
+        if ( preg_match( '/^\s*@reboot\s+(\S+)\s+(.*)$/', $line, $m )
+             && preg_match( $pattern, $m[ 2 ] )
+             && $m[ 1 ] === 'root' ) {
+            $risks[] = "a root \@reboot cron entry starts a gridctl daemon: " . trim( $line );
+        }
+    }
+
+    if ( $rc_local !== '' && preg_match( $pattern, $rc_local ) ) {
+        $risks[] = "/etc/rc.local starts a gridctl daemon, and rc.local always runs as root";
+    }
+
+    return $risks;
+}
+
 ## A cron line driving gridctl, under any of its names. A commented one counts
 ## too: step 1 has the operator comment the LIMS entries out for the upgrade, so
 ## skipping comments here would leave the entry behind for them to re-enable
@@ -865,6 +931,14 @@ function owner_of( $stat ) {
 ## Running processes whose "pid args" line matches $regex, as [ pid => line ].
 ## Returns null when the process list could not be read, which is not the same as
 ## nothing matching. This script's own process and its parent are never included.
+## Pulled out so a test can pin down the pattern itself (which process
+## names it matches, how it avoids matching an unrelated one) without
+## needing a real httpd/php-fpm running -- same reasoning as every other
+## pure-string-building function in this file.
+function web_server_process_regex() {
+    return '#^\s*(\d+)\s+(?:\S*/)?(httpd|apache2|nginx|php-fpm)(\s|:|$)#';
+}
+
 function processes( $regex ) {
     list( $out, $err, $rc ) = capture( 'ps -eo pid=,args=' );
     if ( $rc !== 0 ) {
@@ -992,41 +1066,27 @@ function version_at_least( $version, $minimum ) {
                             $minimum, '>=' );
 }
 
-## discover_lims_instance_configs()'s own path resolution, mirrored here:
-## single-tenant lives directly under uslims3/, multi-tenant under its own
-## named subdirectory.
-function instance_dbinst_dir( $wwwpath, $label ) {
-    return $label === 'default' ? "$wwwpath/uslims3" : "$wwwpath/uslims3/$label";
-}
-
-## True when $label's own dbinst checkout is already at $required_version
-## or newer -- the only way that can be true is that create_instance.php
-## cloned it from an already-$required_version-or-newer dbinst, so this
-## instance has never run older code and every people_audit row it has (if
-## any) was written by that version's own always-UTC write_audit_row() from
-## the moment the instance was created.
+## ROUND-14 REGRESSION (dbutils#52 blocking #1), and what used to be here:
+## this step used to branch on instance_is_new_under_required_version(),
+## which read $label's own dbinst checkout VERSION and treated
+## "already at $required_version" as proof the instance was created fresh
+## by newinst under current code -- true for a newinst-created instance,
+## but also true for a genuinely pre-existing instance, because the
+## documented upgrade procedure (see this script's own --help) pulls
+## *every existing instance's* dbinst checkout to $required_version too,
+## before step 0 ever runs. Both cases read the identical VERSION by the
+## time this code sees them, so that branch could not actually tell them
+## apart -- it marked every pre-existing instance "done" with nothing
+## converted. (This replaced round-13's flat, host-level "known instance
+## names" file, which had the same class of problem from the other
+## direction: see UPGRADE-AND-INSTALL-MODEL.md.)
 ##
-## THE BUG this answers (round-13 blocking item, dbutils#52): a flat,
-## host-level "known instance names" file used to answer this instead (see
-## dbutils_boundary_known_instances_* below -- removed). Its signal was "is
-## this instance absent from every step-0 run before this one", which is
-## not the same question and breaks in both directions: a genuinely
-## pre-existing instance that simply failed to connect on every earlier run
-## (a stale password, a restored backup) looked exactly like a brand-new
-## one and was wrongly marked done with nothing converted; conversely,
-## every instance on a host's first-ever --apply was run through the
-## boundary path unconditionally, even one created fresh under already-
-## $required_version code moments earlier, whose already-correct rows then
-## got shifted by step 9's later conversion. Reading this instance's own
-## VERSION file instead answers the real question directly, with no
-## dependence on step-0's run history on this host at all: a missing or
-## unreadable VERSION file is treated as "not new" (needs a boundary) --
-## the safe default, same as repo_version()'s own "missing file, not a
-## known version" return and step 0's own stale-code check above.
-function instance_is_new_under_required_version( $wwwpath, $label, $required_version ) {
-    $version = repo_version( instance_dbinst_dir( $wwwpath, $label ) );
-    return $version !== null && version_at_least( $version, $required_version );
-}
+## record_people_audit_utc_boundary() below does not need this
+## classification at all: it reads $db.people_audit's own MAX(auditID)
+## directly, which is 0 for an instance with no table or no rows yet (a
+## fresh newinst-created one) and the real high-water mark for a
+## pre-existing one -- the data itself already distinguishes the two
+## cases, with no VERSION-based guess required.
 
 $stack = [ 'gridctl' => $gridctl_dir,
            'dbutils' => __DIR__,
@@ -1117,7 +1177,17 @@ if ( $missing ) {
 ## --apply would not narrow anything anyway. Errors here are left for
 ## step 9 to report by name; this only ever records a boundary for an
 ## instance step 9 can also reach.
-if ( $apply ) {
+##
+## Pulled into its own function (round-14 fix, dbutils#52 blocking #1) so
+## it can be driven directly in a test with a constructed instance tree,
+## the same way migrations.php's functions already are -- the bug this
+## replaced (branching on instance_is_new_under_required_version(), which
+## read VERSION and could not distinguish a pre-existing instance the
+## mandated pull also brings to $required_version from a newinst-created
+## one) was never actually exercised against a real discover_lims_
+## instance_configs() tree before now; see UPGRADE-AND-INSTALL-MODEL.md.
+function run_people_audit_utc_boundaries( $wwwpath, $us3_home ) {
+    $changes = 0;
     foreach ( discover_lims_instance_configs( $wwwpath, $us3_home ) as $label => $cfg ) {
         if ( isset( $cfg[ 'error' ] ) || !is_sql_identifier( $cfg[ 'dbname' ] ) ) {
             continue;
@@ -1139,24 +1209,71 @@ if ( $apply ) {
             continue;
         }
 
-        if ( instance_is_new_under_required_version( $wwwpath, $label, $required_version ) ) {
-            if ( mark_people_audit_utc_migration_done( $conn, $cfg[ 'dbname' ],
-                     "n/a ($required_version+ instance)" ) ) {
-                ## Counted (round-13 nit, dbutils#52): this block runs before
-                ## step 1's idle check below, which used to tell an operator
-                ## "Nothing was changed" on refusing a busy host -- not true
-                ## once this real write already landed moments earlier.
-                $changes++;
-            } else {
-                report( 'FAIL', "$label ({$cfg['dbname']}): could not record the UTC migration"
-                               . " marker (" . reason( mysqli_error( $conn ) ) . ")" );
-            }
-        } else {
-            record_people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] );
-            $changes++;
-        }
+        record_people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] );
+        $changes++;
 
         mysqli_close( $conn );
+    }
+    return $changes;
+}
+
+## Step 8's two sizing/probe checks, pulled into their own functions for the
+## same reason run_people_audit_utc_boundaries() above was (round-14 fix,
+## dbutils#52 blocking #4): so they can be driven directly in a test against
+## a constructed $cluster_details array, including a metascheduler pool
+## entry, rather than only through the full script's own output. Both skip
+## a pool entry via is_metascheduler_pool_entry() -- step 3's own existing
+## detector (defined further up this file), not reimplemented here, so this
+## and step 3's retirement carve-out can never disagree on the shape.
+function sizing_gate_refusals( $final_clusters ) {
+    $refused = [];
+    $checked = 0;
+    foreach ( $final_clusters as $name => $c ) {
+        if ( !is_array( $c ) || !( $c[ 'active' ] ?? false ) || is_metascheduler_pool_entry( $c ) ) {
+            continue;
+        }
+        $checked++;
+        $ppn     = (int) ( $c[ 'ppn' ] ?? 0 );
+        $maxproc = max( 0, (int) ( $c[ 'maxproc' ] ?? 0 ) );
+        if ( $ppn < 1 ) {
+            $refused[] = "$name has no usable tasks-per-node capacity (ppn $ppn)";
+        } elseif ( !empty( $c[ 'single_node' ] ) && $maxproc > $ppn ) {
+            $refused[] = "$name is single_node with maxproc $maxproc over ppn $ppn";
+        }
+    }
+    return [ 'refused' => $refused, 'checked' => $checked ];
+}
+
+function unprobed_active_clusters( $final_clusters, $probes ) {
+    $unprobed = [];
+    foreach ( $final_clusters as $name => $c ) {
+        if ( !is_array( $c ) || !( $c[ 'active' ] ?? false ) || is_metascheduler_pool_entry( $c ) ) {
+            continue;
+        }
+        if ( !is_array( $probes[ $name ] ?? null ) ) {
+            $unprobed[] = "$name has no entry in cluster_config.php";
+        } elseif ( empty( $probes[ $name ][ 'active' ] ) ) {
+            $unprobed[] = "$name has an inactive status probe";
+        } elseif ( trim( (string) ( $probes[ $name ][ 'status' ] ?? '' ) ) === '' ) {
+            $unprobed[] = "$name has an active probe with no status command";
+        }
+    }
+    return $unprobed;
+}
+
+if ( $apply ) {
+    ## Counted (round-13 nit, dbutils#52): this runs before step 1's idle
+    ## check below, which used to tell an operator "Nothing was changed"
+    ## on refusing a busy host -- not true once a real write already
+    ## landed moments earlier.
+    $boundaries_recorded = run_people_audit_utc_boundaries( $wwwpath, $us3_home );
+    $changes += $boundaries_recorded;
+    ## Nit (round-14, dbutils#52): this used to run and change the count
+    ## silently -- every other action in this script reports what it did,
+    ## so a run that only did this (every instance already migrated or
+    ## connecting) looked identical to one that skipped it entirely.
+    if ( $boundaries_recorded > 0 ) {
+        report( 'ok', "recorded this run's UTC-migration boundary for $boundaries_recorded instance(s)" );
     }
 }
 
@@ -1238,6 +1355,39 @@ list( $unit_status, $unit_msg ) = us3_listen_unit_user_outcome(
     $unit_show_rc, $unit_show_props[ 'LoadState' ] ?? '', $unit_show_props[ 'User' ] ?? '' );
 report( $unit_status, $unit_msg );
 
+## -- every OTHER way a gridctl daemon could start as root (round-14
+## should-fix, dbutils#52): a different systemd unit, a root @reboot cron
+## entry, or /etc/rc.local. Same "not an idle-host precondition" reasoning
+## as the us3-listen check just above -- a standing boot-time problem, not
+## something retrying this run fixes.
+[ $unit_list_out ] = capture( "systemctl list-units --type=service --all --no-legend --plain"
+                             . " | awk '{print \$1}'" );
+$other_service_units = [];
+foreach ( explode( "\n", (string) $unit_list_out ) as $unit ) {
+    $unit = trim( $unit );
+    if ( $unit === '' || $unit === 'us3-listen.service' ) {
+        continue;
+    }
+    [ $props_out ] = capture( 'systemctl show -p ExecStart -p User ' . escapeshellarg( $unit ) );
+    $other_service_units[ $unit ] = systemctl_show_properties( $props_out );
+}
+$cron_lines = [];
+foreach ( array_merge( [ '/etc/crontab' ], glob( '/etc/cron.d/*' ) ?: [] ) as $cron_file ) {
+    $contents = @file_get_contents( $cron_file );
+    if ( $contents !== false ) {
+        $cron_lines = array_merge( $cron_lines, explode( "\n", $contents ) );
+    }
+}
+$rc_local = (string) ( @file_get_contents( '/etc/rc.local' ) ?: '' );
+$other_risks = other_root_start_risks( $other_service_units, $cron_lines, $rc_local );
+if ( $other_risks ) {
+    foreach ( $other_risks as $risk ) {
+        report( 'FAIL', $risk );
+    }
+} else {
+    report( 'ok', "no other systemd unit, root cron entry, or rc.local starts a gridctl daemon" );
+}
+
 ## -- jobmonitors. One per job on the new contract, none on an idle host.
 $monitors = jobmonitors( $jm_error );
 if ( $jm_error !== '' ) {
@@ -1260,6 +1410,39 @@ if ( $analysis ) {
     $busy[] = 'analysis binary running';
 } elseif ( $analysis !== null ) {
     report( 'ok', "nothing is running from /opt/ultrascan3/bin" );
+}
+
+## ROUND-14 SHOULD-FIX (dbutils#52). The README's own step 1 ("Stop the web
+## server... so nothing can write to any LIMS database while the upgrade
+## runs") is what makes the FIRST --apply after a genuine 4.2.0->4.3.0 pull
+## safe: step 9's UTC migration and every config rewrite assume no web
+## request can read or write anything during that one-time transition.
+## --help never said so, only naming the gridctl services above, so an
+## operator following --help alone for that first transition could leave
+## the web server up with nothing here to catch it.
+##
+## Not added to $busy[], unlike the gridctl-service check above: a FAIL
+## here would also stop every ROUTINE --apply on an already-transitioned,
+## steady-state host (us3lims-roles#24 calls --apply on every playbook
+## run, round-14 fix), where the web server running is normal and
+## expected -- nothing left for it to unsafely race once every instance
+## is already past this host's one-time transition. This script has no
+## persistent "has this host's transition already happened" signal to
+## gate a hard failure on (see UPGRADE-AND-INSTALL-MODEL.md on why one was
+## deliberately not built), so this is informational, matching the
+## us3-listen unit-account check just above it in spirit: tell the
+## operator plainly, let them judge whether this run is that first
+## transition or routine convergence.
+$webservers = processes( web_server_process_regex() );
+if ( $webservers === null ) {
+    report( 'note', "could not read the process list, so the web server's state is unknown" );
+} elseif ( $webservers ) {
+    report( 'note', "a web server or php-fpm is running (pid " . implode( ', ', array_keys( $webservers ) )
+                   . "). If this is this host's first --apply after pulling 4.3.0 code, stop it"
+                   . " first (README: \"Upgrading a host\") -- nothing here can tell a first"
+                   . " transition apart from a routine re-run, so this is a note, not a failure." );
+} else {
+    report( 'ok', "no web server or php-fpm (httpd, apache2, nginx) is running" );
 }
 
 ## -- gfac.analysis. A finished cleanup deletes the row, so any row outside the
@@ -2473,8 +2656,16 @@ function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_err
 ## missing-privilege error is a note, not a FAIL" reasoning: neither is read
 ## or written at all on a host that never configures a metascheduler
 ## pseudo-cluster entry.
+## ROUND-14 SHOULD-FIX (dbutils#52): $host_has_pool distinguishes "this
+## table is purely additive, nothing on this host needs it yet" (the
+## runtime-advisory pilot table's own reasoning, genuinely true for a host
+## with no metascheduler pseudo-cluster configured) from "this host
+## actively uses pick_cluster() and is missing the table that keeps two
+## reservations from picking the same cluster" -- a real, silent
+## correctness gap, not an optional one, that the old unconditional 'note'
+## treated identically to the harmless case on every roles-built host.
 function metascheduler_table_create_outcome( $table, $sql_file, $create_sql, $create_ok,
-                                              $create_errno, $create_error ) {
+                                              $create_errno, $create_error, $host_has_pool = false ) {
     if ( trim( (string) $create_sql ) === '' ) {
         return [ 'FAIL', "gfac.$table's SQL file has no SQL left after stripping comments" ];
     }
@@ -2484,7 +2675,19 @@ function metascheduler_table_create_outcome( $table, $sql_file, $create_sql, $cr
     if ( in_array( (int) $create_errno, [ 1142, 1044 ], true ) ) {
         ## 1142 (command denied) / 1044 (access denied to database): see
         ## runtime_prediction_create_outcome()'s own comment -- the gfac
-        ## account lacking CREATE is an expected, optional gap here too.
+        ## account lacking CREATE is an expected, optional gap when nothing
+        ## on this host uses pick_cluster() yet. Once a pool is configured,
+        ## the same gap means every pick runs with no audit trail and no
+        ## protection against two reservations taking the same cluster --
+        ## this needs doing, not a note an operator can reasonably ignore.
+        if ( $host_has_pool ) {
+            return [ 'FAIL', "gfac.$table could not be created (gfac account lacks privilege: "
+                            . reason( (string) $create_error ) . "), and this host has a"
+                            . " metascheduler pool configured -- pick_cluster() will run with no"
+                            . " audit trail and no protection against two reservations choosing the"
+                            . " same cluster. Grant CREATE on gfac to the account this ran as, or run"
+                            . " by hand: mysql gfac < $sql_file" ];
+        }
         return [ 'note', "gfac account lacks privilege to create gfac.$table (metascheduler"
                         . " pick_cluster()): " . reason( (string) $create_error )
                         . "; an account with CREATE on gfac can run it by hand:"
@@ -2742,9 +2945,23 @@ foreach ( [
     ## account (SELECT/INSERT/UPDATE/DELETE only) is exactly the same account
     ## either table would be missing CREATE on.
     if ( ! $apply && ! gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
-        report( 'note', "gfac account lacks privilege to create gfac.$metascheduler_table"
-              . " (metascheduler pick_cluster()); an account with CREATE on gfac can run it by"
-              . " hand: mysql gfac < $metascheduler_table_sql" );
+        ## Same escalation as metascheduler_table_create_outcome()'s own
+        ## CREATE-denied branch (round-14 should-fix, dbutils#52): this
+        ## --check-only path never attempts the CREATE at all (it infers
+        ## the privilege gap from SHOW GRANTS instead), so it has to
+        ## duplicate that one escalation decision rather than call through
+        ## a function shaped around an actual attempt's errno/error.
+        if ( !empty( $pools ) ) {
+            report( 'FAIL', "gfac.$metascheduler_table cannot be created (gfac account lacks"
+                  . " privilege), and this host has a metascheduler pool configured --"
+                  . " pick_cluster() will run with no audit trail and no protection against two"
+                  . " reservations choosing the same cluster. Grant CREATE on gfac to the account"
+                  . " this will run as, or run by hand: mysql gfac < $metascheduler_table_sql" );
+        } else {
+            report( 'note', "gfac account lacks privilege to create gfac.$metascheduler_table"
+                  . " (metascheduler pick_cluster()); an account with CREATE on gfac can run it by"
+                  . " hand: mysql gfac < $metascheduler_table_sql" );
+        }
         continue;
     }
 
@@ -2773,7 +2990,8 @@ foreach ( [
         }
 
         list( $status, $message ) = metascheduler_table_create_outcome(
-            $metascheduler_table, $metascheduler_table_sql, $create, $create_ok, $errno, $error );
+            $metascheduler_table, $metascheduler_table_sql, $create, $create_ok, $errno, $error,
+            !empty( $pools ) );
         report( $status, $message );
     }
 }
@@ -3074,6 +3292,19 @@ if ( !$apply ) {
     ## check above and still take no jobs. These are that gate's own conditions
     ## (web/common/class/jobsubmit.php resource_plan()), applied per active cluster
     ## and read back from the written config rather than from what step 3 proposed.
+    ## ROUND-14 REGRESSION (dbutils#52 blocking #4, with gridctl#35): a
+    ## metascheduler pool entry (the same "clusters"-list shape step 3
+    ## above already carves out of $active via is_metascheduler_pool_entry()
+    ## -- identical to gridctl's own pick_cluster_is_metascheduler_entry())
+    ## lives in $cluster_details the same as every real cluster, but is
+    ## never itself a schedulable target: it has no ppn and no
+    ## cluster_config.php probe of its own, because pick_cluster() resolves
+    ## it to a separate, ordinary active entry that already has both. Both
+    ## checks below used to treat the pool entry as if it were that real
+    ## cluster and fail it on both counts, so --apply exited rc 1 on any
+    ## host with a pool while --check (which does not run this block)
+    ## passed -- failing the us3lims-roles#24 play on every pool-enabled
+    ## host, every run.
     $final = config_vars( $global_config, $f_why );
     if ( $final === null ) {
         report( 'FAIL', "cannot re-read global_config.php to check the sizing gate: "
@@ -3081,21 +3312,9 @@ if ( !$apply ) {
     } else {
         $final_clusters = is_array( $final[ 'cluster_details' ] ?? null )
                         ? $final[ 'cluster_details' ] : [];
-        $refused = [];
-        $checked = 0;
-        foreach ( $final_clusters as $name => $c ) {
-            if ( !is_array( $c ) || !( $c[ 'active' ] ?? false ) ) {
-                continue;
-            }
-            $checked++;
-            $ppn     = (int) ( $c[ 'ppn' ] ?? 0 );
-            $maxproc = max( 0, (int) ( $c[ 'maxproc' ] ?? 0 ) );
-            if ( $ppn < 1 ) {
-                $refused[] = "$name has no usable tasks-per-node capacity (ppn $ppn)";
-            } elseif ( !empty( $c[ 'single_node' ] ) && $maxproc > $ppn ) {
-                $refused[] = "$name is single_node with maxproc $maxproc over ppn $ppn";
-            }
-        }
+        $sizing  = sizing_gate_refusals( $final_clusters );
+        $refused = $sizing[ 'refused' ];
+        $checked = $sizing[ 'checked' ];
         ## An active cluster with no active probe writes no cluster_status row, and the
         ## web tier treats a cluster with no row as down. So the two files have to
         ## agree, or submission is enabled on a cluster nobody can select. This is the
@@ -3109,21 +3328,9 @@ if ( !$apply ) {
                               . "), so the probes could not be checked against the active clusters"
                             : "no $cc_file, so no cluster has a status probe" );
         } else {
-            $probes  = is_array( $cc_vars[ 'cluster_configuration' ] ?? null )
-                     ? $cc_vars[ 'cluster_configuration' ] : [];
-            $unprobed = [];
-            foreach ( $final_clusters as $name => $c ) {
-                if ( !is_array( $c ) || !( $c[ 'active' ] ?? false ) ) {
-                    continue;
-                }
-                if ( !is_array( $probes[ $name ] ?? null ) ) {
-                    $unprobed[] = "$name has no entry in cluster_config.php";
-                } elseif ( empty( $probes[ $name ][ 'active' ] ) ) {
-                    $unprobed[] = "$name has an inactive status probe";
-                } elseif ( trim( (string) ( $probes[ $name ][ 'status' ] ?? '' ) ) === '' ) {
-                    $unprobed[] = "$name has an active probe with no status command";
-                }
-            }
+            $probes   = is_array( $cc_vars[ 'cluster_configuration' ] ?? null )
+                      ? $cc_vars[ 'cluster_configuration' ] : [];
+            $unprobed = unprobed_active_clusters( $final_clusters, $probes );
             if ( $unprobed ) {
                 report( 'FAIL', "active cluster(s) the web tier will grey out, because nothing"
                                 . " writes their cluster_status row: " . implode( '; ', $unprobed ) );
@@ -3162,7 +3369,25 @@ step( "9. Per-instance catch-up (\$common_dir, people_audit UTC migration)" );
 ## instance on this host" means. $instance_paths (by reference) gets the
 ## real file each entry's config was actually read from -- needed below to
 ## write $common_dir back to the right file, not guessed from $wwwpath.
-$instance_configs = discover_lims_instance_configs( $wwwpath, $us3_home, $instance_paths );
+## $newus3_configs (round-14 fix, dbinst#57/newinst#27/webinfo#17) carries
+## webinfo's and newinst's own host-level configs -- the entries this
+## function finds on the same glob pass but discards, since they are not
+## LIMS tenant databases; run once below, outside the per-instance loop,
+## since there is exactly one webinfo and one newinst config per host, not
+## one per instance.
+$instance_configs = discover_lims_instance_configs( $wwwpath, $us3_home, $instance_paths, $newus3_configs );
+
+run_host_migrations( null, $required_version, $apply,
+                      [ 'wwwpath' => $wwwpath, 'newus3_configs' => $newus3_configs ],
+                      [ 'webinfo_newinst_common_dir_backfill' ] );
+
+## dbinst_base_common_dir_backfill (round-14 should-fix, dbutils#52): the
+## shared base+overlay base file, fixed once per host -- see the sibling
+## instance migration above, which defers to this one for a base+overlay
+## instance instead of trying (and failing) to patch its own overlay.
+run_host_migrations( null, $required_version, $apply,
+                      [ 'wwwpath' => $wwwpath, 'us3_home' => $us3_home ],
+                      [ 'dbinst_base_common_dir_backfill' ] );
 
 if ( !$instance_configs ) {
     report( 'note', "no $wwwpath/uslims3 config.php found; nothing to migrate" );
