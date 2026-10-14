@@ -93,7 +93,6 @@ Steps
     configured (enforcing it is a later step), and installs the /common/{css,images,js}
     Apache alias us3lims-roles' config-lims-apache role normally provides, unless one is
     already configured -- without it, every page's CSS/images/JS 404 after a hand upgrade
-    (round 15, dbinst#57 blocking)
 8 : verifies the result, including that every active cluster passes the submission
     sizing gate rather than refusing every job
 9 : migrates each dbinstance's people_audit.created_at to UTC if not already done
@@ -140,7 +139,7 @@ write_audit_row() has written UTC from the start); it also adds a marker table t
 This is a one-time, one-direction conversion with no undo step of its own -- a pre-migration
 backup of each dbinstance's own database is the way back if a conversion turns out to be
 wrong for some instance. Restoring one is self-correcting rather than something to verify by
-hand: dbutils#52 round 15 made the "is this row already UTC" question read from the row's own
+hand: the "is this row already UTC" question reads from the row's own
 created_at_utc flag, not from the marker table or a boundary snapshot, so a restored row (which
 carries no such flag, win or lose, since the column postdates any pre-migration backup) reads as
 unconverted again on the very next run and gets converted correctly, with no dependency on
@@ -148,7 +147,7 @@ whether the marker table or boundary table happened to survive the restore too.
 
 Step 0 (run before step 9, before steps 1-8 do anything else) records a boundary -- the highest
 people_audit.auditID already written at the moment this run started -- in its own table
-(_dbutils_people_audit_utc_boundary). This is informational only as of round 15 (which rows
+(_dbutils_people_audit_utc_boundary). This is informational only now (which rows
 step 9 actually converts no longer depends on it at all); it remains for migrate_people_audit_
 utc.php's own standalone refuse-without-a-boundary check and for step 0's report. Rolling back to
 a release that writes local time again, then running this instance for a while before ever
@@ -586,7 +585,7 @@ function systemctl_show_properties( $output ) {
 ## root, so that host could never actually start the gridctl services --
 ## not a style nit, a host that can never come up after a reboot.
 ##
-## THE FOLLOW-UP BUG (round 13): the first fix read $loadState/$user
+## THE FOLLOW-UP BUG: an earlier fix read $loadState/$user
 ## positionally off 'systemctl show -p LoadState -p User --value''s two
 ## output lines, assuming systemd always prints them in the -p flag order.
 ## On systemd 239 it prints User before LoadState -- the reverse -- so
@@ -628,7 +627,7 @@ function us3_listen_unit_user_outcome( $rc, $loadState, $user ) {
 ## rc.local line.
 ## services.php start is the documented launcher (uslims_upgrade.php --help's
 ## own procedure, step 4: "Restart services") for all four daemons at once --
-## round 15 should-fix, dbutils#52: an entry naming it directly (a systemd
+## an entry naming it directly (a systemd
 ## unit, a root @reboot cron line, rc.local) started every gridctl daemon
 ## exactly as much as one naming listen.php or esign.php by name, but none
 ## of those checks ever matched it, since it names none of the four scripts
@@ -1136,7 +1135,7 @@ function version_at_least( $version, $minimum ) {
 ## apart -- it marked every pre-existing instance "done" with nothing
 ## converted. (This replaced a flat, host-level "known instance
 ## names" file, which had the same class of problem from the other
-## direction: see UPGRADE-AND-INSTALL-MODEL.md.)
+## direction.)
 ##
 ## record_people_audit_utc_boundary() below does not need this
 ## classification at all: it reads $db.people_audit's own MAX(auditID)
@@ -1242,7 +1241,7 @@ if ( $missing ) {
 ## read VERSION and could not distinguish a pre-existing instance the
 ## mandated pull also brings to $required_version from a newinst-created
 ## one) was never actually exercised against a real discover_lims_
-## instance_configs() tree before now; see UPGRADE-AND-INSTALL-MODEL.md.
+## instance_configs() tree before now.
 function run_people_audit_utc_boundaries( $wwwpath, $us3_home ) {
     $changes = 0;
     foreach ( discover_lims_instance_configs( $wwwpath, $us3_home ) as $label => $cfg ) {
@@ -1491,8 +1490,10 @@ if ( $analysis ) {
 ## expected -- nothing left for it to unsafely race once every instance
 ## is already past this host's one-time transition. This script has no
 ## persistent "has this host's transition already happened" signal to
-## gate a hard failure on (see UPGRADE-AND-INSTALL-MODEL.md on why one was
-## deliberately not built), so this is informational, matching the
+## gate a hard failure on (deliberately not built, since newinst-created
+## instances never go through this transition at all and a flag keyed to
+## the host alone cannot tell those apart from a genuinely pre-existing
+## one), so this is informational, matching the
 ## us3-listen unit-account check just above it in spirit: tell the
 ## operator plainly, let them judge whether this run is that first
 ## transition or routine convergence.
@@ -1871,7 +1872,7 @@ foreach ( $pools as $name => $c ) {
 ## submission code, so an active 'pbs' or 'http' entry is now treated as
 ## though it were Slurm. They are dropped from $active as well, so the
 ## checks below do not go looking for env_script_lines, nodes or SSH on a
-## cluster that is being retired. (THE BUG this answers, round 13: this loop
+## cluster that is being retired. (THE BUG this answers: this loop
 ## used to also retire anything with a 'clusters' list, back when that shape
 ## only ever meant a dead Airavata-era fan-out entry. gridctl#35 made
 ## 'clusters' a first-class, currently-supported pool shape, so that
@@ -2356,7 +2357,7 @@ step( "4. SSH host keys and access (StrictHostKeyChecking=yes is the default)" )
 ## above): a pool has no login/host of its own for ssh to reach. A
 ## 'localhost' => true entry is NOT excluded wholesale -- remote_exec's
 ## is_local() only skips ssh for the account that actually matches the
-## entry's login user (round-13 should-fix, us3lims-roles#24: on a fresh
+## entry's login user (on a fresh
 ## build the appliance's own account reaches itself via cp/exec and never
 ## needs a key, but php-fpm commonly runs as a separate web account that
 ## does not match the login user, and that account still falls back to
@@ -2981,7 +2982,7 @@ if ( !is_file( $runtime_table_sql ) ) {
 }
 
 ## -- metascheduler pick_cluster() tables (gridctl/pick_cluster.php,
-## -- pick_cluster_reserve.php -- see METASCHEDULER-DESIGN.md). Both purely
+## -- pick_cluster_reserve.php). Both purely
 ## -- additive, same reasoning as the runtime advisory pilot table above: a
 ## -- host that never configures a metascheduler pseudo-cluster entry in
 ## -- global_config.php never writes to either, and CREATE TABLE IF NOT
@@ -3270,7 +3271,7 @@ if ( $apache === null ) {
                     @unlink( $apache[ 'conf' ] );
                     report( 'FAIL', "Apache rejected the policy, so it was removed: " . reason( $t_err !== '' ? $t_err : $t_out ) );
                 } else {
-                    ## THE BUG this answers (round-13 nit, dbutils#52):
+                    ## THE BUG this answers:
                     ## 'systemctl reload' only ever works on an already-
                     ## running unit -- on a stopped httpd (a fresh host
                     ## before its first start, or one deliberately down for
@@ -3298,7 +3299,7 @@ if ( $apache === null ) {
     }
 }
 
-## THE BUG this answers (round 15, dbinst#57 blocking). A hand upgrade
+## THE BUG this answers. A hand upgrade
 ## (the procedure above) pulls dbinst's code but never touches Apache's
 ## own config -- only us3lims-roles' config-lims-apache role templates the
 ## /common/{css,images,js} Alias newinst/webinfo's shared static assets

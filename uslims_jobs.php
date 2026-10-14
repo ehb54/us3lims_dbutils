@@ -460,8 +460,7 @@ function marker_process_alive( $pid, $marker_started = 0 ) {
 ## back -- not just a timing race with the worker that is about to finish
 ## writing it) before --restart calls it out distinctly, instead of
 ## printing the exact same "leaving it for the next --restart" line forever
-## with nothing to tell an operator this one is different (round-13 nit,
-## dbutils#52).
+## with nothing to tell an operator this one is different.
 ## A function, not a top-level const: this script's functions are pulled
 ## out for unit testing by a tokenizer-based extractor (see tests/support/
 ## dbutils/load-uslims-jobs.php) that does not also pull out const
@@ -490,7 +489,7 @@ function close_out_finalizing_marker( $db_handle, $marker, array $info ) {
     $requestid = (int) ( $info[ 'requestID' ] ?? 0 );
 
     ## us3_db goes into the queries below unquoted, as a database-name
-    ## prefix (round-13 nit, dbutils#52) -- mysqli_real_escape_string()
+    ## prefix -- mysqli_real_escape_string()
     ## protects a value placed INSIDE quotes, which an identifier position
     ## never is, so it offered no actual protection here. Validated the
     ## same way every other identifier interpolated into SQL in this
@@ -603,7 +602,7 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
     $gfacid      = $info[ 'gfacID' ];
     $requestid   = (int) ( $info[ 'requestID' ] ?? 0 );
     ## us3_db goes into the queries below unquoted, as a database-name
-    ## prefix (round-13 nit, dbutils#52) -- see close_out_finalizing_
+    ## prefix -- see close_out_finalizing_
     ## marker()'s own identical fix for why mysqli_real_escape_string()
     ## offered no real protection in this position.
     if ( !is_sql_identifier( $info[ 'us3_db' ] ) ) {
@@ -849,7 +848,7 @@ if ( $running || $restart || $restart_only ) {
         ## monitor for it and the stage sits at 'running'. cleanup leaves a marker
         ## across that span; a marker with no row means the worker died in it.
         ##
-        ## THE BUG this answers (round-13 should-fix, dbutils#52): a job that
+        ## THE BUG this answers: a job that
         ## crashed during results handling and a job whose results already
         ## landed but whose own final status write then failed can both
         ## leave markers for the SAME job at once -- cleanup.php never clears
@@ -1351,7 +1350,7 @@ function runuser_wrap_if_root( $innerCmd ) {
 ## before attempting either rsync fetch. Pure (string building only, no
 ## exec), so the escaping is testable without a real connection.
 ##
-## THE BUG this answers (round-13 should-fix, dbutils#45): this used to
+## THE BUG this answers: this used to
 ## wrap unconditionally, on the stated reasoning that --getrun's own rsync
 ## fetches just below were unconditionally wrapped too, so this matched
 ## their existing behavior. That stopped being true once those fetches
@@ -1504,8 +1503,8 @@ if ( $getrundir || $getrun || $copyrun ) {
             ## step 4) -- --getrun/--copyrun never read it at all, so they
             ## always went over ssh even for the local entry, failing with
             ## "Host key verification failed" on a host built without ssh
-            ## to itself. cluster_entry_is_local(), not !empty(): round 15
-            ## nit, dbutils#52 -- !empty() reads the string 'false' as local.
+            ## to itself. cluster_entry_is_local(), not !empty() --
+            ## !empty() reads the string 'false' as local.
             $local   = cluster_entry_is_local( $v[ 'localhost' ] ?? false );
             break;
         }

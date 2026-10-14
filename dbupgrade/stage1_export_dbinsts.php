@@ -250,7 +250,7 @@ foreach ( $dbnames_used as $db => $val ) {
     $tz_res  = mysqli_query( $db_handle, "SELECT @@session.time_zone AS tz" );
     $tz_row  = $tz_res ? mysqli_fetch_assoc( $tz_res ) : null;
     $from_tz = ( $tz_row && $tz_row[ 'tz' ] !== '' ) ? $tz_row[ 'tz' ] : 'SYSTEM';
-    ## THE BUG this answers (round-13 should-fix, dbutils#52): recording the
+    ## THE BUG this answers: recording the
     ## literal word 'SYSTEM' here meant nothing once carried into stage2's
     ## package -- it is relative to whichever host evaluates it, and
     ## stage2 evaluates it on the IMPORTING host, not this one. Resolved to

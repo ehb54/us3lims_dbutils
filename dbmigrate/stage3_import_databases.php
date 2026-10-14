@@ -314,7 +314,7 @@ if ( get_yn_answer( "create dbinstances" ) ) {
         ## us3.sql, just loaded above, does not define these tables -- they
         ## are created by dbutils itself inside whichever dbinstance a
         ## previous run already migrated. The export dump is data-only
-        ## (--no-create-info) and, since round-13 (dbutils#52), dumps every
+        ## (--no-create-info) and dumps every
         ## table the source dbinstance actually has, including these two --
         ## so a dbinstance already migrated before export carries a row for
         ## each in its dump, with nowhere to land unless they exist here

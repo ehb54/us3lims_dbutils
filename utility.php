@@ -10,7 +10,7 @@ $STDERR = STDERR;
 ## resolves differently depending on which host later evaluates it. That
 ## is harmless for a query that runs and completes on the same host, but
 ## wrong the moment the string itself is carried somewhere else to be
-## interpreted later (round-13 should-fix, dbutils#52: stage1 recorded the
+## interpreted later (stage1 used to record the
 ## literal word 'SYSTEM' in its export package, so stage2 importing to a
 ## different time zone applied CONVERT_TZ(..., 'SYSTEM', ...) on ITS OWN
 ## connection -- the importing host's zone, not the exporting host's that
@@ -226,8 +226,8 @@ function is_sql_identifier( $value ) {
 }
 
 ## A cluster_details[...]['localhost'] flag, parsed the same way a human
-## reads it (round-15 nit, dbutils#52, matching common#33's own
-## remote_exec::is_local() fix for the identical mistake): a bare PHP bool
+## reads it, matching common#33's own
+## remote_exec::is_local() fix for the identical mistake: a bare PHP bool
 ## is trusted as-is, but plain `!empty()`/`!` treats the STRING 'false' as
 ## truthy (PHP only treats an empty string/'0' as falsy), so a config
 ## written as 'localhost' => 'false' -- an easy mistake, since every other
@@ -889,7 +889,7 @@ function dbutils_owned_tables() {
 ## their own 'ok' vs 'todo' reporting without duplicating this query (each
 ## used to run it a second time, inline, before ever calling the migration
 ## function at all).
-## Content-driven, not marker-driven (round 15, dbutils#52 blocking): the
+## Content-driven, not marker-driven: the
 ## separate _dbutils_people_audit_utc_migrated table (still written by
 ## mark_people_audit_utc_migration_done() below, kept for history) cannot
 ## survive every path that can legitimately touch people_audit without
@@ -969,7 +969,7 @@ function create_people_audit_utc_migration_marker_table( $db_handle, $db ) {
 ##
 ## @return bool whether the marker row was actually written. Every caller
 ##              used to ignore this (the INSERT's own result was never even
-##              kept) -- round-13 blocker, dbutils#52: one caller's $note
+##              kept) -- one caller's $note
 ##              was 74 characters into a VARCHAR(64) column, which fails
 ##              outright under strict sql_mode, so the instance was never
 ##              actually marked done and kept getting re-examined on every
@@ -1067,7 +1067,7 @@ function create_people_audit_utc_boundary_table( $db_handle, $db ) {
 ##              two already-done early-returns (nothing to record) and for
 ##              a genuine INSERT failure alike, so a caller counting
 ##              changes (uslims_upgrade.php's run_people_audit_utc_
-##              boundaries(), round 15 nit) does not count an instance
+##              boundaries()) does not count an instance
 ##              whose boundary was never actually written.
 function record_people_audit_utc_boundary( $db_handle, $db ) {
     sql_identifier_or_die( $db );
@@ -1142,7 +1142,7 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
         return true;
     }
 
-    # Content-driven, not timing-driven (round 15, dbutils#52 blocking):
+    # Content-driven, not timing-driven:
     # people_audit_utc_migration_done() now answers from the data itself
     # (created_at_utc per row), not from a side marker a restore can leave
     # stale, so it is safe to trust here on every call, not just the first.
@@ -1235,7 +1235,7 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
         return false;
     }
 
-    # Atomic (round 15 should-fix, dbutils#52): a failure part-way used to
+    # Atomic: a failure part-way used to
     # leave some rows converted with no marker, so the next run shifted
     # them a second time. ALTER TABLE above already committed on its own
     # (DDL always does) before this starts, so it is not part of the

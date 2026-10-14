@@ -306,8 +306,8 @@ foreach ( $dbnames_used as $db => $val ) {
         $ignore_tables = [];
     }
     ## dbutils' own bookkeeping tables (_dbutils_people_audit_utc_migrated,
-    ## _dbutils_people_audit_utc_boundary) are NOT excluded here (round-13
-    ## should fix, dbutils#52): they answer "has this instance's own data
+    ## _dbutils_people_audit_utc_boundary) are NOT excluded here: they
+    ## answer "has this instance's own data
     ## already been converted to UTC", which is a property of the data
     ## itself and stays meaningful on whatever host ends up storing it --
     ## the same reasoning dbupgrade's stage1 (stage1_export_dbinsts.php)

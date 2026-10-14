@@ -163,7 +163,7 @@ foreach ( $targets as $label => $cfg ) {
         continue;
     }
 
-    ## THE BUG this answers (round-13 nit, dbutils#52): the dry run used to
+    ## THE BUG this answers: the dry run used to
     ## print "would migrate... (rerun with --apply)" for every not-yet-done
     ## instance alike, regardless of whether a boundary is recorded --
     ## giving no warning for exactly the instances --apply then goes on to

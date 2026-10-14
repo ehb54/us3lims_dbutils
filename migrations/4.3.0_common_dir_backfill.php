@@ -1,8 +1,7 @@
 <?php
-## THE BUG this answers (round-13 blocking item, dbinst#57/newinst#27/
-## webinfo#17): round 12 added $common_dir to the base+overlay v1 contract
+## THE BUG this answers: an earlier commit added $common_dir to the base+overlay v1 contract
 ## and to newinst's generator, so every NEW instance gets it. Nothing ever
-## set it for an instance that already existed before that round landed --
+## set it for an instance that already existed before that landed --
 ## the upgrade migrated no instance's config.php at all before this, so
 ## every pre-existing instance kept rendering pages with no shared header,
 ## footer or CSS, forever, until someone edited the file by hand.
