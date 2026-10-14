@@ -1,6 +1,15 @@
 <?php
 
 $self = __FILE__;
+
+## Report failed connections and queries as values, not exceptions (PHP
+## 8.1+), matching uslims_upgrade.php/uslims_jobs.php: without this, a
+## failing conversion UPDATE (migrate_people_audit_created_at_to_utc(),
+## utility.php) threw uncaught on 8.2 -- after the drop loop had already
+## dropped every instance (rc 255, the ones after the failure simply gone),
+## instead of warning and continuing to the next instance as intended.
+mysqli_report( MYSQLI_REPORT_OFF );
+
 # user defines
 $us3home         = "/home/us3";
 $us3ini          = "$us3home/lims/.us3lims.ini";
@@ -65,6 +74,10 @@ and edit with appropriate values
 require "../utility.php";
 file_perms_must_be( $use_config_file );
 require $use_config_file;
+
+# migrate_people_audit_created_at_to_utc() now lives in ../utility.php: both
+# this import pipeline and uslims_upgrade.php's in-place path call the same
+# tested function instead of each carrying its own copy.
 
 # main
 
@@ -255,6 +268,32 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
             }
         }
 
+        # us3.sql, just loaded above, does not define this table -- it is
+        # created by migrate_people_audit_created_at_to_utc() itself, inside
+        # whichever dbinstance a previous run of THIS instance already
+        # migrated. Stage1's data dump is data-only (--no-create-info) and
+        # dumps every table the source dbinstance actually has, so a
+        # dbinstance already migrated before this export carries a row for
+        # this table in its dump -- and the import below has nowhere to put
+        # it unless the table exists here first. Without this, that INSERT
+        # fails against a table that does not exist, after every dbinstance
+        # in this run has already been dropped: the import stops here,
+        # mid-list, with this (and every later) dbinstance simply gone.
+        # Creating it now, before the import, costs nothing for a
+        # dbinstance that was never migrated (its dump has no row for a
+        # table it never had either).
+        #
+        # The boundary table (_dbutils_people_audit_utc_boundary) needs the
+        # exact same pre-creation, for the exact same reason: an in-place
+        # host upgraded (and so boundary-recorded) before being exported
+        # carries a row for THIS table in its dump too, and without this
+        # that INSERT failed the same way (the same class of abort,
+        # reintroduced here for the second bookkeeping table nothing had
+        # pre-created yet).
+        check_db();
+        create_people_audit_utc_migration_marker_table( $db_handle, $db );
+        create_people_audit_utc_boundary_table( $db_handle, $db );
+
         $cmds = [
     "$uncompresswith $sqldata | mysql --defaults-file=$cwd/my.cnf -u root $db"
     ,"mysql --defaults-file=$cwd/my.cnf -u root $db < export-$use_dbhost-$db-autoincrements.sql"
@@ -266,6 +305,18 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
                 echo "command returns: $res\n";
             }
         }
+
+        # The writer's own zone, captured at export time (stage1), not
+        # this (the importing) host's.
+        # Missing for a package made before this file existed: null falls
+        # back to migrate_people_audit_created_at_to_utc()'s original
+        # behavior (this host's own session zone), same as every other
+        # caller.
+        $tzfile = "export-$use_dbhost-$db-timezone.txt";
+        $writer_tz = file_exists( $tzfile ) ? trim( file_get_contents( $tzfile ) ) : null;
+
+        check_db();
+        migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz );
     }
 }
 

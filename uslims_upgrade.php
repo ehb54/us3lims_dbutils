@@ -19,6 +19,7 @@ $wwwpath = "/srv/www/htdocs";
 $self = __FILE__;
 
 require_once "utility.php";
+require_once __DIR__ . "/migrations.php";
 
 ## Report failed connections and queries as values, not exceptions (PHP 8.1+)
 mysqli_report( MYSQLI_REPORT_OFF );
@@ -33,8 +34,9 @@ Upgrade this host to the Slurm submission contract (gridctl#33, common#24, dbins
 Without --apply nothing is changed; each step reports what it would do. Run with --check
 for that dry run; with no options at all this help is printed instead.
 
-This script changes only this host's configuration. The stack code and the database
-schema are upgraded separately, and the code must be upgraded first: pull common,
+This script changes this host's configuration, plus one schema fix step 9 runs inside
+each dbinstance (see below). Otherwise, the stack code and the database schema are
+upgraded separately, and the code must be upgraded first: pull common,
 every instance, gridctl and dbutils to $required_version or newer, then run this as root.
 Step 0 refuses to go further while any checkout is older.
 
@@ -54,6 +56,13 @@ still read its own listen-config.php. Once the new code is in place services.php
 pre-upgrade config, and the listener has to be stopped with "systemctl stop us3-listen"
 instead. Then let the queues drain and comment out the LIMS cron entries. Step 1 checks all
 of this and refuses rather than work around a running system.
+
+Also stop the web server (or otherwise block access) before pulling the new code, so
+nothing can write to any LIMS database while this runs -- README.md's "Upgrading a host"
+documents why that is what makes step 9's UTC migration and every config rewrite below
+safe. Step 1 cannot tell this host's first --apply after a pull apart from a routine
+re-run on an already-upgraded host, so it only notes the web server's state rather than
+refusing on it; for that first run specifically, stop it.
 
 Steps
 
@@ -80,8 +89,16 @@ Steps
     advisory pilot table, common#31 -- optional, pilot-scoped; a missing SQL
     file or no CREATE privilege is a note here, not a failure)
 6 : removes the gridctl cron entries (gridctl.php, and the gridctl_pro/dev names before it)
-7 : verifies the result, including that every active cluster passes the submission
+7 : installs the Content-Security-Policy as Report-Only unless a policy is already
+    configured (enforcing it is a later step), and installs the /common/{css,images,js}
+    Apache alias us3lims-roles' config-lims-apache role normally provides, unless one is
+    already configured -- without it, every page's CSS/images/JS 404 after a hand upgrade
+8 : verifies the result, including that every active cluster passes the submission
     sizing gate rather than refusing every job
+9 : migrates each dbinstance's people_audit.created_at to UTC if not already done
+    (dbutils#52), using the running config.php (or overlay) each instance already
+    connects with -- idempotent, so a host dbupgrade/stage1+stage2 already migrated
+    is reported 'ok' here, not migrated again
 
 Undoing it
 
@@ -97,14 +114,47 @@ To roll back, with the services stopped:
      you are going back to a release that still expects the sweep;
   4. the circuit-breaker directory, the ssh-control directory, and elog.txt/
      elog_hmac_key's ownership and mode can all stay: unused or already-correct,
-     none of them changes anything left alone.
+     none of them changes anything left alone;
+  5. remove step 7's installed policy, /etc/httpd/conf.d/lims-csp.conf or
+     /etc/apache2/conf-available/lims-csp.conf (Debian: "a2disconf lims-csp"
+     first), and reload Apache -- step 7 never backs this one up, since it is
+     new, not rewritten.
+  6. remove step 7's installed /common alias the same way, /etc/httpd/conf.d/
+     lims-common-alias.conf or /etc/apache2/conf-available/lims-common-alias.conf
+     (Debian: "a2disconf lims-common-alias" first), and reload Apache -- also
+     new, not rewritten, and also not backed up.
 
-Nothing else to undo in the database: this script never touches the schema or any
-job row, with one exception -- step 5's gfac.runtime_prediction (see step 5 above),
-which is optional, pilot-scoped and empty until the pilot is turned on. Dropping it
-is a separate, deliberate operator step (the teardown statement is documented in
-common's class/prediction/runtime_pilot_table.sql), not part of rolling back this
-script.
+Nothing else to undo in the database, with three exceptions. Step 5's gfac.runtime_prediction
+(see step 5 above) is optional, pilot-scoped and empty until the pilot is turned on;
+dropping it is a separate, deliberate operator step (the teardown statement is documented
+in common's class/prediction/runtime_pilot_table.sql), not part of rolling back this script.
+Step 5 also creates gfac.metascheduler_decision and gfac.cluster_status_nudge (gridctl's
+pick_cluster.php tables) the same optional, purely-additive way -- empty and unused unless
+a metascheduler pseudo-cluster is actually configured; dropping them, if ever wanted, is
+also a separate operator step, not part of rolling back this script.
+Step 9 (see step 9 above) rewrites people_audit.created_at in every dbinstance it migrates,
+setting a created_at_utc flag on each row it converts (and on every row dbinst's own
+write_audit_row() has written UTC from the start); it also adds a marker table there
+(_dbutils_people_audit_utc_migrated) recording when and from which zone, kept for history.
+This is a one-time, one-direction conversion with no undo step of its own -- a pre-migration
+backup of each dbinstance's own database is the way back if a conversion turns out to be
+wrong for some instance. Restoring one is self-correcting rather than something to verify by
+hand: the "is this row already UTC" question reads from the row's own
+created_at_utc flag, not from the marker table or a boundary snapshot, so a restored row (which
+carries no such flag, win or lose, since the column postdates any pre-migration backup) reads as
+unconverted again on the very next run and gets converted correctly, with no dependency on
+whether the marker table or boundary table happened to survive the restore too.
+
+Step 0 (run before step 9, before steps 1-8 do anything else) records a boundary -- the highest
+people_audit.auditID already written at the moment this run started -- in its own table
+(_dbutils_people_audit_utc_boundary). This is informational only now (which rows
+step 9 actually converts no longer depends on it at all); it remains for migrate_people_audit_
+utc.php's own standalone refuse-without-a-boundary check and for step 0's report. Rolling back to
+a release that writes local time again, then running this instance for a while before ever
+retrying the upgrade, is likewise self-correcting now: a local-time row written during that
+rollback window has no created_at_utc flag set (old code never sets it) and so correctly reads
+as still needing conversion on the next run, regardless of its auditID or how long the rollback
+window was open.
 
 Options
 
@@ -362,6 +412,15 @@ function backup_path( $name ) {
     return ensure_backup_dir() . '/' . basename( $name );
 }
 
+## The $common_dir value every other on-disk default already assumes for a
+## us3lims-roles-laid-out host: webinfo's and newinst's own config templates
+## both hardcode '/srv/www/htdocs/common/' for exactly this reason (the
+## real roles layout, not the dev Docker container's /var/www/html/common/).
+## Pure so step 9's instance catch-up can be tested without a live host.
+function common_dir_default( $wwwpath ) {
+    return rtrim( $wwwpath, '/' ) . '/common/';
+}
+
 ## A copy of a file this script appends to, taken once per file, so the append can
 ## be undone. write_file() already backs up what it rewrites; the ssh files are
 ## appended to instead, and were the one change with nothing to roll back to.
@@ -387,43 +446,9 @@ function backup_append_target( $path, $label ) {
     return $append_backups[ $path ] = @copy( $path, $dest ) ? $dest : '';
 }
 
-## Run a command, keeping its stderr separate from its stdout. Returns
-## [ stdout, stderr, exit status ] so a step can report why a command failed
-## rather than only that it produced nothing.
-function capture( $cmd ) {
-    $errfile = tempnam( sys_get_temp_dir(), 'us3up' );
-    if ( $errfile === false ) {
-        error_exit( "could not create a temporary file" );
-    }
-    $lines = [];
-    ## The subshell keeps the redirect over the whole command: "a; b 2>f" would
-    ## otherwise redirect only b, letting a's stderr reach the terminal.
-    exec( '( ' . $cmd . ' ) 2>' . escapeshellarg( $errfile ), $lines, $rc );
-    $err = trim( (string) @file_get_contents( $errfile ) );
-    @unlink( $errfile );
-    return [ implode( "\n", $lines ), $err, $rc ];
-}
-
-## Variables a PHP config file defines, read in a separate process so that an
-## old config's own helper functions cannot clash with utility.php's.
-## $why is set to the reason when the file cannot be read.
-function config_vars( $file, &$why = null ) {
-    $code = 'ob_start(); include ' . var_export( $file, true ) . '; ob_end_clean();'
-          . ' $v = array_filter( get_defined_vars(), function ( $k ) { return $k[ 0 ] !== "_" && $k !== "GLOBALS"; },'
-          . ' ARRAY_FILTER_USE_KEY ); unset( $v["argv"], $v["argc"] );'
-          . ' echo json_encode( $v, JSON_PARTIAL_OUTPUT_ON_ERROR );';
-    list( $out, $err, $rc ) = capture( escapeshellarg( PHP_BINARY ) . ' -r ' . escapeshellarg( $code ) );
-    $vars = json_decode( $out, true );
-    if ( is_array( $vars ) ) {
-        $why = '';
-        return $vars;
-    }
-    ## Distinguish a fatal in the config, a non-zero exit and unparseable output.
-    $why = $err !== '' ? $err
-         : ( $rc !== 0 ? "php exited $rc with no message"
-                       : 'the config produced no readable variables: ' . json_last_error_msg() );
-    return null;
-}
+## capture() and config_vars() now live in utility.php: migrate_people_audit_utc.php
+## (dbutils#52) needs config_vars() too, to read an instance's config.php without
+## this script's own $gdb/$old_listen/global_config.php setup.
 
 ## $why is set to php -l's complaint when the file does not parse.
 function lint_ok( $file, &$why = null ) {
@@ -554,13 +579,13 @@ function systemctl_show_properties( $output ) {
 ## distinguishes "not installed" from "installed with no User= line",
 ## which $user alone cannot tell apart (both read '').
 ##
-## THE BUG this answers (round-11/12 should-fix, dbutils#45): --check
+## THE BUG this answers: --check
 ## reported "All checks passed" on a host whose us3-listen unit had no
 ## User= line at all. gridctl#33's services.php now refuses to start as
 ## root, so that host could never actually start the gridctl services --
 ## not a style nit, a host that can never come up after a reboot.
 ##
-## THE FOLLOW-UP BUG (round 13): the first fix read $loadState/$user
+## THE FOLLOW-UP BUG: an earlier fix read $loadState/$user
 ## positionally off 'systemctl show -p LoadState -p User --value''s two
 ## output lines, assuming systemd always prints them in the -p flag order.
 ## On systemd 239 it prints User before LoadState -- the reverse -- so
@@ -596,6 +621,94 @@ function us3_listen_unit_user_outcome( $rc, $loadState, $user ) {
     }
 
     return [ 'ok', "the us3-listen systemd unit runs as us3" ];
+}
+
+## A gridctl daemon script's basename, matched against an ExecStart=/cron/
+## rc.local line.
+## services.php start is the documented launcher (uslims_upgrade.php --help's
+## own procedure, step 4: "Restart services") for all four daemons at once --
+## an entry naming it directly (a systemd
+## unit, a root @reboot cron line, rc.local) started every gridctl daemon
+## exactly as much as one naming listen.php or esign.php by name, but none
+## of those checks ever matched it, since it names none of the four scripts
+## literally. \bstart\b distinguishes it from "services.php stop", which
+## starts nothing.
+function gridctl_daemon_script_pattern() {
+    return '#\b(listen|manage-us3-pipe|submitctl|esign)\.php\b|\bservices\.php\b[^\n]*\bstart\b#';
+}
+
+## us3_listen_unit_user_outcome() above
+## only ever checked the one unit us3lims-roles itself installs
+## (us3-listen.service) -- a DIFFERENT systemd unit someone else added
+## with no User= line, a root crontab's @reboot entry, or an /etc/rc.local
+## line, could each just as easily start a gridctl daemon as root on the
+## next reboot, with nothing here to catch any of them.
+##
+## Pure (no systemctl/cron/file-read calls of its own), so the decision is
+## testable without a live system -- same reasoning as every other
+## process/unit check in this file. Each input is already-gathered data:
+## $service_units is [ unit_name => [ 'ExecStart' => ..., 'User' => ... ] ]
+## for every OTHER installed .service unit (us3-listen.service itself is
+## excluded by the caller, already checked above); $cron_lines is every
+## line from /etc/crontab and /etc/cron.d/*, concatenated; $rc_local is
+## /etc/rc.local's contents, or '' if it does not exist.
+##
+## $root_crontab: root's own personal crontab (`crontab -l -u root`), round
+## 15 should-fix, dbutils#52 -- $cron_lines (the SYSTEM crontab, /etc/crontab
+## and /etc/cron.d/*) was the only cron source ever checked here, but a
+## line in root's own personal crontab runs as root unconditionally, with
+## no user column of its own to read (cron already knows whose crontab it
+## is), and nothing read that file at all. Checked separately, every
+## matching line counts, not just @reboot ones: unlike the system crontab,
+## there is no OTHER user a personal crontab's line could belong to for
+## this one to rule out.
+## @return list<string> one message per risk found; empty when none are.
+function other_root_start_risks( array $service_units, array $cron_lines, $rc_local, $root_crontab = '' ) {
+    $pattern = gridctl_daemon_script_pattern();
+    $risks   = [];
+
+    foreach ( $service_units as $unit => $props ) {
+        if ( !preg_match( $pattern, $props[ 'ExecStart' ] ?? '' ) ) {
+            continue;
+        }
+        $user = $props[ 'User' ] ?? '';
+        if ( $user === '' || $user === 'root' ) {
+            $risks[] = "$unit starts a gridctl daemon with no User=us3 ("
+                     . ( $user === '' ? 'unset, defaults to root' : 'explicitly set to root' ) . ')';
+        }
+    }
+
+    ## /etc/crontab's own column layout names the user directly (minute hour
+    ## dom month dow user command); a @reboot line keeps the same shape, just
+    ## with the time fields replaced by the one word "@reboot". /etc/cron.d/*
+    ## files share this system-crontab shape (unlike a per-user crontab,
+    ## which has no user column at all -- cron already runs those as their
+    ## owner, never root, unless the owner itself is root).
+    foreach ( $cron_lines as $line ) {
+        if ( preg_match( '/^\s*@reboot\s+(\S+)\s+(.*)$/', $line, $m )
+             && preg_match( $pattern, $m[ 2 ] )
+             && $m[ 1 ] === 'root' ) {
+            ## Round 15 nit, dbutils#52: \@ is not a recognized escape in a
+            ## double-quoted PHP string, so the backslash printed literally
+            ## ("a root \@reboot cron entry...") instead of being dropped.
+            $risks[] = "a root @reboot cron entry starts a gridctl daemon: " . trim( $line );
+        }
+    }
+
+    foreach ( explode( "\n", (string) $root_crontab ) as $line ) {
+        if ( preg_match( '/^\s*#/', $line ) || trim( $line ) === '' ) {
+            continue;
+        }
+        if ( preg_match( $pattern, $line ) ) {
+            $risks[] = "an entry in root's own crontab starts a gridctl daemon: " . trim( $line );
+        }
+    }
+
+    if ( $rc_local !== '' && preg_match( $pattern, $rc_local ) ) {
+        $risks[] = "/etc/rc.local starts a gridctl daemon, and rc.local always runs as root";
+    }
+
+    return $risks;
 }
 
 ## A cron line driving gridctl, under any of its names. A commented one counts
@@ -860,6 +973,14 @@ function owner_of( $stat ) {
 ## Running processes whose "pid args" line matches $regex, as [ pid => line ].
 ## Returns null when the process list could not be read, which is not the same as
 ## nothing matching. This script's own process and its parent are never included.
+## Pulled out so a test can pin down the pattern itself (which process
+## names it matches, how it avoids matching an unrelated one) without
+## needing a real httpd/php-fpm running -- same reasoning as every other
+## pure-string-building function in this file.
+function web_server_process_regex() {
+    return '#^\s*(\d+)\s+(?:\S*/)?(httpd|apache2|nginx|php-fpm)(\s|:|$)#';
+}
+
 function processes( $regex ) {
     list( $out, $err, $rc ) = capture( 'ps -eo pid=,args=' );
     if ( $rc !== 0 ) {
@@ -908,7 +1029,21 @@ function cleanup_claims( $us3_home ) {
     foreach ( glob( "$us3_home/lims/etc/joblog/*/*/cleanup.claim" ) ?: [] as $claim ) {
         $owner = (int) @file_get_contents( "$claim/owner" );
         $age   = time() - (int) @filemtime( $claim );
-        if ( $age < 3600 || ( $owner && @posix_kill( $owner, 0 ) ) ) {
+        ## Round 15 nit, dbutils#52: "under an hour old" used to block on
+        ## its own, even for a claim whose own recorded owner is
+        ## confirmed dead (ran: a 67-second-old claim, from a monitor that
+        ## crashed moments after creating it, still blocked --check for
+        ## up to an hour). A recorded owner's liveness is authoritative
+        ## when it is checkable at all: ESRCH (errno 3, "No such
+        ## process") means genuinely dead, regardless of age; any other
+        ## posix_kill() failure (most commonly EPERM, a different account)
+        ## proves nothing either way, so the age window still decides, as
+        ## it always did when there is no owner recorded to check at all.
+        $owner_alive = false;
+        if ( $owner ) {
+            $owner_alive = @posix_kill( $owner, 0 ) || posix_get_last_error() !== 3;
+        }
+        if ( $owner_alive || ( !$owner && $age < 3600 ) ) {
             $claims[] = basename( dirname( $claim ) ) . ( $owner ? " (pid $owner)" : '' );
         }
     }
@@ -987,6 +1122,28 @@ function version_at_least( $version, $minimum ) {
                             $minimum, '>=' );
 }
 
+## What used to be here:
+## this step used to branch on instance_is_new_under_required_version(),
+## which read $label's own dbinst checkout VERSION and treated
+## "already at $required_version" as proof the instance was created fresh
+## by newinst under current code -- true for a newinst-created instance,
+## but also true for a genuinely pre-existing instance, because the
+## documented upgrade procedure (see this script's own --help) pulls
+## *every existing instance's* dbinst checkout to $required_version too,
+## before step 0 ever runs. Both cases read the identical VERSION by the
+## time this code sees them, so that branch could not actually tell them
+## apart -- it marked every pre-existing instance "done" with nothing
+## converted. (This replaced a flat, host-level "known instance
+## names" file, which had the same class of problem from the other
+## direction.)
+##
+## record_people_audit_utc_boundary() below does not need this
+## classification at all: it reads $db.people_audit's own MAX(auditID)
+## directly, which is 0 for an instance with no table or no rows yet (a
+## fresh newinst-created one) and the real high-water mark for a
+## pre-existing one -- the data itself already distinguishes the two
+## cases, with no VERSION-based guess required.
+
 $stack = [ 'gridctl' => $gridctl_dir,
            'dbutils' => __DIR__,
            'common'  => "$wwwpath/common",
@@ -1061,14 +1218,137 @@ if ( $missing ) {
                 . "\nNothing was changed" );
 }
 
+## dbinst#75's "in-place window": a row dbinst's already-
+## upgraded code writes between code going live and step 9 actually
+## running gets shifted a second time by step 9 itself, since step 9
+## otherwise has no way to tell it apart from a genuinely pre-upgrade row.
+## Recording each instance's current max people_audit.auditID here --
+## the earliest point this run can reach it, before steps 1-8 do anything
+## else -- narrows that window to this run's own duration instead of
+## however long the code was already live before this run even started
+## (closing it fully needs dbinst itself to keep writing local time until
+## marked, which is dbinst#75's own half of this item). Only on --apply:
+## a --check run changes nothing in any dbinstance, including this, and
+## recording it during a --check that is not immediately followed by
+## --apply would not narrow anything anyway. Errors here are left for
+## step 9 to report by name; this only ever records a boundary for an
+## instance step 9 can also reach.
+##
+## Pulled into its own function so
+## it can be driven directly in a test with a constructed instance tree,
+## the same way migrations.php's functions already are -- the bug this
+## replaced (branching on instance_is_new_under_required_version(), which
+## read VERSION and could not distinguish a pre-existing instance the
+## mandated pull also brings to $required_version from a newinst-created
+## one) was never actually exercised against a real discover_lims_
+## instance_configs() tree before now.
+function run_people_audit_utc_boundaries( $wwwpath, $us3_home ) {
+    $changes = 0;
+    foreach ( discover_lims_instance_configs( $wwwpath, $us3_home ) as $label => $cfg ) {
+        if ( isset( $cfg[ 'error' ] ) || !is_sql_identifier( $cfg[ 'dbname' ] ) ) {
+            continue;
+        }
+        $conn = @mysqli_connect( $cfg[ 'dbhost' ], $cfg[ 'dbusername' ], $cfg[ 'dbpasswd' ], $cfg[ 'dbname' ] );
+        if ( !$conn ) {
+            continue;
+        }
+
+        ## Already resolved in an earlier run -- checked against this
+        ## instance's own persistent, per-database markers (set by this
+        ## same block, or by step 9), never against step-0's run history on
+        ## this host. An instance that failed to connect on every earlier
+        ## run (a stale password, a restored backup) is still correctly
+        ## recognized here the first time it finally does.
+        if ( people_audit_utc_migration_done( $conn, $cfg[ 'dbname' ] )
+             || people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] ) !== null ) {
+            mysqli_close( $conn );
+            continue;
+        }
+
+        ## Round 15 nit, dbutils#52: only a real, successful INSERT counts
+        ## -- this used to increment unconditionally, so a failed one (a
+        ## stale password that connects but can't write, say) was still
+        ## reported as "recorded ... boundary for N instance(s)."
+        if ( record_people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] ) ) {
+            $changes++;
+        }
+
+        mysqli_close( $conn );
+    }
+    return $changes;
+}
+
+## Step 8's two sizing/probe checks, pulled into their own functions for the
+## same reason run_people_audit_utc_boundaries() above was: so they can be driven directly in a test against
+## a constructed $cluster_details array, including a metascheduler pool
+## entry, rather than only through the full script's own output. Both skip
+## a pool entry via is_metascheduler_pool_entry() -- step 3's own existing
+## detector (defined further up this file), not reimplemented here, so this
+## and step 3's retirement carve-out can never disagree on the shape.
+function sizing_gate_refusals( $final_clusters ) {
+    $refused = [];
+    $checked = 0;
+    foreach ( $final_clusters as $name => $c ) {
+        if ( !is_array( $c ) || !( $c[ 'active' ] ?? false ) || is_metascheduler_pool_entry( $c ) ) {
+            continue;
+        }
+        $checked++;
+        $ppn     = (int) ( $c[ 'ppn' ] ?? 0 );
+        $maxproc = max( 0, (int) ( $c[ 'maxproc' ] ?? 0 ) );
+        if ( $ppn < 1 ) {
+            $refused[] = "$name has no usable tasks-per-node capacity (ppn $ppn)";
+        } elseif ( !empty( $c[ 'single_node' ] ) && $maxproc > $ppn ) {
+            $refused[] = "$name is single_node with maxproc $maxproc over ppn $ppn";
+        }
+    }
+    return [ 'refused' => $refused, 'checked' => $checked ];
+}
+
+function unprobed_active_clusters( $final_clusters, $probes ) {
+    $unprobed = [];
+    foreach ( $final_clusters as $name => $c ) {
+        if ( !is_array( $c ) || !( $c[ 'active' ] ?? false ) || is_metascheduler_pool_entry( $c ) ) {
+            continue;
+        }
+        if ( !is_array( $probes[ $name ] ?? null ) ) {
+            $unprobed[] = "$name has no entry in cluster_config.php";
+        } elseif ( empty( $probes[ $name ][ 'active' ] ) ) {
+            $unprobed[] = "$name has an inactive status probe";
+        } elseif ( trim( (string) ( $probes[ $name ][ 'status' ] ?? '' ) ) === '' ) {
+            $unprobed[] = "$name has an active probe with no status command";
+        }
+    }
+    return $unprobed;
+}
+
+if ( $apply ) {
+    ## Counted before step 1's idle
+    ## check below, which used to tell an operator "Nothing was changed"
+    ## on refusing a busy host -- not true once a real write already
+    ## landed moments earlier.
+    $boundaries_recorded = run_people_audit_utc_boundaries( $wwwpath, $us3_home );
+    $changes += $boundaries_recorded;
+    ## This used to run and change the count
+    ## silently -- every other action in this script reports what it did,
+    ## so a run that only did this (every instance already migrated or
+    ## connecting) looked identical to one that skipped it entirely.
+    if ( $boundaries_recorded > 0 ) {
+        report( 'ok', "recorded this run's UTC-migration boundary for $boundaries_recorded instance(s)" );
+    }
+}
+
 ## ------------------------------------------------------------- 1. preflight
 
 ## An upgrade runs on an idle host, so every check below has to agree that
 ## nothing is running. Handling live jobs was the earlier design; with the
 ## gridctl.php sweep gone and no claimless pre-upgrade monitor left to guard
 ## against, an idle host is the only state worth reasoning about, and it is the
-## state an operator can actually confirm. Nothing is changed until all of these
-## pass.
+## state an operator can actually confirm. Nothing else below this point is
+## changed until all of these pass -- the UTC-boundary recording immediately
+## above this step is the one exception, deliberately run first so every
+## reachable instance's boundary is drawn as early as this script can reach
+## it (see that block's own comment); its own $changes is accounted for
+## below, not assumed away.
 step( "1. Preflight: the host must be idle" );
 
 if ( !is_file( $listen_config ) ) {
@@ -1122,7 +1402,7 @@ if ( $listeners === null ) {
     report( 'ok', "no gridctl service (listen, manage-us3-pipe, submitctl, esign) is running" );
 }
 
-## -- the us3-listen unit's own account, round-11/12 should-fix: gridctl#33
+## -- the us3-listen unit's own account: gridctl#33
 ## now refuses to start as root, so a unit with no User=us3 means this host
 ## can never actually bring the gridctl services up at all. Not an idle-host
 ## precondition (so it does not add to $busy[]) -- a mistake here is a
@@ -1134,6 +1414,41 @@ $unit_show_props = systemctl_show_properties( $unit_show_out );
 list( $unit_status, $unit_msg ) = us3_listen_unit_user_outcome(
     $unit_show_rc, $unit_show_props[ 'LoadState' ] ?? '', $unit_show_props[ 'User' ] ?? '' );
 report( $unit_status, $unit_msg );
+
+## -- every OTHER way a gridctl daemon could start as root: a different
+## systemd unit, a root @reboot cron
+## entry, or /etc/rc.local. Same "not an idle-host precondition" reasoning
+## as the us3-listen check just above -- a standing boot-time problem, not
+## something retrying this run fixes.
+[ $unit_list_out ] = capture( "systemctl list-units --type=service --all --no-legend --plain"
+                             . " | awk '{print \$1}'" );
+$other_service_units = [];
+foreach ( explode( "\n", (string) $unit_list_out ) as $unit ) {
+    $unit = trim( $unit );
+    if ( $unit === '' || $unit === 'us3-listen.service' ) {
+        continue;
+    }
+    [ $props_out ] = capture( 'systemctl show -p ExecStart -p User ' . escapeshellarg( $unit ) );
+    $other_service_units[ $unit ] = systemctl_show_properties( $props_out );
+}
+$cron_lines = [];
+foreach ( array_merge( [ '/etc/crontab' ], glob( '/etc/cron.d/*' ) ?: [] ) as $cron_file ) {
+    $contents = @file_get_contents( $cron_file );
+    if ( $contents !== false ) {
+        $cron_lines = array_merge( $cron_lines, explode( "\n", $contents ) );
+    }
+}
+$rc_local = (string) ( @file_get_contents( '/etc/rc.local' ) ?: '' );
+list( $root_crontab_out, , $root_crontab_rc ) = capture( 'crontab -l -u root' );
+$other_risks = other_root_start_risks( $other_service_units, $cron_lines, $rc_local,
+                                        $root_crontab_rc === 0 ? $root_crontab_out : '' );
+if ( $other_risks ) {
+    foreach ( $other_risks as $risk ) {
+        report( 'FAIL', $risk );
+    }
+} else {
+    report( 'ok', "no other systemd unit, root cron entry, or rc.local starts a gridctl daemon" );
+}
 
 ## -- jobmonitors. One per job on the new contract, none on an idle host.
 $monitors = jobmonitors( $jm_error );
@@ -1157,6 +1472,41 @@ if ( $analysis ) {
     $busy[] = 'analysis binary running';
 } elseif ( $analysis !== null ) {
     report( 'ok', "nothing is running from /opt/ultrascan3/bin" );
+}
+
+## The README's own step 1 ("Stop the web
+## server... so nothing can write to any LIMS database while the upgrade
+## runs") is what makes the FIRST --apply after a genuine 4.2.0->4.3.0 pull
+## safe: step 9's UTC migration and every config rewrite assume no web
+## request can read or write anything during that one-time transition.
+## --help never said so, only naming the gridctl services above, so an
+## operator following --help alone for that first transition could leave
+## the web server up with nothing here to catch it.
+##
+## Not added to $busy[], unlike the gridctl-service check above: a FAIL
+## here would also stop every ROUTINE --apply on an already-transitioned,
+## steady-state host (us3lims-roles calls --apply on every playbook
+## run), where the web server running is normal and
+## expected -- nothing left for it to unsafely race once every instance
+## is already past this host's one-time transition. This script has no
+## persistent "has this host's transition already happened" signal to
+## gate a hard failure on (deliberately not built, since newinst-created
+## instances never go through this transition at all and a flag keyed to
+## the host alone cannot tell those apart from a genuinely pre-existing
+## one), so this is informational, matching the
+## us3-listen unit-account check just above it in spirit: tell the
+## operator plainly, let them judge whether this run is that first
+## transition or routine convergence.
+$webservers = processes( web_server_process_regex() );
+if ( $webservers === null ) {
+    report( 'note', "could not read the process list, so the web server's state is unknown" );
+} elseif ( $webservers ) {
+    report( 'note', "a web server or php-fpm is running (pid " . implode( ', ', array_keys( $webservers ) )
+                   . "). If this is this host's first --apply after pulling 4.3.0 code, stop it"
+                   . " first (README: \"Upgrading a host\") -- nothing here can tell a first"
+                   . " transition apart from a routine re-run, so this is a note, not a failure." );
+} else {
+    report( 'ok', "no web server or php-fpm (httpd, apache2, nginx) is running" );
 }
 
 ## -- gfac.analysis. A finished cleanup deletes the row, so any row outside the
@@ -1449,96 +1799,24 @@ if ( $live_crons ) {
 
 if ( $busy ) {
     error_exit( "the host is not idle (" . implode( '; ', $busy ) . ").\n"
-                . "Quiet it down and rerun. Nothing was changed" );
+                . "Quiet it down and rerun. "
+                . ( $changes
+                  ? "$changes change(s) were already made (the UTC-boundary recording above this"
+                    . " step); nothing past that point was"
+                  : "Nothing was" )
+                . " changed" );
 }
 
 ## ------------------------------------------------------------- 2. listen-config.php
 
 step( "2. listen-config.php (values only, version 2)" );
 
-## Site values carried from the old file; everything else comes from the template.
-$carried = [ 'submit_dir', 'listen_port', 'dbhost', 'servhost', 'host_name', 'guser', 'gDB', 'user',
-             'org_name', 'org_domain', 'admin_email', 'logging_level' ];
-
-if ( ( $old_listen[ 'listen_config_version' ] ?? 0 ) >= 2 ) {
-    report( 'ok', "$listen_config is already version 2" );
-} elseif ( !is_file( $template ) ) {
-    ## Later steps assume the new contract is in place, so this cannot be a
-    ## warning the script walks past.
-    fatal( "template not found: $template (update gridctl first)" );
-} else {
-    $text = file_get_contents( $template );
-    if ( $text === false ) {
-        fatal( "could not read the template $template" );
-    }
-    if ( !isset( $old_listen[ 'host_name' ] ) && isset( $old_listen[ 'servhost' ] ) ) {
-        $old_listen[ 'host_name' ] = $old_listen[ 'servhost' ];
-    }
-    $carried_keys = [];
-    foreach ( $carried as $key ) {
-        if ( !array_key_exists( $key, $old_listen ) ) {
-            continue;
-        }
-        $text = substitute( $text, $key, $old_listen[ $key ], $replaced );
-        if ( $replaced ) {
-            $carried_keys[] = $key;
-        } else {
-            ## The template has no such setting, so the old value has nowhere to go.
-            report( 'note', "old setting \$$key has no place in the new template and will not be carried; review it" );
-        }
-    }
-
-    $tz = null;
-    ## The time zone is a call, not a variable, so config_vars() does not see it.
-    if ( preg_match( '/^\s*date_default_timezone_set\(\s*([\'"])([^\'"]+)\1\s*\)/m',
-                     (string) file_get_contents( $listen_config ), $tz ) ) {
-        ## Callback form for the same reason substitute() uses one: an exported
-        ## value in a replacement string would have $n and backslashes reread.
-        $zone   = $tz[ 2 ];
-        $result = preg_replace_callback( '/^(\s*date_default_timezone_set\(\s*)[\'"][^\'"]+[\'"]/m',
-            function ( $m ) use ( $zone ) {
-                return $m[ 1 ] . var_export( $zone, true );
-            }, $text, 1 );
-        if ( $result === null ) {
-            fatal( "could not carry the time zone: preg error " . preg_last_error() );
-        }
-        $text = $result;
-    }
-
-    ## class_local/ was removed with the Slurm change; the classes are in class/.
-    $class_dir = $old_listen[ 'class_dir' ] ?? "$wwwpath/common/class/";
-    $class_dir = preg_replace( '~/class_local/?$~', '/class/', rtrim( $class_dir, '/' ) . '/' );
-    if ( $class_dir === null ) {
-        fatal( "could not normalize class_dir '" . ( $old_listen[ 'class_dir' ] ?? '' ) . "'" );
-    }
-    $text = substitute( $text, 'class_dir', $class_dir, $replaced );
-    if ( !$replaced ) {
-        fatal( "the template $template does not set \$class_dir" );
-    }
-
-    $template_vars = [];
-    preg_match_all( '/^\$(\w+)\s*=/m', $text, $m );
-    $template_vars = $m[ 1 ];
-    ## Derived at run time by the template, or retired with class_local/.
-    $runtime = [ 'home', 'home_remote', 'work', 'work_remote', 'pipe', 'logfile', 'lock_dir', 'cfgfile',
-                 'configs', 'gpasswd', 'passwd', 'self', 'errors', 'db_handle', 'us3pwentry',
-                 'class_dir_p', 'class_dir_d', 'class_dir_l' ];
-    ## Settings the old file had that the new contract has no home for. Values
-    ## already carried are excluded, so each one is reported once.
-    $unreviewed = array_diff( array_keys( $old_listen ), $template_vars, $runtime, $carried_keys );
-
-    report( 'todo', "rewrite from the template, carrying " . implode( ', ', $carried_keys )
-                    . ( $tz ? ", time zone $tz[2]" : '' ) . "; class_dir $class_dir" );
-    foreach ( $unreviewed as $key ) {
-        report( 'note', "old setting \$$key is not in the new contract and will not be carried; review it" );
-    }
-
-    if ( $apply && confirm( "Rewrite $listen_config from the template?" ) ) {
-        ## write_file lints the result and restores the original if it is broken.
-        write_file( $listen_config, $text );
-        report( 'done', "$listen_config rewritten (original in " . backup_path( $listen_config ) . ")" );
-    }
-}
+run_host_migrations( $gdb, $required_version, $apply, [
+    'listen_config' => $listen_config,
+    'template'      => $template,
+    'old_listen'    => $old_listen,
+    'wwwpath'       => $wwwpath,
+], [ 'listen_config_v2' ] );
 
 ## ------------------------------------------------------------- 3. global_config.php
 
@@ -1555,8 +1833,10 @@ if ( $gc === null ) {
 ## The breaker directory belongs to remote_exec, which reads
 ## $global_circuit_breaker_dir and only falls back to us3's home. Recomputing the
 ## default here would create one directory and verify it while the web tier and
-## the daemons used another: step 5 would report it created, step 7 would report
-## it writable, and neither statement would be about the directory in use.
+## the daemons used another: step 5 would report it created, step 8 (Verify)
+## would report it writable, and neither statement would be about the
+## directory in use. Step 8, not step 7: Verify is step 8, after the CSP
+## step (7).
 $configured_breaker = isset( $gc[ 'global_circuit_breaker_dir' ] )
                       ? trim( (string) $gc[ 'global_circuit_breaker_dir' ] ) : '';
 if ( $configured_breaker !== '' ) {
@@ -1592,7 +1872,7 @@ foreach ( $pools as $name => $c ) {
 ## submission code, so an active 'pbs' or 'http' entry is now treated as
 ## though it were Slurm. They are dropped from $active as well, so the
 ## checks below do not go looking for env_script_lines, nodes or SSH on a
-## cluster that is being retired. (THE BUG this answers, round 13: this loop
+## cluster that is being retired. (THE BUG this answers: this loop
 ## used to also retire anything with a 'clusters' list, back when that shape
 ## only ever meant a dead Airavata-era fan-out entry. gridctl#35 made
 ## 'clusters' a first-class, currently-supported pool shape, so that
@@ -2077,7 +2357,7 @@ step( "4. SSH host keys and access (StrictHostKeyChecking=yes is the default)" )
 ## above): a pool has no login/host of its own for ssh to reach. A
 ## 'localhost' => true entry is NOT excluded wholesale -- remote_exec's
 ## is_local() only skips ssh for the account that actually matches the
-## entry's login user (round-13 should-fix, us3lims-roles#24: on a fresh
+## entry's login user (on a fresh
 ## build the appliance's own account reaches itself via cp/exec and never
 ## needs a key, but php-fpm commonly runs as a separate web account that
 ## does not match the login user, and that account still falls back to
@@ -2239,7 +2519,8 @@ foreach ( $ssh_targets as $name => $c ) {
 
 ## ------------------------------------------------------------- 5. breaker directory
 
-step( "5. Circuit-breaker, ssh-control and elog directories, and the runtime-advisory pilot table" );
+step( "5. Circuit-breaker, ssh-control and elog directories, the runtime-advisory pilot table,"
+    . " and the metascheduler pick_cluster() tables" );
 
 $web_group_entry = posix_getgrnam( $web_group );
 if ( $web_group_entry === false ) {
@@ -2433,9 +2714,55 @@ function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_err
     return [ 'FAIL', "could not create gfac.runtime_prediction: " . reason( (string) $create_error ) ];
 }
 
+## Same classification as runtime_prediction_create_outcome(), generalized to
+## either of the metascheduler pick_cluster() tables (metascheduler_decision,
+## cluster_status_nudge), which share the exact same "purely additive, a
+## missing-privilege error is a note, not a FAIL" reasoning: neither is read
+## or written at all on a host that never configures a metascheduler
+## pseudo-cluster entry.
+## $host_has_pool distinguishes "this
+## table is purely additive, nothing on this host needs it yet" (the
+## runtime-advisory pilot table's own reasoning, genuinely true for a host
+## with no metascheduler pseudo-cluster configured) from "this host
+## actively uses pick_cluster() and is missing the table that keeps two
+## reservations from picking the same cluster" -- a real, silent
+## correctness gap, not an optional one, that the old unconditional 'note'
+## treated identically to the harmless case on every roles-built host.
+function metascheduler_table_create_outcome( $table, $sql_file, $create_sql, $create_ok,
+                                              $create_errno, $create_error, $host_has_pool = false ) {
+    if ( trim( (string) $create_sql ) === '' ) {
+        return [ 'FAIL', "gfac.$table's SQL file has no SQL left after stripping comments" ];
+    }
+    if ( $create_ok ) {
+        return [ 'done', "gfac.$table created" ];
+    }
+    if ( in_array( (int) $create_errno, [ 1142, 1044 ], true ) ) {
+        ## 1142 (command denied) / 1044 (access denied to database): see
+        ## runtime_prediction_create_outcome()'s own comment -- the gfac
+        ## account lacking CREATE is an expected, optional gap when nothing
+        ## on this host uses pick_cluster() yet. Once a pool is configured,
+        ## the same gap means every pick runs with no audit trail and no
+        ## protection against two reservations taking the same cluster --
+        ## this needs doing, not a note an operator can reasonably ignore.
+        if ( $host_has_pool ) {
+            return [ 'FAIL', "gfac.$table could not be created (gfac account lacks privilege: "
+                            . reason( (string) $create_error ) . "), and this host has a"
+                            . " metascheduler pool configured -- pick_cluster() will run with no"
+                            . " audit trail and no protection against two reservations choosing the"
+                            . " same cluster. Grant CREATE on gfac to the account this ran as, or run"
+                            . " by hand: mysql gfac < $sql_file" ];
+        }
+        return [ 'note', "gfac account lacks privilege to create gfac.$table (metascheduler"
+                        . " pick_cluster()): " . reason( (string) $create_error )
+                        . "; an account with CREATE on gfac can run it by hand:"
+                        . " mysql gfac < $sql_file" ];
+    }
+    return [ 'FAIL', "could not create gfac.$table: " . reason( (string) $create_error ) ];
+}
+
 ## Same classification as runtime_prediction_create_outcome(), for the
-## additive ALTER an existing (pre-common#31) table needs instead of the
-## CREATE above. Without this, an existing pilot table silently lost every
+## additive ALTER an existing (pre-common#31) table needs instead of a
+## CREATE. Without this, an existing pilot table silently lost every
 ## insert (0 rows, including requests that never set prediction_cluster_name)
 ## the moment common#31 started writing those two columns, and step 5 reported
 ## "already exists" regardless since it only ever checked the table, never
@@ -2609,13 +2936,20 @@ if ( !is_file( $runtime_table_sql ) ) {
                 report( $status, $message );
             }
         }
-    } elseif ( ! $apply && ! gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
+    } elseif ( ! gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
         ## --check never runs CREATE, so without this probe a roles-built
         ## gfac account (SELECT/INSERT/UPDATE/DELETE only) reports "1
-        ## change(s) would be made" on every single --check, forever --
-        ## --apply could never actually create this table either, it would
-        ## just downgrade to the same 'note' below. Read-only (SHOW GRANTS),
-        ## so --check still never touches the database.
+        ## change(s) would be made" on every single --check, forever.
+        ## Read-only (SHOW GRANTS), so --check still never touches the
+        ## database. Round 15 nit, dbutils#52: this used to gate on
+        ## "!$apply" too, so --apply skipped this short-circuit, printed a
+        ## "[todo] create gfac.runtime_prediction" --check never showed for
+        ## the same host, attempted the CREATE anyway, and downgraded to
+        ## this exact same 'note' once the attempt failed for the same
+        ## reason this probe already knew about -- a redundant extra line,
+        ## not a different outcome. Unconditional now: the probe is
+        ## reliable enough for --check alone to depend on, so it is
+        ## reliable enough for --apply to skip the doomed attempt on too.
         report( 'note', "gfac account lacks privilege to create the optional runtime advisory"
               . " pilot table (common#31); an account with CREATE on gfac can run it by hand:"
               . " mysql gfac < $runtime_table_sql" );
@@ -2644,6 +2978,97 @@ if ( !is_file( $runtime_table_sql ) ) {
                 $create, $create_ok, $errno, $error, $runtime_table_sql );
             report( $status, $message );
         }
+    }
+}
+
+## -- metascheduler pick_cluster() tables (gridctl/pick_cluster.php,
+## -- pick_cluster_reserve.php). Both purely
+## -- additive, same reasoning as the runtime advisory pilot table above: a
+## -- host that never configures a metascheduler pseudo-cluster entry in
+## -- global_config.php never writes to either, and CREATE TABLE IF NOT
+## -- EXISTS is safe to run on every upgrade regardless of whether it does.
+## -- Without this, the first metascheduler pseudo-cluster submission on an
+## -- upgraded host would fail outright (metascheduler_decision) or silently
+## -- lose its double-booking protection (cluster_status_nudge), neither of
+## -- which gridctl's own code can create for itself at runtime.
+foreach ( [
+    'metascheduler_decision' => "$gridctl_dir/metascheduler_decision_table.sql",
+    'cluster_status_nudge'   => "$gridctl_dir/cluster_status_nudge_table.sql",
+] as $metascheduler_table => $metascheduler_table_sql ) {
+    if ( !is_file( $metascheduler_table_sql ) ) {
+        ## An old gridctl checkout that predates the metascheduler feature:
+        ## not required for this upgrade, same reasoning as the runtime
+        ## advisory pilot table's own missing-file case above.
+        report( 'note', "$metascheduler_table_sql not present; skipping the optional metascheduler"
+              . " gfac.$metascheduler_table table -- not required for this upgrade" );
+        continue;
+    }
+
+    $exists = mysqli_query( $gdb, "SHOW TABLES IN gfac LIKE '$metascheduler_table'" ); // NOSONAR $metascheduler_table is a hardcoded array key above, not user input
+    if ( $exists && mysqli_num_rows( $exists ) > 0 ) {
+        report( 'ok', "gfac.$metascheduler_table already exists" );
+        continue;
+    }
+
+    ## Reuses the runtime-advisory pilot table's own CREATE-on-gfac probe:
+    ## its check (ALL PRIVILEGES or CREATE, at gfac or global scope) has
+    ## nothing runtime-prediction-specific in it, and a roles-built gfac
+    ## account (SELECT/INSERT/UPDATE/DELETE only) is exactly the same account
+    ## either table would be missing CREATE on.
+    if ( ! gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
+        ## Same escalation as metascheduler_table_create_outcome()'s own
+        ## CREATE-denied branch: this
+        ## path never attempts the CREATE at all (it infers
+        ## the privilege gap from SHOW GRANTS instead), so it has to
+        ## duplicate that one escalation decision rather than call through
+        ## a function shaped around an actual attempt's errno/error.
+        ## Round 15 nit, dbutils#52: this used to gate on "!$apply" too
+        ## (same bug, same fix, as the runtime_prediction block above) --
+        ## --apply printed a "[todo] create gfac.$metascheduler_table"
+        ## --check never showed, attempted a CREATE already known to fail,
+        ## and reported the exact same FAIL/note below anyway.
+        if ( !empty( $pools ) ) {
+            report( 'FAIL', "gfac.$metascheduler_table cannot be created (gfac account lacks"
+                  . " privilege), and this host has a metascheduler pool configured --"
+                  . " pick_cluster() will run with no audit trail and no protection against two"
+                  . " reservations choosing the same cluster. Grant CREATE on gfac to the account"
+                  . " this will run as, or run by hand: mysql gfac < $metascheduler_table_sql" );
+        } else {
+            report( 'note', "gfac account lacks privilege to create gfac.$metascheduler_table"
+                  . " (metascheduler pick_cluster()); an account with CREATE on gfac can run it by"
+                  . " hand: mysql gfac < $metascheduler_table_sql" );
+        }
+        continue;
+    }
+
+    report( 'todo', "create gfac.$metascheduler_table (metascheduler pick_cluster())" );
+    if ( $apply ) {
+        ## Unlike the runtime-advisory pilot table's file, these two start with
+        ## a `USE gfac;` statement (added so a human running `mysql gfac <
+        ## file.sql` by hand doesn't have to remember to select the database
+        ## first). mysqli_query() can only run one statement, so that line has
+        ## to be stripped here same as the `--` comments -- $gdb is already
+        ## connected to gfac (the mysqli_connect() call above), so dropping it
+        ## loses nothing.
+        $lines  = explode( "\n", (string) file_get_contents( $metascheduler_table_sql ) );
+        $create = trim( implode( "\n", array_filter( $lines,
+            function ( $line ) { return !preg_match( '/^\s*--/', $line ) && !preg_match( '/^\s*USE\s+\S+\s*;?\s*$/i', $line ); } ) ) );
+
+        $create_ok = $create !== '' ? mysqli_query( $gdb, $create ) : false;
+        $errno = 0;
+        $error = '';
+        if ( $create !== '' && !$create_ok ) {
+            $errno = mysqli_errno( $gdb );
+            $error = mysqli_error( $gdb );
+        }
+        if ( $create_ok ) {
+            $changes++;
+        }
+
+        list( $status, $message ) = metascheduler_table_create_outcome(
+            $metascheduler_table, $metascheduler_table_sql, $create, $create_ok, $errno, $error,
+            !empty( $pools ) );
+        report( $status, $message );
     }
 }
 
@@ -2705,9 +3130,252 @@ if ( !$old_crons ) {
     report( 'ok', "no crontab drives gridctl" );
 }
 
-## ------------------------------------------------------------- 7. verify
+## Joins a backslash-continued directive ("Header set \\\nContent-Security-
+## Policy ...") onto one line, so a single-line match can see both halves.
+## \r?\n, not just \n: a file with CRLF line endings (which Apache accepts)
+## left the \r stuck to the end of the first half otherwise, so the join
+## never matched and a continued directive already installed was reported
+## as a fresh one to install. Pure, so this is testable without a real file.
+function csp_join_continued_directive( $contents ) {
+    return preg_replace( '/\\\\\r?\n/', ' ', (string) $contents );
+}
 
-step( "7. Verify" );
+## Does this one Apache config line actually install a Content-Security-Policy
+## header (as opposed to merely mentioning the phrase)? Pure, so the
+## "add/append/merge/setifempty install one too, not just set" fix and the
+## "unset/comment/mention do not" exclusions are each pinned down by a real
+## test instead of only ever exercised against whatever happens to be on a
+## test host's live Apache config.
+function csp_header_line_installs_policy( $line ) {
+    ## (always|onsuccess)?: Header's own optional condition keyword. ["']? before the
+    ## header name: a quoted header name ('Header set "Content-Security-
+    ## Policy" ...') wasn't recognised either. The caller joins a backslash-
+    ## continued directive onto one line first, so that case needs no change
+    ## here.
+    return (bool) preg_match(
+        '/^\s*Header\s+(always\s+|onsuccess\s+)?(set|add|append|merge|setifempty)\s+["\']?Content-Security-Policy\b/i',
+        $line
+    );
+}
+
+## Does this one Apache config FILE's contents (already joined across any
+## backslash-continued lines, same as csp_header_line_installs_policy()'s
+## caller does) already alias at least one of /common/css, /common/images
+## or /common/js? Pure, so the detection is pinned down by a real test
+## instead of only ever exercised against whatever a live test host's
+## Apache config happens to contain. One match is enough: a host that
+## templated its own vhost (us3lims-roles' config-lims-apache role) has
+## all three, from the same template, in the same file.
+function common_alias_conf_installs_alias( $contents ) {
+    return (bool) preg_match( '#^\s*Alias\s+/common/(css|images|js)\b#mi', (string) $contents );
+}
+
+## ------------------------------------------------------------- 7. Content-Security-Policy
+
+## The pages are written for util/csp's policy. It goes in Report-Only, which
+## blocks nothing and logs each violation through /csp-report.php; enforcing it is
+## a later, deliberate change once that log is quiet (util/csp/README.md).
+step( "7. Apache: Content-Security-Policy (Report-Only) and the /common static-asset alias" );
+
+$csp_policy = __DIR__ . '/util/csp/csp-report-only.conf';
+if ( is_dir( '/etc/httpd/conf.d' ) ) {
+    $apache = [ 'root' => '/etc/httpd', 'conf' => '/etc/httpd/conf.d/lims-csp.conf',
+                'enable' => '', 'disable' => '', 'service' => 'httpd' ];
+} elseif ( is_dir( '/etc/apache2/conf-available' ) ) {
+    $apache = [ 'root' => '/etc/apache2', 'conf' => '/etc/apache2/conf-available/lims-csp.conf',
+                'enable' => 'a2enconf -q lims-csp', 'disable' => 'a2disconf -q lims-csp', 'service' => 'apache2' ];
+} else {
+    $apache = null;
+}
+
+if ( $apache === null ) {
+    report( 'FAIL', "no Apache configuration directory (/etc/httpd/conf.d or /etc/apache2/conf-available)" );
+} elseif ( !is_file( $csp_policy ) ) {
+    report( 'FAIL', "policy not found: $csp_policy (update dbutils first)" );
+} else {
+    ## Any existing policy, Report-Only or enforced (an Ansible install enforces), is left as is.
+    ##
+    ## Apache's own list of files it actually loads (httpd -t -D DUMP_INCLUDES /
+    ## apache2ctl -t -D DUMP_INCLUDES), not a directory walk. A directory walk
+    ## has to choose a root, and either choice is wrong: conf-enabled alone (the
+    ## original fix here) misses a policy set directly in sites-enabled or
+    ## apache2.conf on Debian; the whole root instead, to catch those, means
+    ## recursing with -R (not -r: GNU grep's -r does not follow the symlinks
+    ## conf-enabled holds, which is the bug -R alone was added to fix) --
+    ## which on EL8 also follows conf.d's own logs/state symlinks straight into
+    ## /var/log/httpd and /var/lib/httpd. A large log file merely mentioning the
+    ## header (mod_security's audit log, a LogFormat with %{...}o) then gets
+    ## read whole into PHP and silently kills the run (reproduced: a 300MB
+    ## error_log, exit 255 on PHP 7.2). DUMP_INCLUDES is exactly the set Apache
+    ## itself resolved and actually loads, on either distro, with none of that.
+    $dump_cmd = $apache[ 'service' ] === 'apache2' ? 'apache2ctl' : 'httpd';
+    ## No 2>&1: capture() already separates the streams, and merging them
+    ## here buried a real "Syntax error on line..." after DUMP_INCLUDES'
+    ## own (successful) stdout listing, which reason() then truncated to
+    ## its first 200 characters -- showing the include list, not the error.
+    list( $dump_out, $dump_err, $dump_rc ) = capture( "$dump_cmd -t -D DUMP_INCLUDES" );
+    ## A non-zero exit here now FAILs outright rather than falling back to a
+    ## directory walk. The walk used to run for this
+    ## exact case too, on the theory that DUMP_INCLUDES might simply be
+    ## unsupported -- but both target distros support it, so in practice
+    ## this only ever means Apache's own config is already broken, which the
+    ## walk then masked with a worse failure mode: recursing a whole config
+    ## root with -R follows conf.d's own logs/state symlinks on EL8 straight
+    ## into /var/log/httpd, and a large log file merely mentioning the
+    ## header (mod_security's audit log, a LogFormat with %{...}o) silently
+    ## kills the run reading it whole into PHP (reproduced: a 300MB
+    ## error_log, exit 255 on PHP 7.2) -- while also reporting the wrong
+    ## cause (the stale DUMP_INCLUDES file listing, not Apache's real error)
+    ## and, on the same broken config, mod_headers reads as not loaded too,
+    ## so the run rolls back claiming "Apache rejected the policy" when
+    ## Apache was never configured correctly to begin with.
+    if ( $dump_rc !== 0 ) {
+        report( 'FAIL', "$dump_cmd -t -D DUMP_INCLUDES failed; fix Apache's configuration first: "
+                       . reason( $dump_err !== '' ? $dump_err : $dump_out ) );
+    } else {
+        $csp_files = [];
+        foreach ( explode( "\n", $dump_out ) as $line ) {
+            if ( preg_match( '#^\s*\(\S+\)\s+(/\S+)#', $line, $m ) ) {
+                $csp_files[] = $m[ 1 ];
+            }
+        }
+        ## Only a line that isn't a comment and actually sends the header, not
+        ## merely names it: grep alone also matched a site note, a commented-out
+        ## directive, or "Header unset Content-Security-Policy" (which removes the
+        ## header rather than setting one, so it is not a policy to leave alone).
+        $csp_found = [];
+        foreach ( $csp_files as $file ) {
+            $joined = csp_join_continued_directive( @file_get_contents( $file ) );
+            foreach ( explode( "\n", $joined ) as $line ) {
+                if ( csp_header_line_installs_policy( $line ) ) {
+                    $csp_found[] = $file;
+                    break;
+                }
+            }
+        }
+        if ( $csp_found ) {
+            report( 'ok', "a Content-Security-Policy is already configured (" . implode( ', ', $csp_found ) . "); left as is" );
+        } else {
+            report( 'todo', "install the Report-Only policy for $wwwpath as {$apache['conf']}" );
+            if ( $apply && confirm( "Install the Report-Only Content-Security-Policy and reload {$apache['service']}?" ) ) {
+                write_file( $apache[ 'conf' ], "## Installed by uslims_upgrade.php from util/csp/csp-report-only.conf.\n"
+                            . "<Directory \"$wwwpath\">\n" . file_get_contents( $csp_policy ) . "\n</Directory>\n", false );
+                if ( $apache[ 'enable' ] !== '' ) {
+                    capture( $apache[ 'enable' ] );
+                }
+                list( $t_out, $t_err, $t_rc ) = capture( 'apachectl configtest' );
+                if ( $t_rc !== 0 ) {
+                    if ( $apache[ 'disable' ] !== '' ) {
+                        capture( $apache[ 'disable' ] );
+                    }
+                    @unlink( $apache[ 'conf' ] );
+                    report( 'FAIL', "Apache rejected the policy, so it was removed: " . reason( $t_err !== '' ? $t_err : $t_out ) );
+                } else {
+                    ## THE BUG this answers:
+                    ## 'systemctl reload' only ever works on an already-
+                    ## running unit -- on a stopped httpd (a fresh host
+                    ## before its first start, or one deliberately down for
+                    ## other maintenance) it fails every time, regardless of
+                    ## whether the config itself is fine, and this used to
+                    ## report that as a FAIL even though apachectl configtest
+                    ## just above already confirmed the installed policy is
+                    ## valid and needs nothing further once httpd does start.
+                    list( , , $active_rc ) = capture( 'systemctl is-active ' . $apache[ 'service' ] );
+                    if ( $active_rc !== 0 ) {
+                        report( 'ok', "Report-Only policy installed; {$apache['service']} is not"
+                                . " running, so it will take effect the next time it starts" );
+                    } else {
+                        list( $r_out, $r_err, $r_rc ) = capture( 'systemctl reload ' . $apache[ 'service' ] );
+                        report( $r_rc === 0 ? 'done' : 'FAIL', "Report-Only policy installed"
+                                . ( $r_rc === 0 ? "; {$apache['service']} reloaded" : "; reload {$apache['service']} by hand: " . reason( $r_err ) ) );
+                    }
+                }
+            }
+        }
+        list( $mods ) = capture( 'apachectl -M' );
+        if ( strpos( $mods, 'headers_module' ) === false ) {
+            report( 'note', "mod_headers is not loaded, so Apache sends no CSP header; enable it" );
+        }
+    }
+}
+
+## THE BUG this answers. A hand upgrade
+## (the procedure above) pulls dbinst's code but never touches Apache's
+## own config -- only us3lims-roles' config-lims-apache role templates the
+## /common/{css,images,js} Alias newinst/webinfo's shared static assets
+## need. A host whose vhost predates that role, or that this script
+## upgrades without the roles ever having run on it, has no such Alias at
+## all: every page's CSS/images/JS 404. Installed the same idempotent,
+## conf.d-snippet way step 7's CSP policy already is just above -- a
+## separate file Apache includes automatically, so this never has to parse
+## or rewrite whatever the host's actual vhost file looks like. $apache
+## (which conf.d/conf-available directory exists) was already resolved
+## above; this runs whether or not the CSP install itself needed anything
+## done, including when $apache was null (no Apache config directory at
+## all) or the CSP policy file was missing, each handled the same way the
+## CSP block does.
+if ( $apache === null ) {
+    report( 'FAIL', "no Apache configuration directory (/etc/httpd/conf.d or /etc/apache2/conf-available)" );
+} else {
+    $common_alias_conf = dirname( $apache[ 'conf' ] ) . '/lims-common-alias.conf';
+    $alias_dump_cmd     = $apache[ 'service' ] === 'apache2' ? 'apache2ctl' : 'httpd';
+    list( $alias_dump_out, $alias_dump_err, $alias_dump_rc ) = capture( "$alias_dump_cmd -t -D DUMP_INCLUDES" );
+
+    if ( $alias_dump_rc !== 0 ) {
+        report( 'FAIL', "$alias_dump_cmd -t -D DUMP_INCLUDES failed; fix Apache's configuration first: "
+                       . reason( $alias_dump_err !== '' ? $alias_dump_err : $alias_dump_out ) );
+    } else {
+        $alias_found = false;
+        foreach ( explode( "\n", $alias_dump_out ) as $line ) {
+            if ( preg_match( '#^\s*\(\S+\)\s+(/\S+)#', $line, $m )
+                 && common_alias_conf_installs_alias( csp_join_continued_directive( @file_get_contents( $m[ 1 ] ) ) ) ) {
+                $alias_found = $m[ 1 ];
+                break;
+            }
+        }
+        if ( $alias_found !== false ) {
+            report( 'ok', "a /common static-asset alias is already configured ($alias_found); left as is" );
+        } else {
+            $common_dir_path = rtrim( common_dir_default( $wwwpath ), '/' );
+            report( 'todo', "install the /common/{css,images,js} alias for $common_dir_path as $common_alias_conf" );
+            if ( $apply && confirm( "Install the /common/{css,images,js} alias and reload {$apache['service']}?" ) ) {
+                $conf = "## Installed by uslims_upgrade.php: serves newinst/webinfo's shared\n"
+                      . "## css/images/js the same way us3lims-roles' config-lims-apache role does.\n";
+                foreach ( [ 'css', 'images', 'js' ] as $subdir ) {
+                    $conf .= "Alias /common/$subdir \"$common_dir_path/$subdir\"\n"
+                           . "<Directory \"$common_dir_path/$subdir\">\n"
+                           . "  Options +FollowSymLinks\n  AllowOverride None\n  Require all granted\n</Directory>\n";
+                }
+                write_file( $common_alias_conf, $conf, false );
+                if ( $apache[ 'enable' ] !== '' ) {
+                    capture( str_replace( 'lims-csp', 'lims-common-alias', $apache[ 'enable' ] ) );
+                }
+                list( $t_out, $t_err, $t_rc ) = capture( 'apachectl configtest' );
+                if ( $t_rc !== 0 ) {
+                    if ( $apache[ 'disable' ] !== '' ) {
+                        capture( str_replace( 'lims-csp', 'lims-common-alias', $apache[ 'disable' ] ) );
+                    }
+                    @unlink( $common_alias_conf );
+                    report( 'FAIL', "Apache rejected the alias, so it was removed: " . reason( $t_err !== '' ? $t_err : $t_out ) );
+                } else {
+                    list( , , $active_rc ) = capture( 'systemctl is-active ' . $apache[ 'service' ] );
+                    if ( $active_rc !== 0 ) {
+                        report( 'ok', "/common alias installed; {$apache['service']} is not"
+                                . " running, so it will take effect the next time it starts" );
+                    } else {
+                        list( $r_out, $r_err, $r_rc ) = capture( 'systemctl reload ' . $apache[ 'service' ] );
+                        report( $r_rc === 0 ? 'done' : 'FAIL', "/common alias installed"
+                                . ( $r_rc === 0 ? "; {$apache['service']} reloaded" : "; reload {$apache['service']} by hand: " . reason( $r_err ) ) );
+                    }
+                }
+            }
+        }
+    }
+}
+
+## ------------------------------------------------------------- 8. verify
+
+step( "8. Verify" );
 
 ## These checks describe the upgraded host, so on a dry run they would all fail
 ## by construction. Their outcome is only meaningful once the changes are in.
@@ -2786,6 +3454,19 @@ if ( !$apply ) {
     ## check above and still take no jobs. These are that gate's own conditions
     ## (web/common/class/jobsubmit.php resource_plan()), applied per active cluster
     ## and read back from the written config rather than from what step 3 proposed.
+    ## A
+    ## metascheduler pool entry (the same "clusters"-list shape step 3
+    ## above already carves out of $active via is_metascheduler_pool_entry()
+    ## -- identical to gridctl's own pick_cluster_is_metascheduler_entry())
+    ## lives in $cluster_details the same as every real cluster, but is
+    ## never itself a schedulable target: it has no ppn and no
+    ## cluster_config.php probe of its own, because pick_cluster() resolves
+    ## it to a separate, ordinary active entry that already has both. Both
+    ## checks below used to treat the pool entry as if it were that real
+    ## cluster and fail it on both counts, so --apply exited rc 1 on any
+    ## host with a pool while --check (which does not run this block)
+    ## passed -- failing the roles playbook on every pool-enabled
+    ## host, every run.
     $final = config_vars( $global_config, $f_why );
     if ( $final === null ) {
         report( 'FAIL', "cannot re-read global_config.php to check the sizing gate: "
@@ -2793,21 +3474,9 @@ if ( !$apply ) {
     } else {
         $final_clusters = is_array( $final[ 'cluster_details' ] ?? null )
                         ? $final[ 'cluster_details' ] : [];
-        $refused = [];
-        $checked = 0;
-        foreach ( $final_clusters as $name => $c ) {
-            if ( !is_array( $c ) || !( $c[ 'active' ] ?? false ) ) {
-                continue;
-            }
-            $checked++;
-            $ppn     = (int) ( $c[ 'ppn' ] ?? 0 );
-            $maxproc = max( 0, (int) ( $c[ 'maxproc' ] ?? 0 ) );
-            if ( $ppn < 1 ) {
-                $refused[] = "$name has no usable tasks-per-node capacity (ppn $ppn)";
-            } elseif ( !empty( $c[ 'single_node' ] ) && $maxproc > $ppn ) {
-                $refused[] = "$name is single_node with maxproc $maxproc over ppn $ppn";
-            }
-        }
+        $sizing  = sizing_gate_refusals( $final_clusters );
+        $refused = $sizing[ 'refused' ];
+        $checked = $sizing[ 'checked' ];
         ## An active cluster with no active probe writes no cluster_status row, and the
         ## web tier treats a cluster with no row as down. So the two files have to
         ## agree, or submission is enabled on a cluster nobody can select. This is the
@@ -2821,21 +3490,9 @@ if ( !$apply ) {
                               . "), so the probes could not be checked against the active clusters"
                             : "no $cc_file, so no cluster has a status probe" );
         } else {
-            $probes  = is_array( $cc_vars[ 'cluster_configuration' ] ?? null )
-                     ? $cc_vars[ 'cluster_configuration' ] : [];
-            $unprobed = [];
-            foreach ( $final_clusters as $name => $c ) {
-                if ( !is_array( $c ) || !( $c[ 'active' ] ?? false ) ) {
-                    continue;
-                }
-                if ( !is_array( $probes[ $name ] ?? null ) ) {
-                    $unprobed[] = "$name has no entry in cluster_config.php";
-                } elseif ( empty( $probes[ $name ][ 'active' ] ) ) {
-                    $unprobed[] = "$name has an inactive status probe";
-                } elseif ( trim( (string) ( $probes[ $name ][ 'status' ] ?? '' ) ) === '' ) {
-                    $unprobed[] = "$name has an active probe with no status command";
-                }
-            }
+            $probes   = is_array( $cc_vars[ 'cluster_configuration' ] ?? null )
+                      ? $cc_vars[ 'cluster_configuration' ] : [];
+            $unprobed = unprobed_active_clusters( $final_clusters, $probes );
             if ( $unprobed ) {
                 report( 'FAIL', "active cluster(s) the web tier will grey out, because nothing"
                                 . " writes their cluster_status row: " . implode( '; ', $unprobed ) );
@@ -2851,6 +3508,97 @@ if ( !$apply ) {
         } else {
             report( 'ok', "all $checked active cluster(s) pass the submission sizing gate" );
         }
+    }
+}
+
+step( "9. Per-instance catch-up (\$common_dir, people_audit UTC migration)" );
+
+## Unlike dbupgrade/stage2_import_dbinsts.php (which imports a 4.2.0
+## dbinstance wholesale onto a new host), this upgrade runs against the
+## dbinstance(s) already serving pages on THIS host -- so this reuses the
+## same migrate_people_audit_created_at_to_utc() (utility.php), idempotent
+## via a marker table inside each dbinstance, safe to run here whether or
+## not stage1/stage2 already ran against it.
+##
+## No new credentials: each instance's own already-running config.php (or,
+## for one migrated under the per-instance config layout, its overlay --
+## same detection uslims_domain_info.php's instance_overlay() uses) already
+## has everything needed. A dbinstance that could not connect with its own
+## config would not be serving pages, so this connects with exactly what
+## the site itself depends on, never root or a separate db_config.php.
+## discover_lims_instance_configs() (utility.php) is shared with the
+## standalone migrate_people_audit_utc.php, so both agree on what "every
+## instance on this host" means. $instance_paths (by reference) gets the
+## real file each entry's config was actually read from -- needed below to
+## write $common_dir back to the right file, not guessed from $wwwpath.
+## $newus3_configs carries
+## webinfo's and newinst's own host-level configs -- the entries this
+## function finds on the same glob pass but discards, since they are not
+## LIMS tenant databases; run once below, outside the per-instance loop,
+## since there is exactly one webinfo and one newinst config per host, not
+## one per instance.
+$instance_configs = discover_lims_instance_configs( $wwwpath, $us3_home, $instance_paths, $newus3_configs );
+
+run_host_migrations( null, $required_version, $apply,
+                      [ 'wwwpath' => $wwwpath, 'newus3_configs' => $newus3_configs ],
+                      [ 'webinfo_newinst_common_dir_backfill' ] );
+
+## dbinst_base_common_dir_backfill: the
+## shared base+overlay base file, fixed once per host -- see the sibling
+## instance migration above, which defers to this one for a base+overlay
+## instance instead of trying (and failing) to patch its own overlay.
+run_host_migrations( null, $required_version, $apply,
+                      [ 'wwwpath' => $wwwpath, 'us3_home' => $us3_home ],
+                      [ 'dbinst_base_common_dir_backfill' ] );
+
+if ( !$instance_configs ) {
+    report( 'note', "no $wwwpath/uslims3 config.php found; nothing to migrate" );
+} else {
+    foreach ( $instance_configs as $label => $cfg ) {
+        if ( isset( $cfg[ 'error' ] ) ) {
+            report( 'note', "$label: " . reason( $cfg[ 'error' ] ) . "; convert people_audit by hand" );
+            continue;
+        }
+
+        $context = [
+            'label'         => $label,
+            'cfg'           => $cfg,
+            'instance_path' => $instance_paths[ $label ] ?? null,
+            'wwwpath'       => $wwwpath,
+        ];
+
+        ## common_dir_backfill (migrations/4.3.0_common_dir_backfill.php)
+        ## needs no live connection -- it only reads $cfg, already parsed
+        ## by discover_lims_instance_configs() above -- and must run even
+        ## when this instance's own connection, checked next, fails: a
+        ## misconfigured dbname should not also block the config fix.
+        run_instance_migrations( null, null, $required_version, $apply, $context,
+                                  [ 'common_dir_backfill' ] );
+
+        ## people_audit_utc (migrations/4.3.0_people_audit_utc.php) needs
+        ## its own connection to this one instance's database, same as the
+        ## inline code it replaces always opened here. Checked here, not
+        ## left to migrate_people_audit_created_at_to_utc()'s own
+        ## sql_identifier_or_die(): that one exits the whole script, which
+        ## would skip every later instance in this loop over one malformed
+        ## name -- after steps 1-8 have already applied. report()+continue
+        ## instead, same as every other per-instance failure in this loop.
+        if ( !is_sql_identifier( $cfg[ 'dbname' ] ) ) {
+            report( 'FAIL', "$label: '{$cfg['dbname']}' is not a usable database name; convert people_audit by hand" );
+            continue;
+        }
+
+        $conn = @mysqli_connect( $cfg[ 'dbhost' ], $cfg[ 'dbusername' ], $cfg[ 'dbpasswd' ], $cfg[ 'dbname' ] );
+        if ( !$conn ) {
+            report( 'FAIL', "$label: could not connect to {$cfg['dbname']}@{$cfg['dbhost']} as"
+                  . " {$cfg['dbusername']}: " . reason( mysqli_connect_error() ) );
+            continue;
+        }
+
+        run_instance_migrations( $conn, $cfg[ 'dbname' ], $required_version, $apply, $context,
+                                  [ 'people_audit_utc' ] );
+
+        mysqli_close( $conn );
     }
 }
 

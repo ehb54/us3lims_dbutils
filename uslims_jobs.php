@@ -320,6 +320,21 @@ function finalizing_markers() {
     return glob( "$base/*/*/finalizing" ) ?: [];
 }
 
+## Every status-pending marker (jobmonitor/cleanup.php's
+## cleanup_status_pending_begin()): results already imported, only the final
+## update_autoflow_status() write failed. Distinct from finalizing_markers()
+## above -- this is not evidence of a dead worker, so its close-out below
+## must not assume FAILED.
+function status_pending_markers() {
+    global $ll_base_dir;
+
+    $base = ( isset( $ll_base_dir ) && $ll_base_dir != "" )
+            ? $ll_base_dir
+            : ( exec( "ls -d ~us3/lims" ) . "/etc/joblog" );
+
+    return glob( "$base/*/*/status-pending" ) ?: [];
+}
+
 ## The real wall-clock time $pid started, or null when it cannot be
 ## determined. /proc/<pid>'s own ctime (the previous implementation here) is
 ## when the directory entry was last *looked up*, not when the process
@@ -441,6 +456,24 @@ function marker_process_alive( $pid, $marker_started = 0 ) {
     return true;
 }
 
+## How long a marker can sit unresolved (its own row genuinely never comes
+## back -- not just a timing race with the worker that is about to finish
+## writing it) before --restart calls it out distinctly, instead of
+## printing the exact same "leaving it for the next --restart" line forever
+## with nothing to tell an operator this one is different.
+## A function, not a top-level const: this script's functions are pulled
+## out for unit testing by a tokenizer-based extractor (see tests/support/
+## dbutils/load-uslims-jobs.php) that does not also pull out const
+## declarations.
+function orphan_marker_age_seconds() {
+    return 86400;
+}
+
+function marker_is_orphaned( $marker ) {
+    $mtime = @filemtime( $marker );
+    return $mtime !== false && ( time() - $mtime ) > orphan_marker_age_seconds();
+}
+
 ## Closes out one finalizing marker whose worker is confirmed gone (--restart's
 ## caller already checked marker_process_alive() and the gfac.analysis row).
 ## $info is the marker's decoded JSON: 'gfacID', 'us3_db', and 'autoflowAnalysisID'
@@ -455,7 +488,20 @@ function close_out_finalizing_marker( $db_handle, $marker, array $info ) {
     ## row must not touch today's row for that gfacID.
     $requestid = (int) ( $info[ 'requestID' ] ?? 0 );
 
-    $us3_db_esc  = mysqli_real_escape_string( $db_handle, $info[ 'us3_db' ] );
+    ## us3_db goes into the queries below unquoted, as a database-name
+    ## prefix -- mysqli_real_escape_string()
+    ## protects a value placed INSIDE quotes, which an identifier position
+    ## never is, so it offered no actual protection here. Validated the
+    ## same way every other identifier interpolated into SQL in this
+    ## codebase is (is_sql_identifier(), utility.php); report-and-leave-the-
+    ## marker, not die, matching this loop's own handling of an unreadable
+    ## marker just above its caller.
+    if ( !is_sql_identifier( $info[ 'us3_db' ] ) ) {
+        echo "marker $marker names an invalid us3_db (" . var_export( $info[ 'us3_db' ], true )
+           . "); leaving it for the next --restart\n";
+        return;
+    }
+    $us3_db_esc  = $info[ 'us3_db' ];
     $gfacid_esc  = mysqli_real_escape_string( $db_handle, $gfacid );
     $message     = "Results handling did not finish: the worker stopped after the job"
                   . " record was removed. Check the job log for $gfacid and resubmit if"
@@ -514,6 +560,10 @@ function close_out_finalizing_marker( $db_handle, $marker, array $info ) {
             echo "autoflowAnalysisID $autoflow_id for $gfacid is already"
                . " '{$found->status}'; removing its marker\n";
             @unlink( $marker );
+        } elseif ( marker_is_orphaned( $marker ) ) {
+            echo "no autoflowAnalysis row for autoflowAnalysisID $autoflow_id / $gfacid after more"
+               . " than " . (int) ( orphan_marker_age_seconds() / 3600 ) . "h; this marker looks"
+               . " orphaned, not merely early -- review it by hand: $marker\n";
         } else {
             echo "no autoflowAnalysis row yet for autoflowAnalysisID $autoflow_id / $gfacid;"
                . " leaving its marker for the next --restart\n";
@@ -537,6 +587,97 @@ function close_out_finalizing_marker( $db_handle, $marker, array $info ) {
     echo mysqli_affected_rows( $db_handle ) > 0
        ? "closed out HPCAnalysisResult for $gfacid, whose results handling was interrupted\n"
        : "HPCAnalysisResult for $gfacid already terminal or not found; removing its marker\n";
+    @unlink( $marker );
+}
+
+## Closes out one status-pending marker (results already imported, only the
+## final status write failed -- see jobmonitor/cleanup.php's
+## cleanup_status_pending_begin()). Unlike close_out_finalizing_marker() above,
+## this never assumes FAILED: 'stage'/'queue_status' are the real, already-
+## resolved outcome gridctl decided before the write failed, carried in the
+## marker since dbutils has no access to gridctl's status vocabulary maps.
+## No marker_process_alive() check -- the marker is evidence of a DB outage at
+## write time, not of a dead worker, so liveness is irrelevant here.
+function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
+    $gfacid      = $info[ 'gfacID' ];
+    $requestid   = (int) ( $info[ 'requestID' ] ?? 0 );
+    ## us3_db goes into the queries below unquoted, as a database-name
+    ## prefix -- see close_out_finalizing_
+    ## marker()'s own identical fix for why mysqli_real_escape_string()
+    ## offered no real protection in this position.
+    if ( !is_sql_identifier( $info[ 'us3_db' ] ) ) {
+        echo "marker $marker names an invalid us3_db (" . var_export( $info[ 'us3_db' ], true )
+           . "); leaving it for the next --restart\n";
+        return;
+    }
+    $us3_db_esc  = $info[ 'us3_db' ];
+    $gfacid_esc  = mysqli_real_escape_string( $db_handle, $gfacid );
+    $stage       = $info[ 'stage' ] ?? null;
+    $queue_status = $info[ 'queue_status' ] ?? null;
+    ## $stage/$queue_status come from the marker file's own recorded
+    ## content: the marker is written by this
+    ## same codebase, not an external input, but it still has to pass
+    ## through the SQL layer like any other value headed into a query --
+    ## escaped here rather than trusted as already-safe because of where
+    ## it came from.
+    $stage_esc        = $stage !== null ? mysqli_real_escape_string( $db_handle, $stage ) : null;
+    $queue_status_esc = $queue_status !== null ? mysqli_real_escape_string( $db_handle, $queue_status ) : null;
+    $message_esc = mysqli_real_escape_string( $db_handle, (string) ( $info[ 'message' ] ?? '' ) );
+    $autoflow_id = (int) ( $info[ 'autoflowAnalysisID' ] ?? 0 );
+
+    if ( $autoflow_id > 0 && $stage !== null ) {
+        ## Same keys as close_out_finalizing_marker()'s autoflow branch
+        ## (requestID is the HPCAnalysisRequestID, not autoflowAnalysisID --
+        ## see that function's own comment). No terminal-status guard: the
+        ## stage gridctl's own job_cleanup() resolves at this call site is
+        ## always terminal (complete/failed/canceled/error), matching
+        ## update_autoflow_status()'s own no-guard case for a terminal stage.
+        $query = "UPDATE $us3_db_esc.autoflowAnalysis SET status='$stage_esc', statusMsg='$message_esc'"
+               . " WHERE requestID=$autoflow_id AND currentGfacID='$gfacid_esc'";
+        if ( mysqli_query( $db_handle, $query ) === false ) {
+            echo "could not close out status-pending autoflowAnalysisID $autoflow_id for $gfacid: "
+               . mysqli_error( $db_handle ) . "\n";
+            return;
+        }
+        if ( mysqli_affected_rows( $db_handle ) === 0 ) {
+            ## 0 affected is ambiguous: the row may not exist (leave the
+            ## marker, something is genuinely wrong), or it may already carry
+            ## this exact stage (a prior --restart's write landed but its
+            ## marker cleanup did not; nothing left to do, safe to drop it).
+            ## Same disambiguation close_out_finalizing_marker() does above.
+            $found = db_obj_result( $db_handle,
+                "select status from $us3_db_esc.autoflowAnalysis where requestID=$autoflow_id"
+              . " and currentGfacID='$gfacid_esc'", false, true );
+            if ( $found === false ) {
+                if ( marker_is_orphaned( $marker ) ) {
+                    echo "no autoflowAnalysis row for autoflowAnalysisID $autoflow_id / $gfacid after"
+                       . " more than " . (int) ( orphan_marker_age_seconds() / 3600 ) . "h; this"
+                       . " status-pending marker looks orphaned, not merely early -- review it by"
+                       . " hand: $marker\n";
+                } else {
+                    echo "no autoflowAnalysis row for autoflowAnalysisID $autoflow_id / $gfacid;"
+                       . " leaving its status-pending marker for the next --restart\n";
+                }
+                return;
+            }
+            echo "autoflowAnalysisID $autoflow_id for $gfacid is already '$stage';"
+               . " its status-pending write already landed\n";
+        }
+    }
+
+    if ( $queue_status !== null && $requestid > 0 ) {
+        $hpc_query = "UPDATE $us3_db_esc.HPCAnalysisResult SET queueStatus='$queue_status_esc',"
+                   . " lastMessage='$message_esc' WHERE HPCAnalysisRequestID=$requestid"
+                   . " AND gfacID='$gfacid_esc'";
+        if ( mysqli_query( $db_handle, $hpc_query ) === false ) {
+            echo "could not close out status-pending HPCAnalysisResult for $gfacid: "
+               . mysqli_error( $db_handle ) . "\n";
+            return;
+        }
+    }
+
+    echo "closed out status-pending write for $gfacid (stage="
+       . ( $stage ?? 'n/a' ) . ", queueStatus=" . ( $queue_status ?? 'n/a' ) . ")\n";
     @unlink( $marker );
 }
 
@@ -707,14 +848,50 @@ if ( $running || $restart || $restart_only ) {
         ## monitor for it and the stage sits at 'running'. cleanup leaves a marker
         ## across that span; a marker with no row means the worker died in it.
         ##
+        ## THE BUG this answers: a job that
+        ## crashed during results handling and a job whose results already
+        ## landed but whose own final status write then failed can both
+        ## leave markers for the SAME job at once -- cleanup.php never clears
+        ## the original finalizing marker until the whole span, including the
+        ## final write, completes. Running this loop first used to mark such
+        ## a job FAILED (its gfac.analysis row is already gone by this point
+        ## either way, so the guard below never catches it), with the
+        ## status-pending loop below only correcting it to the real outcome
+        ## a moment later in the same run -- a real, if momentary, wrong
+        ## state, and a misleading "results handling was interrupted"
+        ## message for a job that was not actually a failure.
+        ##
+        ## Status-pending runs first now (below is reordered): it already
+        ## carries the real, already-resolved terminal outcome, so letting
+        ## it land first means a job with both markers is never marked
+        ## FAILED at all -- this loop's own guard (status NOT IN (...,
+        ## 'COMPLETE', ...)) then correctly finds 0 rows to affect for it,
+        ## and falls through to "already 'COMPLETE'; removing its marker"
+        ## instead of writing anything.
+        ##
         ## Run before the gfac.analysis select below, not after: that select
         ## returns false, not an empty result, when the table has no rows (the
         ## usual state on a quiet host after a crash), and the code that used to
         ## follow it there exited on that before ever reaching this loop.
+        foreach ( status_pending_markers() as $marker ) {
+            $info = json_decode( (string) @file_get_contents( $marker ), true );
+            if ( !is_array( $info ) || empty( $info[ 'us3_db' ] ) || empty( $info[ 'gfacID' ] ) ) {
+                echo "ignoring and removing unreadable status-pending marker $marker\n";
+                @unlink( $marker );
+                continue;
+            }
+            close_out_status_pending_marker( $db_handle, $marker, $info );
+        }
+
         foreach ( finalizing_markers() as $marker ) {
             $info = json_decode( (string) @file_get_contents( $marker ), true );
             if ( !is_array( $info ) || empty( $info[ 'us3_db' ] ) || empty( $info[ 'gfacID' ] ) ) {
-                echo "ignoring unreadable finalizing marker $marker\n";
+                ## Removed, not just logged: nothing
+                ## about a marker this unreadable ever becomes parseable on a
+                ## later run, so leaving it in place meant every --restart
+                ## reported the exact same one forever, with no way to clear it.
+                echo "ignoring and removing unreadable finalizing marker $marker\n";
+                @unlink( $marker );
                 continue;
             }
             $gfacid = $info[ 'gfacID' ];
@@ -1173,7 +1350,7 @@ function runuser_wrap_if_root( $innerCmd ) {
 ## before attempting either rsync fetch. Pure (string building only, no
 ## exec), so the escaping is testable without a real connection.
 ##
-## THE BUG this answers (round-13 should-fix, dbutils#45): this used to
+## THE BUG this answers: this used to
 ## wrap unconditionally, on the stated reasoning that --getrun's own rsync
 ## fetches just below were unconditionally wrapped too, so this matched
 ## their existing behavior. That stopped being true once those fetches
@@ -1187,9 +1364,22 @@ function runuser_wrap_if_root( $innerCmd ) {
 ## exist on $login -- this job was never staged there" for a directory
 ## that was never actually checked at all, root or not, reachable host or
 ## not.
-function remote_dir_check_command( $login, $rundir ) {
-    return runuser_wrap_if_root(
-        "ssh " . escapeshellarg( $login ) . " test -d " . escapeshellarg( $rundir ) );
+function remote_dir_check_command( $login, $rundir, $local = false ) {
+    $inner_cmd = $local
+               ? "test -d " . escapeshellarg( $rundir )
+               : "ssh " . escapeshellarg( $login ) . " test -d " . escapeshellarg( $rundir );
+    return runuser_wrap_if_root( $inner_cmd );
+}
+
+## An rsync remote-spec prefix ("user@host:") for $login, or '' for the
+## local entry -- rsync treats a bare path as local on its own, so this is
+## the whole difference between going over ssh and not. Shared by --getrun
+## and --copyrun's own spec-building below: both always went over ssh, even for 'localhost' => true,
+## failing with "Host key verification failed" on a host built without
+## ssh to itself -- the same entry common#33's own remote_exec calls
+## already skip ssh for.
+function rsync_remote_prefix( $login, $local ) {
+    return $local ? '' : escapeshellarg( $login ) . ':';
 }
 
 function hpcresbyreqout( $reqid, $reqisgfac = false ) {
@@ -1295,6 +1485,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     $queue   = false;
     $login   = false;
     $workdir = false;
+    $local   = false;
 
     foreach ( $cluster_details as $k => $v ) {
         if (
@@ -1306,6 +1497,15 @@ if ( $getrundir || $getrun || $copyrun ) {
             ## 'login' still has an ssh identity, just the default one.
             $login   = $v['login'] ?? ( 'us3@' . $v['name'] );
             $workdir = $v['workdir'];
+            ## 'localhost' => true means
+            ## this cluster is reached without ssh everywhere else in this
+            ## stack (common#33's own remote_exec calls, uslims_upgrade.php
+            ## step 4) -- --getrun/--copyrun never read it at all, so they
+            ## always went over ssh even for the local entry, failing with
+            ## "Host key verification failed" on a host built without ssh
+            ## to itself. cluster_entry_is_local(), not !empty() --
+            ## !empty() reads the string 'false' as local.
+            $local   = cluster_entry_is_local( $v[ 'localhost' ] ?? false );
             break;
         }
     }
@@ -1380,12 +1580,12 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## missing $rundir itself still has rsync print its own "change_dir ...
     ## failed" once per brace-expanded file above (five lines), at rc 0,
     ## which reads as noise instead of the one simple fact it stands for.
-    exec( remote_dir_check_command( $login, $rundir ) . " 2>&1", $remoteDirCheckOutput, $remoteDirCheckStatus );
+    exec( remote_dir_check_command( $login, $rundir, $local ) . " 2>&1", $remoteDirCheckOutput, $remoteDirCheckStatus );
 
     ## 255 is ssh's own transport-failure exit code, not test -d's: a host
     ## that could not be reached at all reads very differently from one
     ## that answered and genuinely has no such directory, but both used to
-    ## print the same "never staged" line -- round-11 nit (dbutils#45).
+    ## print the same "never staged" line.
     if ( $remoteDirCheckStatus === 255 ) {
         echo "could not reach $login to check $rundir: " . implode( "\n", $remoteDirCheckOutput ) . "\n";
         echoline();
@@ -1400,7 +1600,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## instance-derived) ever contained one. The curly-brace file list stays
     ## bare: it is bash's own brace expansion, not something escapeshellarg()
     ## can be applied to without disabling it.
-    $remote_spec = escapeshellarg( $login ) . ':' . escapeshellarg( $rundir )
+    $remote_spec = rsync_remote_prefix( $login, $local ) . escapeshellarg( $rundir )
                  . '/{' . implode( ",", $getfiles ) . '}';
     ## --ignore-missing-args: the top-level analysis-results.tar is the one
     ## that is never actually there (see above) -- without this, rsync
@@ -1427,7 +1627,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## call so that expected, routine noise for an unfinished job never
     ## reaches the output above; a real transfer problem for a job that has
     ## reached this stage would still show up as a missing file below.
-    $output_spec = escapeshellarg( $login ) . ':'
+    $output_spec = rsync_remote_prefix( $login, $local )
                  . escapeshellarg( "$rundir/output/analysis-results.tar" );
     $output_cmd  = "rsync -avz --ignore-missing-args $output_spec " . escapeshellarg( $tdir );
     run_cmd( runuser_wrap_if_root( $output_cmd ), false );
@@ -1478,12 +1678,16 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     $dworkdir = $cluster_details[ $copyrun ]['workdir'] . "/test/$db/$reqid";
     $dlogin   = $cluster_details[ $copyrun ]['login'];
+    ## Same reasoning as $local above,
+    ## for the --copyrun destination cluster.
+    $dlocal   = cluster_entry_is_local( $cluster_details[ $copyrun ][ 'localhost' ] ?? false );
 
     ## mkdir workdir/../test/db/reqid
     ## $dlogin/$dworkdir quoted: both are config-derived
     ## (cluster_details' login/workdir), the same risk category $login/
     ## $rundir already were above.
-    $inner_cmd = "ssh " . escapeshellarg( $dlogin ) . " mkdir -p " . escapeshellarg( $dworkdir );
+    $inner_cmd = ( $dlocal ? '' : "ssh " . escapeshellarg( $dlogin ) . " " )
+               . "mkdir -p " . escapeshellarg( $dworkdir );
     $cmd = runuser_wrap_if_root( $inner_cmd );
     echoline();
     echo "$cmd\n";
@@ -1492,7 +1696,7 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     ## rsync to workdir/../test/db/reqid
     $inner_cmd = "rsync -avz " . escapeshellarg( "$tdir/" ) . "* "
-               . escapeshellarg( $dlogin ) . ':' . escapeshellarg( $dworkdir );
+               . rsync_remote_prefix( $dlogin, $dlocal ) . escapeshellarg( $dworkdir );
     $cmd = runuser_wrap_if_root( $inner_cmd );
     echoline();
     echo "$cmd\n";
