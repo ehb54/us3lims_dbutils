@@ -1051,14 +1051,20 @@ function create_people_audit_utc_boundary_table( $db_handle, $db ) {
                                     . " auditID INT UNSIGNED NOT NULL )" );
 }
 
+## @return bool true only for a real, successful INSERT -- false for the
+##              two already-done early-returns (nothing to record) and for
+##              a genuine INSERT failure alike, so a caller counting
+##              changes (uslims_upgrade.php's run_people_audit_utc_
+##              boundaries(), round 15 nit) does not count an instance
+##              whose boundary was never actually written.
 function record_people_audit_utc_boundary( $db_handle, $db ) {
     sql_identifier_or_die( $db );
 
     if ( people_audit_utc_migration_done( $db_handle, $db ) ) {
-        return;
+        return false;
     }
     if ( people_audit_utc_boundary( $db_handle, $db ) !== null ) {
-        return;
+        return false;
     }
 
     $exists = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE 'people_audit'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
@@ -1070,7 +1076,7 @@ function record_people_audit_utc_boundary( $db_handle, $db ) {
     }
 
     create_people_audit_utc_boundary_table( $db_handle, $db );
-    mysqli_query( $db_handle, "INSERT INTO $db._dbutils_people_audit_utc_boundary ( auditID )" // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+    return (bool) mysqli_query( $db_handle, "INSERT INTO $db._dbutils_people_audit_utc_boundary ( auditID )" // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
                              . " VALUES ( $max_id )" );
 }
 

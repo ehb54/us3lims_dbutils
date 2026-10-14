@@ -1249,8 +1249,13 @@ function run_people_audit_utc_boundaries( $wwwpath, $us3_home ) {
             continue;
         }
 
-        record_people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] );
-        $changes++;
+        ## Round 15 nit, dbutils#52: only a real, successful INSERT counts
+        ## -- this used to increment unconditionally, so a failed one (a
+        ## stale password that connects but can't write, say) was still
+        ## reported as "recorded ... boundary for N instance(s)."
+        if ( record_people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] ) ) {
+            $changes++;
+        }
 
         mysqli_close( $conn );
     }

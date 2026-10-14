@@ -69,14 +69,23 @@ return [
         ## also have to reverse-guess each value's original PHP literal
         ## formatting -- booleans, numbers, escaped strings -- for no
         ## benefit over leaving them untouched).
+        ## Round 15 nit, dbutils#52: the opening-bracket match used to require
+        ## a bare newline right after "array(" -- missing both PHP's short-
+        ## array syntax ('values' => [ ... ]) and a base whose first element
+        ## sits on the same line as the opening bracket, each of which left
+        ## $count at 0 and FAILed the --apply this same base's own --check
+        ## had just reported as a plain 'todo'. Matching the opening token
+        ## alone (array( or [, in either order of likelihood) and always
+        ## supplying the newline the insertion needs, rather than requiring
+        ## one already be there, covers both shapes the same way.
         $contents = (string) file_get_contents( $base_path );
         $addition = "    'common_dir' => " . var_export( $common_dir_value, true ) . ",\n";
         $new_contents = preg_replace(
-            '/(\'values\'\s*=>\s*array\s*\(\s*\n)/', '$1' . $addition, $contents, 1, $count );
+            '/(\'values\'\s*=>\s*(?:array\s*\(|\[))/', '$1' . "\n" . $addition, $contents, 1, $count );
 
         if ( $count !== 1 ) {
             report( 'FAIL', "dbinst-base.v1.php does not match the expected"
-                           . " \"'values' => array(\" shape; add 'common_dir' by hand" );
+                           . " \"'values' => array(\" or \"'values' => [\" shape; add 'common_dir' by hand" );
             return;
         }
 
