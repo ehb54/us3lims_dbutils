@@ -29,6 +29,26 @@ return [
             return;
         }
 
+        ## ROUND-14 SHOULD-FIX (dbutils#52): a base+overlay instance never
+        ## settles here. discover_lims_instance_configs() resolves such an
+        ## instance's $instance_path to its OVERLAY file (under
+        ## /instances/), and reads $cfg from that overlay's own 'values'
+        ## array directly -- $common_dir lives in the shared BASE, not the
+        ## overlay (the overlay's own contract forbids it), so $cfg here
+        ## never has it, no matter what the base actually says. Appending
+        ## $common_dir = ...; to the overlay file would be silently inert
+        ## too: us3_dbinst_config_load() only ever reads the overlay's
+        ## 'values' array, never a loose top-level variable. Every --apply
+        ## used to append another dead line and --check reported [todo]
+        ## forever. The base is a single file shared by every overlay
+        ## instance on this host -- migrations/4.3.0_dbinst_base_
+        ## common_dir_backfill.php (host-scoped) fixes it once, not once
+        ## per instance.
+        if ( $instance_path !== null && preg_match( '#/instances/[^/]+\.php$#', $instance_path ) ) {
+            report( 'ok', "$label: base+overlay instance; \$common_dir is the shared base's job, not this overlay's" );
+            return;
+        }
+
         $common_dir_value = common_dir_default( $wwwpath );
         report( 'todo', "$label: set \$common_dir (missing -- pages render with no shared"
                        . " header, footer or CSS) to " . var_export( $common_dir_value, true ) );
@@ -47,8 +67,20 @@ return [
         $saved = backup_append_target( $instance_path, "config.$label" );
         if ( $saved === '' ) {
             report( 'FAIL', "$label: could not back up $instance_path, so \$common_dir was not added" );
-        } elseif ( file_put_contents( $instance_path,
-                   "\n\$common_dir = " . var_export( $common_dir_value, true ) . ";\n", FILE_APPEND ) === false ) {
+            return;
+        }
+
+        ## php_append_statement_before_closing_tag() (utility.php) keeps
+        ## this inside the file's existing PHP block even when it ends in a
+        ## closing tag (round-14 regression, dbutils#52 blocking #3) --
+        ## idempotent the same way the no-tag case already was:
+        ## $cfg['common_dir'] being set is what skips this entirely on the
+        ## next run.
+        $contents     = (string) file_get_contents( $instance_path );
+        $addition     = "\n\$common_dir = " . var_export( $common_dir_value, true ) . ";\n";
+        $new_contents = php_append_statement_before_closing_tag( $contents, $addition );
+
+        if ( file_put_contents( $instance_path, $new_contents ) === false ) {
             report( 'FAIL', "$label: could not append \$common_dir to $instance_path" );
         } else {
             $changes++;
