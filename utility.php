@@ -1202,7 +1202,7 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
         # handled correctly per row (each row's own local instant resolves
         # its own offset), with the same accepted fall-back-hour ambiguity
         # as the CONVERT_TZ path below (README).
-        $select_res = mysqli_query( $db_handle,
+        $select_res = mysqli_query( $db_handle, // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
             "SELECT auditID, created_at FROM $db.people_audit"
           . " WHERE created_at != '0000-00-00 00:00:00'" . $bound_clause );
         $rows = [];
@@ -1223,8 +1223,8 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
             }
             $local->setTimezone( $utc );
             $converted = $local->format( 'Y-m-d H:i:s' );
-            $update = mysqli_query( $db_handle,
-                "UPDATE $db.people_audit SET created_at = '" // NOSONAR $db is validated above by sql_identifier_or_die(); $converted is a formatted DateTime, not user input
+            $update = mysqli_query( $db_handle, // NOSONAR $db is validated above by sql_identifier_or_die(); $converted is a formatted DateTime, not user input
+                "UPDATE $db.people_audit SET created_at = '"
                 . mysqli_real_escape_string( $db_handle, $converted ) . "' WHERE auditID = "
                 . (int) $row[ 'auditID' ] );
             if ( !$update ) {

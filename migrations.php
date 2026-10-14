@@ -43,7 +43,7 @@ function discover_migrations() {
 
     $migrations = [];
     foreach ( glob( __DIR__ . '/migrations/*.php' ) as $file ) {
-        $def = require $file;
+        $def = require_once $file;
         foreach ( [ 'id', 'since_version', 'scope', 'run' ] as $key ) {
             if ( !array_key_exists( $key, $def ) ) {
                 fatal( "migration file $file is missing '$key'" );

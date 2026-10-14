@@ -2932,7 +2932,7 @@ foreach ( [
         continue;
     }
 
-    $exists = mysqli_query( $gdb, "SHOW TABLES IN gfac LIKE '$metascheduler_table'" );
+    $exists = mysqli_query( $gdb, "SHOW TABLES IN gfac LIKE '$metascheduler_table'" ); // NOSONAR $metascheduler_table is a hardcoded array key above, not user input
     if ( $exists && mysqli_num_rows( $exists ) > 0 ) {
         report( 'ok', "gfac.$metascheduler_table already exists" );
         continue;
