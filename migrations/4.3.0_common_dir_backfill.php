@@ -29,7 +29,7 @@ return [
             return;
         }
 
-        ## ROUND-14 SHOULD-FIX (dbutils#52): a base+overlay instance never
+        ## A base+overlay instance never
         ## settles here. discover_lims_instance_configs() resolves such an
         ## instance's $instance_path to its OVERLAY file (under
         ## /instances/), and reads $cfg from that overlay's own 'values'
@@ -72,8 +72,7 @@ return [
 
         ## php_append_statement_before_closing_tag() (utility.php) keeps
         ## this inside the file's existing PHP block even when it ends in a
-        ## closing tag (round-14 regression, dbutils#52 blocking #3) --
-        ## idempotent the same way the no-tag case already was:
+        ## closing tag -- idempotent the same way the no-tag case already was:
         ## $cfg['common_dir'] being set is what skips this entirely on the
         ## next run.
         $contents     = (string) file_get_contents( $instance_path );

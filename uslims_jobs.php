@@ -1375,8 +1375,7 @@ function remote_dir_check_command( $login, $rundir, $local = false ) {
 ## An rsync remote-spec prefix ("user@host:") for $login, or '' for the
 ## local entry -- rsync treats a bare path as local on its own, so this is
 ## the whole difference between going over ssh and not. Shared by --getrun
-## and --copyrun's own spec-building below (round-14 should-fix,
-## dbutils#52): both always went over ssh, even for 'localhost' => true,
+## and --copyrun's own spec-building below: both always went over ssh, even for 'localhost' => true,
 ## failing with "Host key verification failed" on a host built without
 ## ssh to itself -- the same entry common#33's own remote_exec calls
 ## already skip ssh for.
@@ -1499,7 +1498,7 @@ if ( $getrundir || $getrun || $copyrun ) {
             ## 'login' still has an ssh identity, just the default one.
             $login   = $v['login'] ?? ( 'us3@' . $v['name'] );
             $workdir = $v['workdir'];
-            ## ROUND-14 SHOULD-FIX (dbutils#52): 'localhost' => true means
+            ## 'localhost' => true means
             ## this cluster is reached without ssh everywhere else in this
             ## stack (common#33's own remote_exec calls, uslims_upgrade.php
             ## step 4) -- --getrun/--copyrun never read it at all, so they
@@ -1679,7 +1678,7 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     $dworkdir = $cluster_details[ $copyrun ]['workdir'] . "/test/$db/$reqid";
     $dlogin   = $cluster_details[ $copyrun ]['login'];
-    ## Round-14 should-fix, dbutils#52 -- same reasoning as $local above,
+    ## Same reasoning as $local above,
     ## for the --copyrun destination cluster.
     $dlocal   = !empty( $cluster_details[ $copyrun ][ 'localhost' ] );
 

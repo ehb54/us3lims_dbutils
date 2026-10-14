@@ -1,6 +1,5 @@
 <?php
-## THE BUG this answers (dbinst#57/newinst#27/webinfo#17's blocking item,
-## the other half of migrations/4.3.0_common_dir_backfill.php). webinfo's
+## THE BUG this answers (the other half of migrations/4.3.0_common_dir_backfill.php). webinfo's
 ## and newinst's own config.php both carry a real database connection
 ## (dbname 'newus3', dbutils' own registry database), so discover_lims_
 ## instance_configs() finds them on the same glob pass as every real

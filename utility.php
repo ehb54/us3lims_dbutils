@@ -32,7 +32,7 @@ $STDERR = STDERR;
 ## $zoneinfo_root defaults to the real tree; a test passes its own, for
 ## the content-comparison fallback below.
 ##
-## ROUND-14 SHOULD-FIX (dbutils#52): three distinct, common, valid server
+## Three distinct, common, valid server
 ## configurations all resolved to null here, forcing stage1 to hard-stop
 ## on every one of them --
 ## 1. /etc/localtime as a plain copy of the zoneinfo file, not a symlink
@@ -108,7 +108,7 @@ function resolve_system_timezone( $etc_timezone = '/etc/timezone', $etc_localtim
 
 ## Appends a PHP statement to a config file's contents, keeping it inside
 ## the existing PHP block rather than landing it after a closing tag.
-## ROUND-14 REGRESSION (dbutils#52 blocking #3): a config.php ending in a
+## A config.php ending in a
 ## closing tag is common (every config newinst wrote before mid-2024, plus
 ## dbinst's own config.php.template) -- blindly appending to EOF lands the
 ## new statement outside any PHP block, where it prints as literal text
@@ -315,8 +315,7 @@ function config_vars( $file, &$why = null ) {
 ## needs to reach exactly those two files -- and no others, on any layout --
 ## does not have to hardcode their paths or guess which glob hits they are;
 ## it gets exactly what this function already found and was going to throw
-## away (round-14 fix, dbutils#52/dbinst#57/newinst#27/webinfo#17: nothing
-## previously had a way to reach these two files at all).
+## away (nothing previously had a way to reach these two files at all).
 function discover_lims_instance_configs( $wwwpath, $us3_home, &$paths = null, &$newus3_configs = null ) {
     $paths = [];
     $newus3_configs = [];
@@ -1151,7 +1150,7 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
     # loaded (mysql_tzinfo_to_sql) to resolve via CONVERT_TZ(); 'SYSTEM' and a
     # numeric offset (e.g. '+05:00', a valid session.time_zone value on its
     # own, never a named zone) still do not and still convert via CONVERT_TZ
-    # below unchanged. ROUND-14 REGRESSION (dbutils#52 blocking #2): the
+    # below unchanged. The
     # named-zone case used to just warn and skip when the tables were not
     # loaded -- true of every host us3lims-roles builds, so stage1+stage2's
     # named zone (dbupgrade/stage1_export_dbinsts.php's resolve_system_

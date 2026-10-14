@@ -616,7 +616,7 @@ function gridctl_daemon_script_pattern() {
     return '#\b(listen|manage-us3-pipe|submitctl|esign)\.php\b#';
 }
 
-## ROUND-14 SHOULD-FIX (dbutils#52). us3_listen_unit_user_outcome() above
+## us3_listen_unit_user_outcome() above
 ## only ever checked the one unit us3lims-roles itself installs
 ## (us3-listen.service) -- a DIFFERENT systemd unit someone else added
 ## with no User= line, a root crontab's @reboot entry, or an /etc/rc.local
@@ -1066,7 +1066,7 @@ function version_at_least( $version, $minimum ) {
                             $minimum, '>=' );
 }
 
-## ROUND-14 REGRESSION (dbutils#52 blocking #1), and what used to be here:
+## What used to be here:
 ## this step used to branch on instance_is_new_under_required_version(),
 ## which read $label's own dbinst checkout VERSION and treated
 ## "already at $required_version" as proof the instance was created fresh
@@ -1077,7 +1077,7 @@ function version_at_least( $version, $minimum ) {
 ## before step 0 ever runs. Both cases read the identical VERSION by the
 ## time this code sees them, so that branch could not actually tell them
 ## apart -- it marked every pre-existing instance "done" with nothing
-## converted. (This replaced round-13's flat, host-level "known instance
+## converted. (This replaced a flat, host-level "known instance
 ## names" file, which had the same class of problem from the other
 ## direction: see UPGRADE-AND-INSTALL-MODEL.md.)
 ##
@@ -1178,7 +1178,7 @@ if ( $missing ) {
 ## step 9 to report by name; this only ever records a boundary for an
 ## instance step 9 can also reach.
 ##
-## Pulled into its own function (round-14 fix, dbutils#52 blocking #1) so
+## Pulled into its own function so
 ## it can be driven directly in a test with a constructed instance tree,
 ## the same way migrations.php's functions already are -- the bug this
 ## replaced (branching on instance_is_new_under_required_version(), which
@@ -1218,8 +1218,7 @@ function run_people_audit_utc_boundaries( $wwwpath, $us3_home ) {
 }
 
 ## Step 8's two sizing/probe checks, pulled into their own functions for the
-## same reason run_people_audit_utc_boundaries() above was (round-14 fix,
-## dbutils#52 blocking #4): so they can be driven directly in a test against
+## same reason run_people_audit_utc_boundaries() above was: so they can be driven directly in a test against
 ## a constructed $cluster_details array, including a metascheduler pool
 ## entry, rather than only through the full script's own output. Both skip
 ## a pool entry via is_metascheduler_pool_entry() -- step 3's own existing
@@ -1262,13 +1261,13 @@ function unprobed_active_clusters( $final_clusters, $probes ) {
 }
 
 if ( $apply ) {
-    ## Counted (round-13 nit, dbutils#52): this runs before step 1's idle
+    ## Counted before step 1's idle
     ## check below, which used to tell an operator "Nothing was changed"
     ## on refusing a busy host -- not true once a real write already
     ## landed moments earlier.
     $boundaries_recorded = run_people_audit_utc_boundaries( $wwwpath, $us3_home );
     $changes += $boundaries_recorded;
-    ## Nit (round-14, dbutils#52): this used to run and change the count
+    ## This used to run and change the count
     ## silently -- every other action in this script reports what it did,
     ## so a run that only did this (every instance already migrated or
     ## connecting) looked identical to one that skipped it entirely.
@@ -1355,8 +1354,8 @@ list( $unit_status, $unit_msg ) = us3_listen_unit_user_outcome(
     $unit_show_rc, $unit_show_props[ 'LoadState' ] ?? '', $unit_show_props[ 'User' ] ?? '' );
 report( $unit_status, $unit_msg );
 
-## -- every OTHER way a gridctl daemon could start as root (round-14
-## should-fix, dbutils#52): a different systemd unit, a root @reboot cron
+## -- every OTHER way a gridctl daemon could start as root: a different
+## systemd unit, a root @reboot cron
 ## entry, or /etc/rc.local. Same "not an idle-host precondition" reasoning
 ## as the us3-listen check just above -- a standing boot-time problem, not
 ## something retrying this run fixes.
@@ -1412,7 +1411,7 @@ if ( $analysis ) {
     report( 'ok', "nothing is running from /opt/ultrascan3/bin" );
 }
 
-## ROUND-14 SHOULD-FIX (dbutils#52). The README's own step 1 ("Stop the web
+## The README's own step 1 ("Stop the web
 ## server... so nothing can write to any LIMS database while the upgrade
 ## runs") is what makes the FIRST --apply after a genuine 4.2.0->4.3.0 pull
 ## safe: step 9's UTC migration and every config rewrite assume no web
@@ -1423,8 +1422,8 @@ if ( $analysis ) {
 ##
 ## Not added to $busy[], unlike the gridctl-service check above: a FAIL
 ## here would also stop every ROUTINE --apply on an already-transitioned,
-## steady-state host (us3lims-roles#24 calls --apply on every playbook
-## run, round-14 fix), where the web server running is normal and
+## steady-state host (us3lims-roles calls --apply on every playbook
+## run), where the web server running is normal and
 ## expected -- nothing left for it to unsafely race once every instance
 ## is already past this host's one-time transition. This script has no
 ## persistent "has this host's transition already happened" signal to
@@ -2656,7 +2655,7 @@ function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_err
 ## missing-privilege error is a note, not a FAIL" reasoning: neither is read
 ## or written at all on a host that never configures a metascheduler
 ## pseudo-cluster entry.
-## ROUND-14 SHOULD-FIX (dbutils#52): $host_has_pool distinguishes "this
+## $host_has_pool distinguishes "this
 ## table is purely additive, nothing on this host needs it yet" (the
 ## runtime-advisory pilot table's own reasoning, genuinely true for a host
 ## with no metascheduler pseudo-cluster configured) from "this host
@@ -2946,7 +2945,7 @@ foreach ( [
     ## either table would be missing CREATE on.
     if ( ! $apply && ! gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
         ## Same escalation as metascheduler_table_create_outcome()'s own
-        ## CREATE-denied branch (round-14 should-fix, dbutils#52): this
+        ## CREATE-denied branch: this
         ## --check-only path never attempts the CREATE at all (it infers
         ## the privilege gap from SHOW GRANTS instead), so it has to
         ## duplicate that one escalation decision rather than call through
@@ -3292,7 +3291,7 @@ if ( !$apply ) {
     ## check above and still take no jobs. These are that gate's own conditions
     ## (web/common/class/jobsubmit.php resource_plan()), applied per active cluster
     ## and read back from the written config rather than from what step 3 proposed.
-    ## ROUND-14 REGRESSION (dbutils#52 blocking #4, with gridctl#35): a
+    ## A
     ## metascheduler pool entry (the same "clusters"-list shape step 3
     ## above already carves out of $active via is_metascheduler_pool_entry()
     ## -- identical to gridctl's own pick_cluster_is_metascheduler_entry())
@@ -3303,7 +3302,7 @@ if ( !$apply ) {
     ## checks below used to treat the pool entry as if it were that real
     ## cluster and fail it on both counts, so --apply exited rc 1 on any
     ## host with a pool while --check (which does not run this block)
-    ## passed -- failing the us3lims-roles#24 play on every pool-enabled
+    ## passed -- failing the roles playbook on every pool-enabled
     ## host, every run.
     $final = config_vars( $global_config, $f_why );
     if ( $final === null ) {
@@ -3369,7 +3368,7 @@ step( "9. Per-instance catch-up (\$common_dir, people_audit UTC migration)" );
 ## instance on this host" means. $instance_paths (by reference) gets the
 ## real file each entry's config was actually read from -- needed below to
 ## write $common_dir back to the right file, not guessed from $wwwpath.
-## $newus3_configs (round-14 fix, dbinst#57/newinst#27/webinfo#17) carries
+## $newus3_configs carries
 ## webinfo's and newinst's own host-level configs -- the entries this
 ## function finds on the same glob pass but discards, since they are not
 ## LIMS tenant databases; run once below, outside the per-instance loop,
@@ -3381,7 +3380,7 @@ run_host_migrations( null, $required_version, $apply,
                       [ 'wwwpath' => $wwwpath, 'newus3_configs' => $newus3_configs ],
                       [ 'webinfo_newinst_common_dir_backfill' ] );
 
-## dbinst_base_common_dir_backfill (round-14 should-fix, dbutils#52): the
+## dbinst_base_common_dir_backfill: the
 ## shared base+overlay base file, fixed once per host -- see the sibling
 ## instance migration above, which defers to this one for a base+overlay
 ## instance instead of trying (and failing) to patch its own overlay.

@@ -1,12 +1,12 @@
 <?php
-## THE BUG this answers (round-14 should-fix, dbutils#52 -- see the sibling
+## THE BUG this answers (see the sibling
 ## instance migration, 4.3.0_common_dir_backfill.php, for why it cannot
 ## reach this). The dbinst schema-v1 base (dbinst-base.v1.php, shared by
-## every base+overlay instance on this host) predates round 12's addition
+## every base+overlay instance on this host) predates the addition
 ## of $common_dir to the base contract on a host that migrated to base+
-## overlay before that round landed. us3lims-roles' own config-lims-
-## dbinst-base role only ever renders this file on first install (round-14
-## fix, same PR) -- so once it exists without common_dir, nothing else
+## overlay before that landed. us3lims-roles' own config-lims-
+## dbinst-base role only ever renders this file on first install -- so
+## once it exists without common_dir, nothing else
 ## ever adds it either, and every overlay instance on this host keeps
 ## losing its shared header/footer/CSS.
 ##
