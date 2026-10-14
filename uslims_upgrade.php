@@ -90,7 +90,10 @@ Steps
     file or no CREATE privilege is a note here, not a failure)
 6 : removes the gridctl cron entries (gridctl.php, and the gridctl_pro/dev names before it)
 7 : installs the Content-Security-Policy as Report-Only unless a policy is already
-    configured; enforcing it is a later step
+    configured (enforcing it is a later step), and installs the /common/{css,images,js}
+    Apache alias us3lims-roles' config-lims-apache role normally provides, unless one is
+    already configured -- without it, every page's CSS/images/JS 404 after a hand upgrade
+    (round 15, dbinst#57 blocking)
 8 : verifies the result, including that every active cluster passes the submission
     sizing gate rather than refusing every job
 9 : migrates each dbinstance's people_audit.created_at to UTC if not already done
@@ -117,6 +120,10 @@ To roll back, with the services stopped:
      /etc/apache2/conf-available/lims-csp.conf (Debian: "a2disconf lims-csp"
      first), and reload Apache -- step 7 never backs this one up, since it is
      new, not rewritten.
+  6. remove step 7's installed /common alias the same way, /etc/httpd/conf.d/
+     lims-common-alias.conf or /etc/apache2/conf-available/lims-common-alias.conf
+     (Debian: "a2disconf lims-common-alias" first), and reload Apache -- also
+     new, not rewritten, and also not backed up.
 
 Nothing else to undo in the database, with three exceptions. Step 5's gfac.runtime_prediction
 (see step 5 above) is optional, pilot-scoped and empty until the pilot is turned on;
@@ -3088,12 +3095,24 @@ function csp_header_line_installs_policy( $line ) {
     );
 }
 
+## Does this one Apache config FILE's contents (already joined across any
+## backslash-continued lines, same as csp_header_line_installs_policy()'s
+## caller does) already alias at least one of /common/css, /common/images
+## or /common/js? Pure, so the detection is pinned down by a real test
+## instead of only ever exercised against whatever a live test host's
+## Apache config happens to contain. One match is enough: a host that
+## templated its own vhost (us3lims-roles' config-lims-apache role) has
+## all three, from the same template, in the same file.
+function common_alias_conf_installs_alias( $contents ) {
+    return (bool) preg_match( '#^\s*Alias\s+/common/(css|images|js)\b#mi', (string) $contents );
+}
+
 ## ------------------------------------------------------------- 7. Content-Security-Policy
 
 ## The pages are written for util/csp's policy. It goes in Report-Only, which
 ## blocks nothing and logs each violation through /csp-report.php; enforcing it is
 ## a later, deliberate change once that log is quiet (util/csp/README.md).
-step( "7. Content-Security-Policy (Report-Only)" );
+step( "7. Apache: Content-Security-Policy (Report-Only) and the /common static-asset alias" );
 
 $csp_policy = __DIR__ . '/util/csp/csp-report-only.conf';
 if ( is_dir( '/etc/httpd/conf.d' ) ) {
@@ -3213,6 +3232,80 @@ if ( $apache === null ) {
         list( $mods ) = capture( 'apachectl -M' );
         if ( strpos( $mods, 'headers_module' ) === false ) {
             report( 'note', "mod_headers is not loaded, so Apache sends no CSP header; enable it" );
+        }
+    }
+}
+
+## THE BUG this answers (round 15, dbinst#57 blocking). A hand upgrade
+## (the procedure above) pulls dbinst's code but never touches Apache's
+## own config -- only us3lims-roles' config-lims-apache role templates the
+## /common/{css,images,js} Alias newinst/webinfo's shared static assets
+## need. A host whose vhost predates that role, or that this script
+## upgrades without the roles ever having run on it, has no such Alias at
+## all: every page's CSS/images/JS 404. Installed the same idempotent,
+## conf.d-snippet way step 7's CSP policy already is just above -- a
+## separate file Apache includes automatically, so this never has to parse
+## or rewrite whatever the host's actual vhost file looks like. $apache
+## (which conf.d/conf-available directory exists) was already resolved
+## above; this runs whether or not the CSP install itself needed anything
+## done, including when $apache was null (no Apache config directory at
+## all) or the CSP policy file was missing, each handled the same way the
+## CSP block does.
+if ( $apache === null ) {
+    report( 'FAIL', "no Apache configuration directory (/etc/httpd/conf.d or /etc/apache2/conf-available)" );
+} else {
+    $common_alias_conf = dirname( $apache[ 'conf' ] ) . '/lims-common-alias.conf';
+    $alias_dump_cmd     = $apache[ 'service' ] === 'apache2' ? 'apache2ctl' : 'httpd';
+    list( $alias_dump_out, $alias_dump_err, $alias_dump_rc ) = capture( "$alias_dump_cmd -t -D DUMP_INCLUDES" );
+
+    if ( $alias_dump_rc !== 0 ) {
+        report( 'FAIL', "$alias_dump_cmd -t -D DUMP_INCLUDES failed; fix Apache's configuration first: "
+                       . reason( $alias_dump_err !== '' ? $alias_dump_err : $alias_dump_out ) );
+    } else {
+        $alias_found = false;
+        foreach ( explode( "\n", $alias_dump_out ) as $line ) {
+            if ( preg_match( '#^\s*\(\S+\)\s+(/\S+)#', $line, $m )
+                 && common_alias_conf_installs_alias( csp_join_continued_directive( @file_get_contents( $m[ 1 ] ) ) ) ) {
+                $alias_found = $m[ 1 ];
+                break;
+            }
+        }
+        if ( $alias_found !== false ) {
+            report( 'ok', "a /common static-asset alias is already configured ($alias_found); left as is" );
+        } else {
+            $common_dir_path = rtrim( common_dir_default( $wwwpath ), '/' );
+            report( 'todo', "install the /common/{css,images,js} alias for $common_dir_path as $common_alias_conf" );
+            if ( $apply && confirm( "Install the /common/{css,images,js} alias and reload {$apache['service']}?" ) ) {
+                $conf = "## Installed by uslims_upgrade.php: serves newinst/webinfo's shared\n"
+                      . "## css/images/js the same way us3lims-roles' config-lims-apache role does.\n";
+                foreach ( [ 'css', 'images', 'js' ] as $subdir ) {
+                    $conf .= "Alias /common/$subdir \"$common_dir_path/$subdir\"\n"
+                           . "<Directory \"$common_dir_path/$subdir\">\n"
+                           . "  Options +FollowSymLinks\n  AllowOverride None\n  Require all granted\n</Directory>\n";
+                }
+                write_file( $common_alias_conf, $conf, false );
+                if ( $apache[ 'enable' ] !== '' ) {
+                    capture( str_replace( 'lims-csp', 'lims-common-alias', $apache[ 'enable' ] ) );
+                }
+                list( $t_out, $t_err, $t_rc ) = capture( 'apachectl configtest' );
+                if ( $t_rc !== 0 ) {
+                    if ( $apache[ 'disable' ] !== '' ) {
+                        capture( str_replace( 'lims-csp', 'lims-common-alias', $apache[ 'disable' ] ) );
+                    }
+                    @unlink( $common_alias_conf );
+                    report( 'FAIL', "Apache rejected the alias, so it was removed: " . reason( $t_err !== '' ? $t_err : $t_out ) );
+                } else {
+                    list( , , $active_rc ) = capture( 'systemctl is-active ' . $apache[ 'service' ] );
+                    if ( $active_rc !== 0 ) {
+                        report( 'ok', "/common alias installed; {$apache['service']} is not"
+                                . " running, so it will take effect the next time it starts" );
+                    } else {
+                        list( $r_out, $r_err, $r_rc ) = capture( 'systemctl reload ' . $apache[ 'service' ] );
+                        report( $r_rc === 0 ? 'done' : 'FAIL', "/common alias installed"
+                                . ( $r_rc === 0 ? "; {$apache['service']} reloaded" : "; reload {$apache['service']} by hand: " . reason( $r_err ) ) );
+                    }
+                }
+            }
         }
     }
 }
