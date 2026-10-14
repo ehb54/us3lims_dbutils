@@ -1030,7 +1030,21 @@ function cleanup_claims( $us3_home ) {
     foreach ( glob( "$us3_home/lims/etc/joblog/*/*/cleanup.claim" ) ?: [] as $claim ) {
         $owner = (int) @file_get_contents( "$claim/owner" );
         $age   = time() - (int) @filemtime( $claim );
-        if ( $age < 3600 || ( $owner && @posix_kill( $owner, 0 ) ) ) {
+        ## Round 15 nit, dbutils#52: "under an hour old" used to block on
+        ## its own, even for a claim whose own recorded owner is
+        ## confirmed dead (ran: a 67-second-old claim, from a monitor that
+        ## crashed moments after creating it, still blocked --check for
+        ## up to an hour). A recorded owner's liveness is authoritative
+        ## when it is checkable at all: ESRCH (errno 3, "No such
+        ## process") means genuinely dead, regardless of age; any other
+        ## posix_kill() failure (most commonly EPERM, a different account)
+        ## proves nothing either way, so the age window still decides, as
+        ## it always did when there is no owner recorded to check at all.
+        $owner_alive = false;
+        if ( $owner ) {
+            $owner_alive = @posix_kill( $owner, 0 ) || posix_get_last_error() !== 3;
+        }
+        if ( $owner_alive || ( !$owner && $age < 3600 ) ) {
             $claims[] = basename( dirname( $claim ) ) . ( $owner ? " (pid $owner)" : '' );
         }
     }
