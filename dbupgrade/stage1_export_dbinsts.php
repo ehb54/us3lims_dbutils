@@ -260,9 +260,11 @@ foreach ( $dbnames_used as $db => $val ) {
     if ( $from_tz === 'SYSTEM' ) {
         $resolved = resolve_system_timezone();
         if ( $resolved === null ) {
+            ## Round 15 nit, dbutils#52: the escaped \$db printed the
+            ## literal word "$db", not this dbinstance's actual name.
             error_exit( "this host's own OS time zone could not be resolved (neither"
                       . " /etc/timezone nor /etc/localtime gave a usable zone name);"
-                      . " \$db's people_audit rows cannot be exported safely without it"
+                      . " $db's people_audit rows cannot be exported safely without it"
                       . " -- set a named zone explicitly (not 'SYSTEM') for this MySQL"
                       . " session and rerun" );
         }
