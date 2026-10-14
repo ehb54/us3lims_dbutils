@@ -225,6 +225,18 @@ function is_sql_identifier( $value ) {
     return is_string( $value ) && preg_match( '/^[A-Za-z0-9_$]+$/', $value ) === 1;
 }
 
+## A cluster_details[...]['localhost'] flag, parsed the same way a human
+## reads it (round-15 nit, dbutils#52, matching common#33's own
+## remote_exec::is_local() fix for the identical mistake): a bare PHP bool
+## is trusted as-is, but plain `!empty()`/`!` treats the STRING 'false' as
+## truthy (PHP only treats an empty string/'0' as falsy), so a config
+## written as 'localhost' => 'false' -- an easy mistake, since every other
+## boolean-ish setting in the template is a bare true/false, not a quoted
+## one -- was silently read as local.
+function cluster_entry_is_local( $localhost ) {
+    return is_string( $localhost ) ? filter_var( $localhost, FILTER_VALIDATE_BOOLEAN ) : (bool) $localhost;
+}
+
 ## Fatal, for code with no sensible way to skip and keep going (a CLI
 ## option value, one explicit target). A per-instance loop over several
 ## dbinstances should call is_sql_identifier() itself instead and report-

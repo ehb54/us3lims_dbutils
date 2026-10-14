@@ -1504,8 +1504,9 @@ if ( $getrundir || $getrun || $copyrun ) {
             ## step 4) -- --getrun/--copyrun never read it at all, so they
             ## always went over ssh even for the local entry, failing with
             ## "Host key verification failed" on a host built without ssh
-            ## to itself.
-            $local   = !empty( $v[ 'localhost' ] );
+            ## to itself. cluster_entry_is_local(), not !empty(): round 15
+            ## nit, dbutils#52 -- !empty() reads the string 'false' as local.
+            $local   = cluster_entry_is_local( $v[ 'localhost' ] ?? false );
             break;
         }
     }
@@ -1680,7 +1681,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     $dlogin   = $cluster_details[ $copyrun ]['login'];
     ## Same reasoning as $local above,
     ## for the --copyrun destination cluster.
-    $dlocal   = !empty( $cluster_details[ $copyrun ][ 'localhost' ] );
+    $dlocal   = cluster_entry_is_local( $cluster_details[ $copyrun ][ 'localhost' ] ?? false );
 
     ## mkdir workdir/../test/db/reqid
     ## $dlogin/$dworkdir quoted: both are config-derived
