@@ -877,20 +877,52 @@ function dbutils_owned_tables() {
 ## their own 'ok' vs 'todo' reporting without duplicating this query (each
 ## used to run it a second time, inline, before ever calling the migration
 ## function at all).
+## Content-driven, not marker-driven (round 15, dbutils#52 blocking): the
+## separate _dbutils_people_audit_utc_migrated table (still written by
+## mark_people_audit_utc_migration_done() below, kept for history) cannot
+## survive every path that can legitimately touch people_audit without
+## touching it too -- a partial restore of a pre-upgrade backup into an
+## already-migrated database overwrites people_audit's rows back to local
+## time but, by construction, carries no marker-table data of its own to
+## restore alongside them (the backup predates the marker table existing
+## at all), so the marker alone kept saying "done" forever after a restore
+## like that. Asking people_audit's own created_at_utc flag (set per row,
+## at write time, by whichever code wrote it -- see
+## ensure_people_audit_utc_flag_column() and dbinst's write_audit_row())
+## whether anything is still unconverted is the one signal that travels
+## with the data it describes instead of living beside it: a restore that
+## reverts the rows reverts (or entirely drops, if the restored table
+## predates the column) this flag right along with them.
 function people_audit_utc_migration_done( $db_handle, $db ) {
     sql_identifier_or_die( $db );
-    $marker = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE '_dbutils_people_audit_utc_migrated'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
-    if ( !$marker || mysqli_num_rows( $marker ) === 0 ) {
-        return false;
+
+    $exists = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE 'people_audit'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+    if ( !$exists || mysqli_num_rows( $exists ) === 0 ) {
+        return true; # nothing to convert, ever, until the table exists
     }
-    ## An actual marker ROW, not just the table existing: stage2 now has to pre-create this table empty, before
-    ## importing the dump (see stage2_import_dbinsts.php's own comment), so
-    ## the table existing no longer means a marker row was ever written --
-    ## checking table existence alone made every freshly-imported dbinstance
-    ## read as "already migrated" before stage2 had even run the migration,
-    ## so it never ran at all.
-    $row = mysqli_query( $db_handle, "SELECT 1 FROM $db._dbutils_people_audit_utc_migrated LIMIT 1" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
-    return (bool) ( $row && mysqli_num_rows( $row ) > 0 );
+
+    if ( !ensure_people_audit_utc_flag_column( $db_handle, $db ) ) {
+        return false; # can't even see the real signal; don't claim done
+    }
+
+    $res = mysqli_query( $db_handle, "SELECT COUNT(*) AS n FROM $db.people_audit" // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+                        . " WHERE created_at_utc = 0 AND created_at != '0000-00-00 00:00:00'" );
+    $row = $res ? mysqli_fetch_assoc( $res ) : null;
+    return $row ? (int) $row[ 'n' ] === 0 : false;
+}
+
+## Idempotent and cheap once the column exists (ADD COLUMN IF NOT EXISTS
+## is a fast metadata-only check on MariaDB 10.0.2+, well below this
+## project's 10.3 target) -- called defensively from both sides that need
+## the column to exist before touching it. dbinst's write_audit_row()
+## cannot require this file under php-fpm (see create_instance.php's own
+## identical note about the marker table) and so duplicates this exact
+## statement locally; every reader/writer here calls it too, so neither
+## side has to assume the other has already run, regardless of ordering.
+function ensure_people_audit_utc_flag_column( $db_handle, $db ) {
+    sql_identifier_or_die( $db );
+    return (bool) mysqli_query( $db_handle, "ALTER TABLE $db.people_audit" // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+                               . " ADD COLUMN IF NOT EXISTS created_at_utc TINYINT(1) NOT NULL DEFAULT 0" );
 }
 
 ## Pulled out so stage2_import_dbinsts.php can create this table right after
@@ -954,8 +986,18 @@ function mark_people_audit_utc_migration_done( $db_handle, $db, $note, $max_audi
 ## saw already written the moment it ran, or null if nothing ever recorded
 ## one here (stage2, migrate_people_audit_utc.php run standalone, or an
 ## in-place host upgraded before uslims_upgrade.php recorded a boundary at
-## all). migrate_people_audit_created_at_to_utc() only converts rows at or
-## below this when it is set -- see the comment there for why.
+## all).
+##
+## Round 15, dbutils#52 blocking: migrate_people_audit_created_at_to_utc()
+## no longer uses this value to decide which rows to convert -- it reads
+## created_at_utc per row instead, since the boundary is only ever a
+## snapshot of "the moment this run happened to start," and a row genuinely
+## written by already-upgraded code before that moment (a stale password
+## retried, a server left up during the pull, a restore) got an auditID at
+## or below it and was wrongly reconverted. migrate_people_audit_utc.php's
+## own refuse-without-a-boundary check still reads this directly, and step
+## 0 still records and reports it, so it remains live -- just no longer
+## load-bearing for which rows get converted.
 function people_audit_utc_boundary( $db_handle, $db ) {
     sql_identifier_or_die( $db );
     $has = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE '_dbutils_people_audit_utc_boundary'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
@@ -1058,21 +1100,18 @@ function record_people_audit_utc_boundary( $db_handle, $db ) {
 ## original behavior of reading $db_handle's own session.time_zone.
 ##
 ## @return bool true for a real conversion, or a legitimate no-op already
-##              marked done (no people_audit table, an empty one, or a
-##              boundary of 0 -- every case a caller should treat as
-##              success); false only for a genuine skip that converted and
-##              marked nothing (zone tables not loaded, the marker table
-##              could not be created, or the UPDATE itself failed) -- a
-##              caller used to have no way to tell this apart from success,
-##              so uslims_upgrade.php step 9 reported "1 change(s) made"
-##              right next to its own WARNING about the same skip.
+##              marked done (no people_audit table, or no row with
+##              created_at_utc still 0 -- every case a caller should treat
+##              as success); false only for a genuine skip that converted
+##              nothing and marked nothing, rolled back as one unit (zone
+##              tables not loaded, an unresolvable zone identifier, the
+##              marker table or flag column could not be created, or the
+##              UPDATE itself failed) -- a caller used to have no way to
+##              tell this apart from success, so uslims_upgrade.php step 9
+##              reported "1 change(s) made" right next to its own WARNING
+##              about the same skip.
 function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = null ) {
     sql_identifier_or_die( $db );
-
-    if ( people_audit_utc_migration_done( $db_handle, $db ) ) {
-        echo "$db.people_audit was already migrated to UTC previously; skipping\n";
-        return true;
-    }
 
     $exists = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE 'people_audit'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
     if ( !$exists || mysqli_num_rows( $exists ) === 0 ) {
@@ -1085,30 +1124,13 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
         return true;
     }
 
-    $count_res = mysqli_query( $db_handle, "SELECT COUNT(*) AS n FROM $db.people_audit" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
-    $count_row = $count_res ? mysqli_fetch_assoc( $count_res ) : null;
-    if ( !$count_row || (int) $count_row[ 'n' ] === 0 ) {
-        # Empty now, but not forever: every row written here from this
-        # point on is already UTC, so this instance is just as "done" as
-        # one that genuinely had pre-UTC rows converted. Without marking
-        # it, the next run (once it has 4.3.0-written UTC rows) would see
-        # no marker and shift them.
-        echo "$db.people_audit is empty; nothing to migrate to UTC\n";
-        mark_people_audit_utc_migration_done( $db_handle, $db, 'n/a (table was empty)' );
-        return true;
-    }
-
-    # A boundary of 0 means the table was empty when record_people_audit_utc_boundary()
-    # ran, so every row present now postdates it and is already UTC (same
-    # reasoning as the empty-table case just above) -- skip the UPDATE and
-    # the time-zone detection below entirely rather than run both for
-    # nothing, and risk a spurious "zone tables not loaded" warning over
-    # rows this would convert zero of anyway.
-    $boundary = people_audit_utc_boundary( $db_handle, $db );
-    if ( $boundary === 0 ) {
-        echo "$db.people_audit had no rows when the UTC boundary was recorded; all"
-           . " {$count_row['n']} row(s) present now postdate it and are already UTC\n";
-        mark_people_audit_utc_migration_done( $db_handle, $db, 'n/a (all rows postdate the recorded boundary)', 0 );
+    # Content-driven, not timing-driven (round 15, dbutils#52 blocking):
+    # people_audit_utc_migration_done() now answers from the data itself
+    # (created_at_utc per row), not from a side marker a restore can leave
+    # stale, so it is safe to trust here on every call, not just the first.
+    if ( people_audit_utc_migration_done( $db_handle, $db ) ) {
+        echo "$db.people_audit has no rows still needing UTC conversion; marking done\n";
+        mark_people_audit_utc_migration_done( $db_handle, $db, 'n/a (nothing pending)' );
         return true;
     }
 
@@ -1162,20 +1184,18 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
     # instead, never touching mysql.time_zone_name.
     $is_named_zone = $from_tz !== 'SYSTEM' && !preg_match( '/^[+-]\d{2}:\d{2}$/', $from_tz );
 
-    # Rows above the boundary (if one was recorded -- see
-    # record_people_audit_utc_boundary()) already existed after dbinst's
-    # own already-upgraded code could have started writing them in UTC, so
-    # converting them too would shift an already-correct row. $boundary is
-    # always an int here (people_audit_utc_boundary() casts it, or this
-    # function already returned above when it was exactly 0), so this is
-    # safe to interpolate directly.
-    $bound_clause = $boundary !== null ? " AND auditID <= $boundary" : '';
+    # Round 15, dbutils#52 blocking: selection is by created_at_utc, not by
+    # auditID position -- a row this flag marks 1 (already written in UTC,
+    # whenever that happened) is left alone regardless of where it falls
+    # relative to any boundary snapshot; a row marked 0 is converted
+    # regardless of how it got that way (an original pre-upgrade row, or
+    # one a restore put back). See people_audit_utc_migration_done()'s own
+    # comment for why this, and not the boundary, is the signal that
+    # survives a partial restore.
+    $flag_clause = " AND created_at_utc = 0";
 
     $from_tz_esc = mysqli_real_escape_string( $db_handle, $from_tz );
-    echo "Migrating $db.people_audit.created_at from '$from_tz' to UTC"
-       . " (" . $count_row[ 'n' ] . " row(s)"
-       . ( $bound_clause !== '' ? ", up to auditID $boundary; later rows are presumed already UTC" : '' )
-       . ")\n";
+    echo "Migrating $db.people_audit.created_at from '$from_tz' to UTC (rows not yet flagged created_at_utc)\n";
 
     # Created (or confirmed) here, before the conversion below, not after:
     # mark_people_audit_utc_migration_done() creates this same table again
@@ -1186,13 +1206,24 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
     # Checked up front instead: if the marker table cannot be created, the
     # conversion is skipped entirely rather than left unrecorded. Low risk
     # in practice (newinst/stage2 grant this account ALL), but a real gap.
-    if ( !create_people_audit_utc_migration_marker_table( $db_handle, $db ) ) {
+    # ensure_people_audit_utc_flag_column() is equally load-bearing here now
+    # (the UPDATEs below set it), so a failure there skips the same way.
+    if ( !create_people_audit_utc_migration_marker_table( $db_handle, $db )
+         || !ensure_people_audit_utc_flag_column( $db_handle, $db ) ) {
         echo "WARNING: $db.people_audit: could not create or confirm the UTC migration"
-           . " marker table (" . mysqli_error( $db_handle ) . "); skipping the conversion"
-           . " rather than convert rows this account cannot then mark as done --"
+           . " marker table or flag column (" . mysqli_error( $db_handle ) . "); skipping the"
+           . " conversion rather than convert rows this account cannot then mark as done --"
            . " grant CREATE and rerun.\n";
         return false;
     }
+
+    # Atomic (round 15 should-fix, dbutils#52): a failure part-way used to
+    # leave some rows converted with no marker, so the next run shifted
+    # them a second time. ALTER TABLE above already committed on its own
+    # (DDL always does) before this starts, so it is not part of the
+    # all-or-nothing unit; everything from here on is.
+    mysqli_begin_transaction( $db_handle );
+    $ok = true;
 
     if ( $is_named_zone ) {
         # Per-row, in PHP: DateTimeZone already knows this zone (resolve_
@@ -1202,16 +1233,32 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
         # handled correctly per row (each row's own local instant resolves
         # its own offset), with the same accepted fall-back-hour ambiguity
         # as the CONVERT_TZ path below (README).
+        #
+        # new DateTimeZone() below used to run outside any try/catch (round
+        # 15 should-fix, dbutils#52): an unrecognized zone identifier in a
+        # stage2 import package throws ValueError/Exception uncaught, and by
+        # then stage2's caller has already dropped and recreated every
+        # dbinstance in the import -- every instance after this one in the
+        # list is lost over one bad package. Caught the same non-fatal way
+        # every other failure in this function already is.
+        try {
+            $zone = new DateTimeZone( $from_tz );
+        } catch ( Throwable $e ) {
+            echo "WARNING: $db.people_audit: '$from_tz' is not a resolvable time zone ("
+               . $e->getMessage() . "); skipping the conversion -- this dbinstance's data is"
+               . " otherwise fully imported.\n";
+            mysqli_rollback( $db_handle );
+            return false;
+        }
         $select_res = mysqli_query( $db_handle, // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
             "SELECT auditID, created_at FROM $db.people_audit"
-          . " WHERE created_at != '0000-00-00 00:00:00'" . $bound_clause );
+          . " WHERE created_at != '0000-00-00 00:00:00'" . $flag_clause );
         $rows = [];
         while ( $select_res && ( $row = mysqli_fetch_assoc( $select_res ) ) ) {
             $rows[] = $row;
         }
         $unresolved = 0;
-        $zone = new DateTimeZone( $from_tz );
-        $utc  = new DateTimeZone( 'UTC' );
+        $utc = new DateTimeZone( 'UTC' );
         foreach ( $rows as $row ) {
             try {
                 $local = new DateTime( $row[ 'created_at' ], $zone );
@@ -1225,13 +1272,14 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
             $converted = $local->format( 'Y-m-d H:i:s' );
             $update = mysqli_query( $db_handle, // NOSONAR $db is validated above by sql_identifier_or_die(); $converted is a formatted DateTime, not user input
                 "UPDATE $db.people_audit SET created_at = '"
-                . mysqli_real_escape_string( $db_handle, $converted ) . "' WHERE auditID = "
+                . mysqli_real_escape_string( $db_handle, $converted ) . "', created_at_utc = 1 WHERE auditID = "
                 . (int) $row[ 'auditID' ] );
             if ( !$update ) {
                 echo "WARNING: $db.people_audit: could not convert created_at to UTC for"
                    . " auditID {$row['auditID']} (" . mysqli_error( $db_handle ) . "); this"
                    . " dbinstance's data is otherwise fully imported -- convert this row by hand.\n";
-                return false;
+                $ok = false;
+                break;
             }
         }
     } else {
@@ -1242,10 +1290,10 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
         # the WHERE clause below excludes any such row up front instead of
         # letting the UPDATE attempt it at all.
         $cmd = "UPDATE $db.people_audit"
-             . " SET created_at = CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' )"
+             . " SET created_at = CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' ), created_at_utc = 1"
              . " WHERE created_at != '0000-00-00 00:00:00'"
              . "   AND CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' ) IS NOT NULL"
-             . $bound_clause;
+             . $flag_clause;
         $res = mysqli_query( $db_handle, $cmd );
         if ( !$res ) {
             # Not error_exit(): stage2's caller has already dropped and
@@ -1258,40 +1306,41 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
             echo "WARNING: $db.people_audit: could not convert created_at to UTC ("
                . mysqli_error( $db_handle ) . "); this dbinstance's data is otherwise fully"
                . " imported -- convert people_audit by hand once the time zone is resolvable.\n";
-            return false;
+            $ok = false;
+        } else {
+            # Rows excluded above (zero dates, and any CONVERT_TZ() genuinely
+            # cannot resolve) are untouched, not corrupted -- still worth a
+            # warning so an operator knows to look.
+            $unresolved_res = mysqli_query( $db_handle, // NOSONAR $db is validated above by sql_identifier_or_die(); $from_tz_esc is mysqli_real_escape_string()'d
+                "SELECT COUNT(*) AS n FROM $db.people_audit WHERE created_at != '0000-00-00 00:00:00'"
+              . "   AND CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' ) IS NULL"
+              . $flag_clause );
+            $unresolved_row = $unresolved_res ? mysqli_fetch_assoc( $unresolved_res ) : null;
+            $unresolved = $unresolved_row ? (int) $unresolved_row[ 'n' ] : 0;
         }
-
-        # Rows excluded above (zero dates, and any CONVERT_TZ() genuinely
-        # cannot resolve) are untouched, not corrupted -- still worth a
-        # warning so an operator knows to look.
-        $unresolved_res = mysqli_query( $db_handle, // NOSONAR $db is validated above by sql_identifier_or_die(); $from_tz_esc is mysqli_real_escape_string()'d
-            "SELECT COUNT(*) AS n FROM $db.people_audit WHERE created_at != '0000-00-00 00:00:00'"
-          . "   AND CONVERT_TZ( created_at, '$from_tz_esc', '+00:00' ) IS NULL"
-          . $bound_clause );
-        $unresolved_row = $unresolved_res ? mysqli_fetch_assoc( $unresolved_res ) : null;
-        $unresolved = $unresolved_row ? (int) $unresolved_row[ 'n' ] : 0;
     }
+
+    if ( !$ok ) {
+        mysqli_rollback( $db_handle );
+        return false;
+    }
+
     if ( $unresolved > 0 ) {
         echo "WARNING: $db.people_audit: $unresolved row(s) could not be resolved to UTC from"
            . " '$from_tz' and were left unchanged -- verify by hand.\n";
     }
 
-    # $boundary when one was recorded (rows above it were never touched,
-    # so it is exactly the highest auditID this call could have converted);
-    # otherwise this converted every resolvable row, so the table's own
-    # current max is the same thing.
-    if ( $boundary !== null ) {
-        $max_audit_id = $boundary;
-    } else {
-        $max_res = mysqli_query( $db_handle, "SELECT MAX( auditID ) AS max_id FROM $db.people_audit" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
-        $max_row = $max_res ? mysqli_fetch_assoc( $max_res ) : null;
-        $max_audit_id = ( $max_row && $max_row[ 'max_id' ] !== null ) ? (int) $max_row[ 'max_id' ] : null;
-    }
+    $max_res = mysqli_query( $db_handle, "SELECT MAX( auditID ) AS max_id FROM $db.people_audit" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+    $max_row = $max_res ? mysqli_fetch_assoc( $max_res ) : null;
+    $max_audit_id = ( $max_row && $max_row[ 'max_id' ] !== null ) ? (int) $max_row[ 'max_id' ] : null;
 
     # Marker travels with the dbinstance itself (see the function-level
     # comment above), so a later migration attempt against this same
     # dbinstance -- by either caller -- skips it instead of shifting
-    # already-correct rows again.
+    # already-correct rows again. Part of the same transaction as the
+    # conversion itself, so a crash between the UPDATE and this INSERT
+    # cannot leave rows converted with nothing recorded either.
     mark_people_audit_utc_migration_done( $db_handle, $db, $from_tz, $max_audit_id );
+    mysqli_commit( $db_handle );
     return true;
 }

@@ -126,22 +126,29 @@ Step 5 also creates gfac.metascheduler_decision and gfac.cluster_status_nudge (g
 pick_cluster.php tables) the same optional, purely-additive way -- empty and unused unless
 a metascheduler pseudo-cluster is actually configured; dropping them, if ever wanted, is
 also a separate operator step, not part of rolling back this script.
-Step 9 (see step 9 above) rewrites people_audit.created_at in every dbinstance it migrates
-and adds two marker tables there (_dbutils_people_audit_utc_migrated,
-_dbutils_people_audit_utc_boundary); this is a one-time, one-direction conversion with no
-undo step of its own -- a pre-migration backup of each dbinstance's own database is
-the only way back if a conversion turns out to be wrong for some instance.
+Step 9 (see step 9 above) rewrites people_audit.created_at in every dbinstance it migrates,
+setting a created_at_utc flag on each row it converts (and on every row dbinst's own
+write_audit_row() has written UTC from the start); it also adds a marker table there
+(_dbutils_people_audit_utc_migrated) recording when and from which zone, kept for history.
+This is a one-time, one-direction conversion with no undo step of its own -- a pre-migration
+backup of each dbinstance's own database is the way back if a conversion turns out to be
+wrong for some instance. Restoring one is self-correcting rather than something to verify by
+hand: dbutils#52 round 15 made the "is this row already UTC" question read from the row's own
+created_at_utc flag, not from the marker table or a boundary snapshot, so a restored row (which
+carries no such flag, win or lose, since the column postdates any pre-migration backup) reads as
+unconverted again on the very next run and gets converted correctly, with no dependency on
+whether the marker table or boundary table happened to survive the restore too.
 
-Step 0 (run before step 9, before steps 1-8 do anything else) records a boundary --
-the highest people_audit.auditID already written at the moment this run started -- in
-its own table (_dbutils_people_audit_utc_boundary), used but never undone: step 9 only
-ever converts rows at or below it, on the assumption that everything above it was
-already written in UTC by dbinst's already-upgraded code. Rolling back to a release
-that writes local time again, then running this instance for a while before ever
-retrying the upgrade, breaks that assumption: a local-time row written during that
-rollback window gets an auditID above the boundary (which stays fixed at its original
-value) and so reads as already-UTC on the next run -- it is never converted, and
-stays wrong unless corrected by hand.
+Step 0 (run before step 9, before steps 1-8 do anything else) records a boundary -- the highest
+people_audit.auditID already written at the moment this run started -- in its own table
+(_dbutils_people_audit_utc_boundary). This is informational only as of round 15 (which rows
+step 9 actually converts no longer depends on it at all); it remains for migrate_people_audit_
+utc.php's own standalone refuse-without-a-boundary check and for step 0's report. Rolling back to
+a release that writes local time again, then running this instance for a while before ever
+retrying the upgrade, is likewise self-correcting now: a local-time row written during that
+rollback window has no created_at_utc flag set (old code never sets it) and so correctly reads
+as still needing conversion on the next run, regardless of its auditID or how long the rollback
+window was open.
 
 Options
 
