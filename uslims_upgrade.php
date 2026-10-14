@@ -626,8 +626,16 @@ function us3_listen_unit_user_outcome( $rc, $loadState, $user ) {
 
 ## A gridctl daemon script's basename, matched against an ExecStart=/cron/
 ## rc.local line.
+## services.php start is the documented launcher (uslims_upgrade.php --help's
+## own procedure, step 4: "Restart services") for all four daemons at once --
+## round 15 should-fix, dbutils#52: an entry naming it directly (a systemd
+## unit, a root @reboot cron line, rc.local) started every gridctl daemon
+## exactly as much as one naming listen.php or esign.php by name, but none
+## of those checks ever matched it, since it names none of the four scripts
+## literally. \bstart\b distinguishes it from "services.php stop", which
+## starts nothing.
 function gridctl_daemon_script_pattern() {
-    return '#\b(listen|manage-us3-pipe|submitctl|esign)\.php\b#';
+    return '#\b(listen|manage-us3-pipe|submitctl|esign)\.php\b|\bservices\.php\b[^\n]*\bstart\b#';
 }
 
 ## us3_listen_unit_user_outcome() above
@@ -646,8 +654,17 @@ function gridctl_daemon_script_pattern() {
 ## line from /etc/crontab and /etc/cron.d/*, concatenated; $rc_local is
 ## /etc/rc.local's contents, or '' if it does not exist.
 ##
+## $root_crontab: root's own personal crontab (`crontab -l -u root`), round
+## 15 should-fix, dbutils#52 -- $cron_lines (the SYSTEM crontab, /etc/crontab
+## and /etc/cron.d/*) was the only cron source ever checked here, but a
+## line in root's own personal crontab runs as root unconditionally, with
+## no user column of its own to read (cron already knows whose crontab it
+## is), and nothing read that file at all. Checked separately, every
+## matching line counts, not just @reboot ones: unlike the system crontab,
+## there is no OTHER user a personal crontab's line could belong to for
+## this one to rule out.
 ## @return list<string> one message per risk found; empty when none are.
-function other_root_start_risks( array $service_units, array $cron_lines, $rc_local ) {
+function other_root_start_risks( array $service_units, array $cron_lines, $rc_local, $root_crontab = '' ) {
     $pattern = gridctl_daemon_script_pattern();
     $risks   = [];
 
@@ -673,6 +690,15 @@ function other_root_start_risks( array $service_units, array $cron_lines, $rc_lo
              && preg_match( $pattern, $m[ 2 ] )
              && $m[ 1 ] === 'root' ) {
             $risks[] = "a root \@reboot cron entry starts a gridctl daemon: " . trim( $line );
+        }
+    }
+
+    foreach ( explode( "\n", (string) $root_crontab ) as $line ) {
+        if ( preg_match( '/^\s*#/', $line ) || trim( $line ) === '' ) {
+            continue;
+        }
+        if ( preg_match( $pattern, $line ) ) {
+            $risks[] = "an entry in root's own crontab starts a gridctl daemon: " . trim( $line );
         }
     }
 
@@ -1392,7 +1418,9 @@ foreach ( array_merge( [ '/etc/crontab' ], glob( '/etc/cron.d/*' ) ?: [] ) as $c
     }
 }
 $rc_local = (string) ( @file_get_contents( '/etc/rc.local' ) ?: '' );
-$other_risks = other_root_start_risks( $other_service_units, $cron_lines, $rc_local );
+list( $root_crontab_out, , $root_crontab_rc ) = capture( 'crontab -l -u root' );
+$other_risks = other_root_start_risks( $other_service_units, $cron_lines, $rc_local,
+                                        $root_crontab_rc === 0 ? $root_crontab_out : '' );
 if ( $other_risks ) {
     foreach ( $other_risks as $risk ) {
         report( 'FAIL', $risk );
