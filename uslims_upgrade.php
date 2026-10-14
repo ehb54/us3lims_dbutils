@@ -689,7 +689,10 @@ function other_root_start_risks( array $service_units, array $cron_lines, $rc_lo
         if ( preg_match( '/^\s*@reboot\s+(\S+)\s+(.*)$/', $line, $m )
              && preg_match( $pattern, $m[ 2 ] )
              && $m[ 1 ] === 'root' ) {
-            $risks[] = "a root \@reboot cron entry starts a gridctl daemon: " . trim( $line );
+            ## Round 15 nit, dbutils#52: \@ is not a recognized escape in a
+            ## double-quoted PHP string, so the backslash printed literally
+            ## ("a root \@reboot cron entry...") instead of being dropped.
+            $risks[] = "a root @reboot cron entry starts a gridctl daemon: " . trim( $line );
         }
     }
 
