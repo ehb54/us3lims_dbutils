@@ -2918,13 +2918,20 @@ if ( !is_file( $runtime_table_sql ) ) {
                 report( $status, $message );
             }
         }
-    } elseif ( ! $apply && ! gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
+    } elseif ( ! gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
         ## --check never runs CREATE, so without this probe a roles-built
         ## gfac account (SELECT/INSERT/UPDATE/DELETE only) reports "1
-        ## change(s) would be made" on every single --check, forever --
-        ## --apply could never actually create this table either, it would
-        ## just downgrade to the same 'note' below. Read-only (SHOW GRANTS),
-        ## so --check still never touches the database.
+        ## change(s) would be made" on every single --check, forever.
+        ## Read-only (SHOW GRANTS), so --check still never touches the
+        ## database. Round 15 nit, dbutils#52: this used to gate on
+        ## "!$apply" too, so --apply skipped this short-circuit, printed a
+        ## "[todo] create gfac.runtime_prediction" --check never showed for
+        ## the same host, attempted the CREATE anyway, and downgraded to
+        ## this exact same 'note' once the attempt failed for the same
+        ## reason this probe already knew about -- a redundant extra line,
+        ## not a different outcome. Unconditional now: the probe is
+        ## reliable enough for --check alone to depend on, so it is
+        ## reliable enough for --apply to skip the doomed attempt on too.
         report( 'note', "gfac account lacks privilege to create the optional runtime advisory"
               . " pilot table (common#31); an account with CREATE on gfac can run it by hand:"
               . " mysql gfac < $runtime_table_sql" );
@@ -2990,13 +2997,18 @@ foreach ( [
     ## nothing runtime-prediction-specific in it, and a roles-built gfac
     ## account (SELECT/INSERT/UPDATE/DELETE only) is exactly the same account
     ## either table would be missing CREATE on.
-    if ( ! $apply && ! gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
+    if ( ! gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
         ## Same escalation as metascheduler_table_create_outcome()'s own
         ## CREATE-denied branch: this
-        ## --check-only path never attempts the CREATE at all (it infers
+        ## path never attempts the CREATE at all (it infers
         ## the privilege gap from SHOW GRANTS instead), so it has to
         ## duplicate that one escalation decision rather than call through
         ## a function shaped around an actual attempt's errno/error.
+        ## Round 15 nit, dbutils#52: this used to gate on "!$apply" too
+        ## (same bug, same fix, as the runtime_prediction block above) --
+        ## --apply printed a "[todo] create gfac.$metascheduler_table"
+        ## --check never showed, attempted a CREATE already known to fail,
+        ## and reported the exact same FAIL/note below anyway.
         if ( !empty( $pools ) ) {
             report( 'FAIL', "gfac.$metascheduler_table cannot be created (gfac account lacks"
                   . " privilege), and this host has a metascheduler pool configured --"
