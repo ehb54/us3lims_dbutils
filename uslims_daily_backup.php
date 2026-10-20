@@ -65,6 +65,8 @@ include "utility.php";
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
+$rsync_local = isset( $rsync_local ) && $rsync_local;
+
 $errors = "";
 if ( !isset( $backup_logs ) ) {
     $errors .= "\$backup_logs is not set in $use_config_file\n";
@@ -85,7 +87,7 @@ if ( !isset( $backup_rsync ) ) {
         if ( !isset( $rsync_user ) ) {
             $errors .= "\$rsync_user is not set in $use_config_file\n";
         }
-        if ( !isset( $rsync_host ) ) {
+        if ( !$rsync_local && !isset( $rsync_host ) ) {
             $errors .= "\$rsync_host is not set in $use_config_file\n";
         }
         if ( !isset( $rsync_path ) ) {
@@ -125,6 +127,9 @@ if ( isset( $backup_df_check ) && count( $backup_df_check ) ) {
 
 if ( $backup_rsync &&
      $backup_rdiff ) {
+    if ( $rsync_local ) {
+        $errors .= "\$backup_rdiff can not be used with \$rsync_local, the deltas are applied by ssh on \$rsync_host; set \$backup_rdiff = false in $use_config_file\n";
+    }
     if ( !file_exists( $rdiff_bin ) ) {
         $errors .= "\$backup_rsync && \$backup_rdiff set but \$rdiff_bin ($rdiff_bin) does not exist\n";
     }
@@ -551,8 +556,8 @@ Rsync destination  %s:%s
             ,$backup_host
             ,$rsync_logs
             ,$rsync_user
-            ,$rsync_host
-            ,$rsync_path
+            ,$rsync_local ? $backup_host : $rsync_host
+            ,$rsync_local ? "$rsync_path (local)" : $rsync_path
             );
     }
     $summary_report .= 

@@ -525,6 +525,51 @@ function backup_rsync_run_cmd( $cmd, $die_if_exit = true ) {
     return implode( "\n", $res ) . "\n";
 }
 
+## path helpers for the rsyncs: paths are compared as written, symlinks are not resolved
+
+function backup_rsync_clean_path( $path ) {
+    return rtrim( preg_replace( '~/+~', '/', $path ), '/' );
+}
+
+function backup_rsync_path_is_under( $path, $dir ) {
+    $path = backup_rsync_clean_path( $path );
+    $dir  = backup_rsync_clean_path( $dir );
+    return $path == $dir || strncmp( $path, "$dir/", strlen( $dir ) + 1 ) == 0;
+}
+
+## exclude patterns for each of $paths that is one of the rsync $sources or lies under one
+## rsync anchors a pattern starting with '/' at the root of the transfer, not at the filesystem root:
+## that is the parent of a source written without a trailing slash, or the source itself when written with one
+## e.g. source /srv gives /srv/data/sqldumps, source /home/us3/lims/database/utils gives /utils/dbupgrade
+## and source /srv/ gives /data/sqldumps
+
+function backup_rsync_anchored_excludes( $sources, $paths ) {
+    $excludes = [];
+    foreach ( $sources as $source ) {
+        $root = backup_rsync_clean_path( $source );
+        if ( substr( $source, -1 ) != '/' ) {
+            $root = backup_rsync_clean_path( dirname( $root ) );
+        }
+        foreach ( $paths as $path ) {
+            if ( !backup_rsync_path_is_under( $path, $source ) ) {
+                continue;
+            }
+            $pattern = substr( backup_rsync_clean_path( $path ), strlen( $root ) );
+            if ( strlen( $pattern ) > 1 ) {
+                $excludes[] = $pattern;
+            }
+        }
+    }
+    return array_values( array_unique( $excludes ) );
+}
+
+## make a local directory owned by $owner as the remote "mkdir -p" run as the rsync user would
+## an existing directory is left alone, tested with sudo as the caller may not be able to see it
+
+function backup_rsync_local_mkdir( $dir, $owner ) {
+    backup_rsync_run_cmd( "sudo test -d $dir || ( sudo mkdir -p $dir && sudo chown $owner:$owner $dir )" );
+}
+
 function debug_echo ( $s, $debuglevel = 1 ) {
     global $debug;
     if ( !$debug || $debug < $debuglevel ) {
