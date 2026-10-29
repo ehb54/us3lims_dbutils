@@ -1844,6 +1844,13 @@ $active   = array_filter( $clusters, function ( $c ) { return is_array( $c ) && 
 ## deactivated or reported as retired: a pool IS the Slurm-submittable path
 ## now (pick_cluster_reserve() resolves it to a real cluster before Slurm
 ## ever sees the submission), not something the Slurm code cannot submit to.
+## The active clusters flagged as the host's own node.
+function marked_local_clusters( array $active ) {
+    return array_keys( array_filter( $active, function ( $c ) {
+        return cluster_entry_is_local( $c[ 'localhost' ] ?? false );
+    } ) );
+}
+
 function is_metascheduler_pool_entry( $c ) {
     return is_array( $c ) && isset( $c[ 'clusters' ] ) && is_array( $c[ 'clusters' ] );
 }
@@ -2053,7 +2060,7 @@ if ( !array_key_exists( 'single_tenant_deployment', $gc ) ) {
 
 ## GUI requests name the host's own cluster 'localhost'
 if ( !isset( $gc[ 'default_local_cluster' ] ) || !isset( $active[ $gc[ 'default_local_cluster' ] ] ) ) {
-    $marked   = array_keys( array_filter( $active, function ( $c ) { return !empty( $c[ 'localhost' ] ); } ) );
+    $marked   = marked_local_clusters( $active );
     $proposal = $local_cluster ?? ( count( $marked ) === 1 ? $marked[ 0 ] : null );
     if ( $proposal !== null && !isset( $active[ $proposal ] ) ) {
         ## Writing the rest of the block around a bad cluster name would leave
@@ -2113,7 +2120,7 @@ foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
 ## pools here too -- sinfo is queried against a real host below, and a pool
 ## has none.
 foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
-    if ( empty( $c[ 'single_node' ] ) && empty( $c[ 'localhost' ] ) && empty( $c[ 'fixed_capacity' ] ) ) {
+    if ( empty( $c[ 'single_node' ] ) && !cluster_entry_is_local( $c[ 'localhost' ] ?? false ) && empty( $c[ 'fixed_capacity' ] ) ) {
         continue;
     }
     $login = $c[ 'login' ] ?? ( 'us3@' . ( $c[ 'name' ] ?? '' ) );
@@ -2417,7 +2424,7 @@ foreach ( $ssh_targets as $name => $c ) {
         ## when the calling account matches the entry's login user; every
         ## other account still falls back to ssh for this same entry, so
         ## only the matching account's key setup is skipped here.
-        if ( !empty( $c[ 'localhost' ] ) && $account === $login_user ) {
+        if ( cluster_entry_is_local( $c[ 'localhost' ] ?? false ) && $account === $login_user ) {
             continue;
         }
         $known  = $entry[ 'dir' ] . "/.ssh/known_hosts";
