@@ -19,8 +19,9 @@ if ( !isset( $class_dir ) || !strlen( $class_dir ) ) {
     exit( -1 );
 }
 
-## $class_dir may or may not carry a trailing slash
-$global_config_file = rtrim( $class_dir, '/' ) . "/../global_config.php";
+require "utility.php";
+
+$global_config_file = global_config_for_class_dir( $class_dir );
 
 if ( !is_file( $global_config_file ) ) {
     fwrite( STDERR, "no global_config.php at $global_config_file (from \$class_dir '$class_dir')\n" );
@@ -76,8 +77,6 @@ Options
 
 
 __EOD;
-
-require "utility.php";
 
 ## Report failed connections and queries as values, not exceptions (PHP 8.1+),
 ## matching uslims_upgrade.php and gridctl_bootstrap.php. Without this, --restart

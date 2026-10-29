@@ -237,6 +237,13 @@ function cluster_entry_is_local( $localhost ) {
     return is_string( $localhost ) ? filter_var( $localhost, FILTER_VALIDATE_BOOLEAN ) : (bool) $localhost;
 }
 
+## global_config.php for a listen-config $class_dir, found by name from its parent, so a $class_dir
+## that no longer exists (a 4.2.0 config's common/class_local/ after common moves to 4.3.0) still
+## finds it; "$class_dir/../" does not resolve through a missing directory.
+function global_config_for_class_dir( $class_dir ) {
+    return dirname( rtrim( (string) $class_dir, '/' ) ) . '/global_config.php';
+}
+
 ## Fatal, for code with no sensible way to skip and keep going (a CLI
 ## option value, one explicit target). A per-instance loop over several
 ## dbinstances should call is_sql_identifier() itself instead and report-
