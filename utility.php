@@ -226,8 +226,8 @@ function is_sql_identifier( $value ) {
 }
 
 ## A cluster_details[...]['localhost'] flag, parsed the same way a human
-## reads it, matching common#33's own
-## remote_exec::is_local() fix for the identical mistake: a bare PHP bool
+## reads it, matching
+## remote_exec::is_local()'s fix for the identical mistake: a bare PHP bool
 ## is trusted as-is, but plain `!empty()`/`!` treats the STRING 'false' as
 ## truthy (PHP only treats an empty string/'0' as falsy), so a config
 ## written as 'localhost' => 'false' -- an easy mistake, since every other
@@ -1016,16 +1016,11 @@ function mark_people_audit_utc_migration_done( $db_handle, $db, $note, $max_audi
 ## in-place host upgraded before uslims_upgrade.php recorded a boundary at
 ## all).
 ##
-## Round 15, dbutils#52 blocking: migrate_people_audit_created_at_to_utc()
-## no longer uses this value to decide which rows to convert -- it reads
-## created_at_utc per row instead, since the boundary is only ever a
-## snapshot of "the moment this run happened to start," and a row genuinely
-## written by already-upgraded code before that moment (a stale password
-## retried, a server left up during the pull, a restore) got an auditID at
-## or below it and was wrongly reconverted. migrate_people_audit_utc.php's
+## migrate_people_audit_created_at_to_utc() does not use this value to
+## decide which rows to convert; it reads created_at_utc per row, since the
+## boundary is only a snapshot of when this run started. migrate_people_audit_utc.php's
 ## own refuse-without-a-boundary check still reads this directly, and step
-## 0 still records and reports it, so it remains live -- just no longer
-## load-bearing for which rows get converted.
+## 0 still records and reports it.
 function people_audit_utc_boundary( $db_handle, $db ) {
     sql_identifier_or_die( $db );
     $has = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE '_dbutils_people_audit_utc_boundary'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
@@ -1042,14 +1037,13 @@ function people_audit_utc_boundary( $db_handle, $db ) {
 ## wrote in UTC (auditID above this) from one still in local time (auditID
 ## at or below it). Without this, every row written between dbinst's new
 ## code going live and the conversion actually running gets shifted a
-## second time, landing it earlier than rows written before it (dbinst#75,
-## confirmed +5h on a live edit). uslims_upgrade.php calls this
+## second time, landing it earlier than rows written before it. uslims_upgrade.php calls this
 ## at step 0, before steps 1-8 run, which is the earliest point in a given
 ## run it can -- narrowing the window to this run's own duration, not
 ## closing it: the code could have already been live, writing rows, for
 ## however long before this run started at all. Closing that larger window
 ## needs dbinst itself to keep writing local time until the instance is
-## marked -- dbinst#75's own half of this item, not dbutils's. stage2 and
+## marked, which is dbinst's responsibility, not dbutils's. stage2 and
 ## migrate_people_audit_utc.php never call this, so neither ever has a
 ## boundary to apply, and their conversions still cover every row, which
 ## is correct for both: stage2's rows all predate the fix by definition,
@@ -1301,7 +1295,7 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
     # instead, never touching mysql.time_zone_name.
     $is_named_zone = $from_tz !== 'SYSTEM' && !preg_match( '/^[+-]\d{2}:\d{2}$/', $from_tz );
 
-    # Round 15, dbutils#52 blocking: selection is by created_at_utc, not by
+    # Selection is by created_at_utc, not by
     # auditID position -- a row this flag marks 1 (already written in UTC,
     # whenever that happened) is left alone regardless of where it falls
     # relative to any boundary snapshot; a row marked 0 is converted
@@ -1348,13 +1342,9 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
         # its own offset), with the same accepted fall-back-hour ambiguity
         # as the CONVERT_TZ path below (README).
         #
-        # new DateTimeZone() below used to run outside any try/catch (round
-        # 15 should-fix, dbutils#52): an unrecognized zone identifier in a
-        # stage2 import package throws ValueError/Exception uncaught, and by
-        # then stage2's caller has already dropped and recreated every
-        # dbinstance in the import -- every instance after this one in the
-        # list is lost over one bad package. Caught the same non-fatal way
-        # every other failure in this function already is.
+        # new DateTimeZone() is caught non-fatally: an unrecognized zone in
+        # a stage2 import package would otherwise abort after stage2 has
+        # already recreated every dbinstance, losing every later instance.
         try {
             $zone = new DateTimeZone( $from_tz );
         } catch ( Throwable $e ) {

@@ -1,6 +1,6 @@
 <?php
-## Converts an instance's people_audit.created_at from local time to UTC
-## (dbutils#52). Idempotent via a marker table inside the instance itself
+## Converts an instance's people_audit.created_at from local time to UTC.
+## Idempotent via a marker table inside the instance itself
 ## (people_audit_utc_migration_done()/migrate_people_audit_created_at_to_utc(),
 ## utility.php) -- a host dbupgrade/stage1+stage2 already migrated reports
 ## 'ok' here, not migrated again. Shared with the standalone

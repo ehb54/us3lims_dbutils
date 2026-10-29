@@ -532,7 +532,7 @@ function backup_append_target( $path, $label ) {
 }
 
 ## capture() and config_vars() now live in utility.php: migrate_people_audit_utc.php
-## (dbutils#52) needs config_vars() too, to read an instance's config.php without
+## needs config_vars() too, to read an instance's config.php without
 ## this script's own $gdb/$old_listen/global_config.php setup.
 
 ## $why is set to php -l's complaint when the file does not parse.
@@ -738,12 +738,9 @@ function gridctl_daemon_script_pattern() {
 ## line from /etc/crontab and /etc/cron.d/*, concatenated; $rc_local is
 ## /etc/rc.local's contents, or '' if it does not exist.
 ##
-## $root_crontab: root's own personal crontab (`crontab -l -u root`), round
-## 15 should-fix, dbutils#52 -- $cron_lines (the SYSTEM crontab, /etc/crontab
-## and /etc/cron.d/*) was the only cron source ever checked here, but a
-## line in root's own personal crontab runs as root unconditionally, with
-## no user column of its own to read (cron already knows whose crontab it
-## is), and nothing read that file at all. Checked separately, every
+## $root_crontab: root's own personal crontab (`crontab -l -u root`). A
+## line there runs as root unconditionally, with no user column of its own
+## to read, so $cron_lines alone cannot cover it. Checked separately, every
 ## matching line counts, not just @reboot ones: unlike the system crontab,
 ## there is no OTHER user a personal crontab's line could belong to for
 ## this one to rule out.
@@ -1120,11 +1117,7 @@ function cleanup_claims( $us3_home ) {
     foreach ( glob( "$us3_home/lims/etc/joblog/*/*/cleanup.claim" ) ?: [] as $claim ) {
         $owner = (int) @file_get_contents( "$claim/owner" );
         $age   = time() - (int) @filemtime( $claim );
-        ## Round 15 nit, dbutils#52: "under an hour old" used to block on
-        ## its own, even for a claim whose own recorded owner is
-        ## confirmed dead (ran: a 67-second-old claim, from a monitor that
-        ## crashed moments after creating it, still blocked --check for
-        ## up to an hour). A recorded owner's liveness is authoritative
+        ## A recorded owner's liveness is authoritative
         ## when it is checkable at all: ESRCH (errno 3, "No such
         ## process") means genuinely dead, regardless of age; any other
         ## posix_kill() failure (most commonly EPERM, a different account)
@@ -1391,8 +1384,8 @@ if ( $listeners === null ) {
     report( 'ok', "no gridctl service (listen, manage-us3-pipe, submitctl, esign) is running" );
 }
 
-## -- the us3-listen unit's own account: gridctl#33
-## now refuses to start as root, so a unit with no User=us3 means this host
+## The us3-listen unit's own account: gridctl
+## refuses to start as root, so a unit with no User=us3 means this host
 ## can never actually bring the gridctl services up at all. Not an idle-host
 ## precondition (so it does not add to $busy[]) -- a mistake here is a
 ## standing problem on every future reboot, not something to retry once a
@@ -1834,7 +1827,7 @@ $managed = [];     ## PHP assignments for the managed block, in order
 $clusters = is_array( $gc[ 'cluster_details' ] ?? null ) ? $gc[ 'cluster_details' ] : [];
 $active   = array_filter( $clusters, function ( $c ) { return is_array( $c ) && ( $c[ 'active' ] ?? false ); } );
 
-## A metascheduler pool (pick_cluster.php, gridctl#35) is recognized the one
+## A metascheduler pool (pick_cluster.php) is recognized the one
 ## and only way anything in this stack recognizes it -- a 'clusters' list --
 ## which is this function's exact copy of pick_cluster_is_metascheduler_entry()
 ## (gridctl's pick_cluster.php) and require_cluster.php's own copy of the same
@@ -1865,14 +1858,9 @@ foreach ( $pools as $name => $c ) {
 ## submission code, so an active 'pbs' or 'http' entry is now treated as
 ## though it were Slurm. They are dropped from $active as well, so the
 ## checks below do not go looking for env_script_lines, nodes or SSH on a
-## cluster that is being retired. (THE BUG this answers: this loop
-## used to also retire anything with a 'clusters' list, back when that shape
-## only ever meant a dead Airavata-era fan-out entry. gridctl#35 made
-## 'clusters' a first-class, currently-supported pool shape, so that
-## retirement now wrongly deactivated every pool the operator had
-## configured on every upgrade. Pools are filtered out into $pools above,
-## before this loop runs, and this loop no longer looks at 'clusters' at
-## all -- only submittype decides retirement here now.)
+## cluster that is being retired. A 'clusters' list is a supported pool
+## shape, already filtered into $pools above, so only submittype decides
+## retirement here.
 $converted = [];
 foreach ( $active as $name => $c ) {
     if ( isset( $pools[ $name ] ) ) {
@@ -2766,12 +2754,9 @@ function metascheduler_table_create_outcome( $table, $sql_file, $create_sql, $cr
 }
 
 ## Same classification as runtime_prediction_create_outcome(), for the
-## additive ALTER an existing (pre-common#31) table needs instead of a
-## CREATE. Without this, an existing pilot table silently lost every
-## insert (0 rows, including requests that never set prediction_cluster_name)
-## the moment common#31 started writing those two columns, and step 5 reported
-## "already exists" regardless since it only ever checked the table, never
-## its columns.
+## additive ALTER an existing pilot table without the prediction_cluster
+## columns needs instead of a CREATE. Without those columns every insert
+## into the table fails.
 function runtime_prediction_alter_outcome( $alter_sql, $alter_ok, $alter_errno, $alter_error,
                                             $runtime_table_alter_sql ) {
     if ( trim( (string) $alter_sql ) === '' ) {
@@ -2889,11 +2874,8 @@ if ( !is_file( $runtime_table_sql ) ) {
     $exists = mysqli_query( $gdb, "SHOW TABLES IN gfac LIKE 'runtime_prediction'" );
     if ( $exists && mysqli_num_rows( $exists ) > 0 ) {
         ## The table existing says nothing about whether it has these two
-        ## columns: a table created from the pre-common#31 runtime_pilot_table.sql
-        ## never gets them just by existing, and every insert then failed (0
-        ## rows, including requests that never set prediction_cluster_name)
-        ## the moment common#31 started writing them -- silently here, since
-        ## this used to report "already exists" and stop looking.
+        ## columns: a table created from an older runtime_pilot_table.sql
+        ## lacks them, and every insert into it then fails.
         ## 'prediction_cluster%', not the exact name: the bare LIKE only ever
         ## matched prediction_cluster itself, so a table with that column but
         ## not prediction_cluster_source (a half-migrated state -- the same
@@ -2946,13 +2928,7 @@ if ( !is_file( $runtime_table_sql ) ) {
         ## gfac account (SELECT/INSERT/UPDATE/DELETE only) reports "1
         ## change(s) would be made" on every single --check, forever.
         ## Read-only (SHOW GRANTS), so --check still never touches the
-        ## database. Round 15 nit, dbutils#52: this used to gate on
-        ## "!$apply" too, so --apply skipped this short-circuit, printed a
-        ## "[todo] create gfac.runtime_prediction" --check never showed for
-        ## the same host, attempted the CREATE anyway, and downgraded to
-        ## this exact same 'note' once the attempt failed for the same
-        ## reason this probe already knew about -- a redundant extra line,
-        ## not a different outcome. Unconditional now: the probe is
+        ## database. Applies to --apply too: the probe is
         ## reliable enough for --check alone to depend on, so it is
         ## reliable enough for --apply to skip the doomed attempt on too.
         report( 'note', "gfac account lacks privilege to create the optional runtime advisory"
@@ -3027,11 +3003,8 @@ foreach ( [
         ## the privilege gap from SHOW GRANTS instead), so it has to
         ## duplicate that one escalation decision rather than call through
         ## a function shaped around an actual attempt's errno/error.
-        ## Round 15 nit, dbutils#52: this used to gate on "!$apply" too
-        ## (same bug, same fix, as the runtime_prediction block above) --
-        ## --apply printed a "[todo] create gfac.$metascheduler_table"
-        ## --check never showed, attempted a CREATE already known to fail,
-        ## and reported the exact same FAIL/note below anyway.
+        ## Applies to --apply too, as in the runtime_prediction block above,
+        ## so --apply never attempts a CREATE already known to fail.
         if ( !empty( $pools ) ) {
             report( 'FAIL', "gfac.$metascheduler_table cannot be created (gfac account lacks"
                   . " privilege), and this host has a metascheduler pool configured --"

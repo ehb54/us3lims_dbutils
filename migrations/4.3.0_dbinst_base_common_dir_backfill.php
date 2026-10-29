@@ -69,15 +69,9 @@ return [
         ## also have to reverse-guess each value's original PHP literal
         ## formatting -- booleans, numbers, escaped strings -- for no
         ## benefit over leaving them untouched).
-        ## Round 15 nit, dbutils#52: the opening-bracket match used to require
-        ## a bare newline right after "array(" -- missing both PHP's short-
-        ## array syntax ('values' => [ ... ]) and a base whose first element
-        ## sits on the same line as the opening bracket, each of which left
-        ## $count at 0 and FAILed the --apply this same base's own --check
-        ## had just reported as a plain 'todo'. Matching the opening token
-        ## alone (array( or [, in either order of likelihood) and always
-        ## supplying the newline the insertion needs, rather than requiring
-        ## one already be there, covers both shapes the same way.
+        ## Match the opening token alone (array( or [) and always supply the
+        ## newline, so short-array syntax and a first element on the same
+        ## line as the bracket are both handled.
         $contents = (string) file_get_contents( $base_path );
         $addition = "    'common_dir' => " . var_export( $common_dir_value, true ) . ",\n";
         $new_contents = preg_replace(

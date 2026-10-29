@@ -1376,8 +1376,7 @@ function remote_dir_check_command( $login, $rundir, $local = false ) {
 ## the whole difference between going over ssh and not. Shared by --getrun
 ## and --copyrun's own spec-building below: both always went over ssh, even for 'localhost' => true,
 ## failing with "Host key verification failed" on a host built without
-## ssh to itself -- the same entry common#33's own remote_exec calls
-## already skip ssh for.
+## ssh to itself, the same entry remote_exec already skips ssh for.
 function rsync_remote_prefix( $login, $local ) {
     return $local ? '' : escapeshellarg( $login ) . ':';
 }
@@ -1499,7 +1498,7 @@ if ( $getrundir || $getrun || $copyrun ) {
             $workdir = $v['workdir'];
             ## 'localhost' => true means
             ## this cluster is reached without ssh everywhere else in this
-            ## stack (common#33's own remote_exec calls, uslims_upgrade.php
+            ## stack (remote_exec, uslims_upgrade.php
             ## step 4) -- --getrun/--copyrun never read it at all, so they
             ## always went over ssh even for the local entry, failing with
             ## "Host key verification failed" on a host built without ssh
