@@ -171,6 +171,19 @@ foreach ( $dbnames_used as $db => $v ) {
 echo "All metadata found\n";
 echoline( '=' );
 
+# A dump that does not fit this host's schema would fail its import after the drop below.
+echo "Checking every dump against this host's us3.sql\n";
+$dumps = [];
+foreach ( $dbnames_used as $db => $v ) {
+    $dumps[ $db ] = [ "export-$use_dbhost-$db.sql.$compressext", "export-$use_dbhost-$db-autoincrements.sql" ];
+}
+$errors = preflight_instance_imports( $db_handle, "mysql --defaults-file=$cwd/my.cnf -u root", $limsdbpath, $dumps );
+if ( strlen( $errors ) ) {
+    error_exit( "ERRORS (nothing was dropped):\n" . $errors . "Terminating" );
+}
+echo "All dumps fit\n";
+echoline( '=' );
+
 get_yn_answer( "Have you made a binary backup using uslims_db_binary_backup.php?", true );
 get_yn_answer( "Are you really sure the binary backup is good?", true );
 
@@ -268,31 +281,11 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
             }
         }
 
-        # us3.sql, just loaded above, does not define this table -- it is
-        # created by migrate_people_audit_created_at_to_utc() itself, inside
-        # whichever dbinstance a previous run of THIS instance already
-        # migrated. Stage1's data dump is data-only (--no-create-info) and
-        # dumps every table the source dbinstance actually has, so a
-        # dbinstance already migrated before this export carries a row for
-        # this table in its dump -- and the import below has nowhere to put
-        # it unless the table exists here first. Without this, that INSERT
-        # fails against a table that does not exist, after every dbinstance
-        # in this run has already been dropped: the import stops here,
-        # mid-list, with this (and every later) dbinstance simply gone.
-        # Creating it now, before the import, costs nothing for a
-        # dbinstance that was never migrated (its dump has no row for a
-        # table it never had either).
-        #
-        # The boundary table (_dbutils_people_audit_utc_boundary) needs the
-        # exact same pre-creation, for the exact same reason: an in-place
-        # host upgraded (and so boundary-recorded) before being exported
-        # carries a row for THIS table in its dump too, and without this
-        # that INSERT failed the same way (the same class of abort,
-        # reintroduced here for the second bookkeeping table nothing had
-        # pre-created yet).
+        # The data-only dump carries rows for objects us3.sql does not define.
         check_db();
-        create_people_audit_utc_migration_marker_table( $db_handle, $db );
-        create_people_audit_utc_boundary_table( $db_handle, $db );
+        if ( !prepare_imported_instance_schema( $db_handle, $db ) ) {
+            error_exit( "could not prepare $db for import: " . mysqli_error( $db_handle ) );
+        }
 
         $cmds = [
     "$uncompresswith $sqldata | mysql --defaults-file=$cwd/my.cnf -u root $db"

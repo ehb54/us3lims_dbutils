@@ -251,6 +251,17 @@ if ( get_yn_answer( "load metadata?" ) ) {
 # create dbinstances
 
 if ( get_yn_answer( "create dbinstances" ) ) {
+    # A dump that does not fit this host's schema would fail partway through the list.
+    echo "Checking every dump against this host's us3.sql\n";
+    $dumps = [];
+    foreach ( $dbnames_used as $db => $val ) {
+        $dumps[ $db ] = [ "export-$export_dbhost-$db.sql.$compressext", "export-$export_dbhost-$db-autoincrements.sql" ];
+    }
+    $errors = preflight_instance_imports( $db_handle, "mysql --defaults-file=$cwd/my.cnf -u root", $limsdbpath, $dumps );
+    if ( strlen( $errors ) ) {
+        error_exit( "ERRORS (nothing was created):\n" . $errors . "Terminating" );
+    }
+    echo "All dumps fit\n";
     $create_php = get_yn_answer( "clone php and makeconfig" );
     foreach ( $dbnames_used as $db => $val ) {
         echoline( '=' );
@@ -311,18 +322,10 @@ if ( get_yn_answer( "create dbinstances" ) ) {
             }
         }
 
-        ## us3.sql, just loaded above, does not define these tables -- they
-        ## are created by dbutils itself inside whichever dbinstance a
-        ## previous run already migrated. The export dump is data-only
-        ## (--no-create-info) and dumps every
-        ## table the source dbinstance actually has, including these two --
-        ## so a dbinstance already migrated before export carries a row for
-        ## each in its dump, with nowhere to land unless they exist here
-        ## first. Same pre-creation, same reasoning, as
-        ## stage2_import_dbinsts.php's own copy of this exact comment for
-        ## the dbupgrade path.
-        create_people_audit_utc_migration_marker_table( $db_handle, $db );
-        create_people_audit_utc_boundary_table( $db_handle, $db );
+        ## The data-only dump carries rows for objects us3.sql does not define.
+        if ( !prepare_imported_instance_schema( $db_handle, $db ) ) {
+            error_exit( "could not prepare $db for import: " . mysqli_error( $db_handle ) );
+        }
 
         $cmds = [
     "$uncompresswith $sqldata | mysql --defaults-file=$cwd/my.cnf -u root $db"

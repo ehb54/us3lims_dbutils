@@ -1092,6 +1092,101 @@ function record_people_audit_utc_boundary( $db_handle, $db ) {
                              . " VALUES ( $max_id )" );
 }
 
+## Adds to a schema freshly loaded from us3.sql every object dbutils or the
+## application adds to a running instance, so a data-only dump of that
+## instance imports. Both import pipelines call it before loading data.
+function prepare_imported_instance_schema( $db_handle, $db ) {
+    sql_identifier_or_die( $db );
+    return create_people_audit_utc_migration_marker_table( $db_handle, $db )
+        && create_people_audit_utc_boundary_table( $db_handle, $db )
+        && ensure_people_audit_utc_flag_column( $db_handle, $db );
+}
+
+## The tables and columns a data-only dump writes to: [ table => [ column, ... ] ],
+## read from --complete-insert INSERT lines and autoincrement ALTER lines.
+## Reads .sql, .gz and .xz files.
+function dump_insert_columns( array $files ) {
+    $readers = [ 'sql' => 'cat', 'gz' => 'gzip -dc', 'xz' => 'xz -dc' ];
+    $columns = [];
+    foreach ( $files as $file ) {
+        $ext = pathinfo( $file, PATHINFO_EXTENSION );
+        if ( !isset( $readers[ $ext ] ) || !is_readable( $file ) ) {
+            error_exit( "could not read $file" );
+        }
+        $fh = popen( $readers[ $ext ] . ' ' . escapeshellarg( $file ), 'r' );
+        while ( ( $line = fgets( $fh ) ) !== false ) {
+            if ( preg_match( '/^INSERT INTO `([^`]+)` \(([^)]*)\) VALUES/', $line, $m ) ) {
+                $cols = isset( $columns[ $m[ 1 ] ] ) ? $columns[ $m[ 1 ] ] : [];
+                foreach ( explode( ',', $m[ 2 ] ) as $col ) {
+                    $cols[ trim( $col, " `" ) ] = true;
+                }
+                $columns[ $m[ 1 ] ] = $cols;
+            } elseif ( preg_match( '/^alter table (?:[^ .]+\.)?([^ ]+) auto_increment/i', $line, $m )
+                       && !isset( $columns[ $m[ 1 ] ] ) ) {
+                $columns[ $m[ 1 ] ] = [];
+            }
+        }
+        if ( pclose( $fh ) !== 0 ) {
+            error_exit( "could not read $file" );
+        }
+    }
+    return array_map( 'array_keys', $columns );
+}
+
+## Tables and columns in $insert_columns (from dump_insert_columns()) that $db lacks,
+## as "table" or "table.column" strings; empty when the dump imports.
+function import_schema_mismatches( $db_handle, $db, array $insert_columns ) {
+    sql_identifier_or_die( $db );
+    $have = [];
+    $res = mysqli_query( $db_handle, "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS"
+                         . " WHERE TABLE_SCHEMA = '$db'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+    if ( !$res ) {
+        error_exit( "could not read the columns of $db: " . mysqli_error( $db_handle ) );
+    }
+    while ( $row = mysqli_fetch_row( $res ) ) {
+        $have[ $row[ 0 ] ][ $row[ 1 ] ] = true;
+    }
+    $missing = [];
+    foreach ( $insert_columns as $table => $cols ) {
+        if ( !isset( $have[ $table ] ) ) {
+            $missing[] = $table;
+            continue;
+        }
+        foreach ( $cols as $col ) {
+            if ( !isset( $have[ $table ][ $col ] ) ) {
+                $missing[] = "$table.$col";
+            }
+        }
+    }
+    return $missing;
+}
+
+## Checks each dump against a scratch schema built the way the import builds
+## an instance (us3.sql, then prepare_imported_instance_schema()), before
+## anything is dropped. $dumps is [ dbname => [ dump file, autoincrement file ] ];
+## $mysql is the mysql command line, without a database name.
+## @return string one line per instance that would not import; empty when all fit
+function preflight_instance_imports( $db_handle, $mysql, $limsdbpath, array $dumps ) {
+    $scratch = "_dbutils_import_preflight";
+    if ( !mysqli_query( $db_handle, "DROP DATABASE IF EXISTS $scratch" )
+         || !mysqli_query( $db_handle, "CREATE DATABASE $scratch" ) ) {
+        error_exit( "could not create $scratch: " . mysqli_error( $db_handle ) );
+    }
+    run_cmd( "cd $limsdbpath && $mysql $scratch < us3.sql" );
+    if ( !prepare_imported_instance_schema( $db_handle, $scratch ) ) {
+        error_exit( "could not prepare $scratch: " . mysqli_error( $db_handle ) );
+    }
+    $errors = "";
+    foreach ( $dumps as $db => $files ) {
+        $missing = import_schema_mismatches( $db_handle, $scratch, dump_insert_columns( $files ) );
+        if ( count( $missing ) ) {
+            $errors .= "$db: not in the imported schema: " . implode( ', ', $missing ) . "\n";
+        }
+    }
+    mysqli_query( $db_handle, "DROP DATABASE IF EXISTS $scratch" );
+    return $errors;
+}
+
 ## dbutils_boundary_known_instances_path()/_load()/_save() used to live
 ## here: a host-level file tracking every dbinstance name step 0 had ever
 ## drawn a boundary for, so a name missing from it was presumed created
