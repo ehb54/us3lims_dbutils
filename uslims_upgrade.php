@@ -3175,6 +3175,15 @@ function common_alias_conf_installs_alias( $contents ) {
     return (bool) preg_match( '#^\s*Alias\s+/common/(css|images|js)\b#mi', (string) $contents );
 }
 
+## What the /common alias step does, given the loaded files that have the alias: install ours when
+## none does, remove ours once another file (us3lims-roles' https vhost) has it too, else keep.
+function common_alias_action( array $files_with_alias, $own_conf ) {
+    if ( !$files_with_alias ) {
+        return 'install';
+    }
+    return in_array( $own_conf, $files_with_alias, true ) && count( $files_with_alias ) > 1 ? 'remove' : 'keep';
+}
+
 ## ------------------------------------------------------------- 7. Content-Security-Policy
 
 ## The pages are written for util/csp's policy. It goes in Report-Only, which
@@ -3330,16 +3339,36 @@ if ( $apache === null ) {
         report( 'FAIL', "$alias_dump_cmd -t -D DUMP_INCLUDES failed; fix Apache's configuration first: "
                        . reason( $alias_dump_err !== '' ? $alias_dump_err : $alias_dump_out ) );
     } else {
-        $alias_found = false;
+        $alias_files = [];
         foreach ( explode( "\n", $alias_dump_out ) as $line ) {
             if ( preg_match( '#^\s*\(\S+\)\s+(/\S+)#', $line, $m )
                  && common_alias_conf_installs_alias( csp_join_continued_directive( @file_get_contents( $m[ 1 ] ) ) ) ) {
-                $alias_found = $m[ 1 ];
-                break;
+                $alias_files[] = $m[ 1 ];
             }
         }
-        if ( $alias_found !== false ) {
-            report( 'ok', "a /common static-asset alias is already configured ($alias_found); left as is" );
+        $alias_action = common_alias_action( array_values( array_unique( $alias_files ) ), $common_alias_conf );
+        $alias_other  = array_values( array_diff( $alias_files, [ $common_alias_conf ] ) );
+        if ( $alias_action === 'keep' ) {
+            report( 'ok', "a /common static-asset alias is already configured (" . implode( ', ', $alias_files ) . "); left as is" );
+        } elseif ( $alias_action === 'remove' ) {
+            report( 'todo', "remove $common_alias_conf; " . implode( ', ', $alias_other ) . " already has the /common alias" );
+            if ( $apply && confirm( "Remove $common_alias_conf and reload {$apache['service']}?" ) ) {
+                ensure_backup_dir();
+                backup_file( $common_alias_conf );
+                if ( $apache[ 'disable' ] !== '' ) {
+                    capture( str_replace( 'lims-csp', 'lims-common-alias', $apache[ 'disable' ] ) );
+                }
+                @unlink( $common_alias_conf );
+                $changes++;
+                list( , , $active_rc ) = capture( 'systemctl is-active ' . $apache[ 'service' ] );
+                if ( $active_rc !== 0 ) {
+                    report( 'done', "$common_alias_conf removed (original in " . backup_path( $common_alias_conf ) . ")" );
+                } else {
+                    list( $r_out, $r_err, $r_rc ) = capture( 'systemctl reload ' . $apache[ 'service' ] );
+                    report( $r_rc === 0 ? 'done' : 'FAIL', "$common_alias_conf removed"
+                            . ( $r_rc === 0 ? "; {$apache['service']} reloaded" : "; reload {$apache['service']} by hand: " . reason( $r_err ) ) );
+                }
+            }
         } else {
             $common_dir_path = rtrim( common_dir_default( $wwwpath ), '/' );
             report( 'todo', "install the /common/{css,images,js} alias for $common_dir_path as $common_alias_conf" );
