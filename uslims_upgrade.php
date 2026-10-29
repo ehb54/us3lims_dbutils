@@ -150,11 +150,7 @@ carries no such flag, win or lose, since the column postdates any pre-migration 
 unconverted again on the very next run and gets converted correctly, with no dependency on
 whether the marker table or boundary table happened to survive the restore too.
 
-Step 0 (run before step 9, before steps 1-8 do anything else) records a boundary -- the highest
-people_audit.auditID already written at the moment this run started -- in its own table
-(_dbutils_people_audit_utc_boundary). This is informational only now (which rows
-step 9 actually converts no longer depends on it at all); it remains for migrate_people_audit_
-utc.php's own standalone refuse-without-a-boundary check and for step 0's report. Rolling back to
+Nothing is written to any dbinstance before step 1 finds the host idle. Rolling back to
 a release that writes local time again, then running this instance for a while before ever
 retrying the upgrade, is likewise self-correcting now: a local-time row written during that
 rollback window has no created_at_utc flag set (old code never sets it) and so correctly reads
@@ -1180,28 +1176,6 @@ function version_at_least( $version, $minimum ) {
                             $minimum, '>=' );
 }
 
-## What used to be here:
-## this step used to branch on instance_is_new_under_required_version(),
-## which read $label's own dbinst checkout VERSION and treated
-## "already at $required_version" as proof the instance was created fresh
-## by newinst under current code -- true for a newinst-created instance,
-## but also true for a genuinely pre-existing instance, because the
-## documented upgrade procedure (see this script's own --help) pulls
-## *every existing instance's* dbinst checkout to $required_version too,
-## before step 0 ever runs. Both cases read the identical VERSION by the
-## time this code sees them, so that branch could not actually tell them
-## apart -- it marked every pre-existing instance "done" with nothing
-## converted. (This replaced a flat, host-level "known instance
-## names" file, which had the same class of problem from the other
-## direction.)
-##
-## record_people_audit_utc_boundary() below does not need this
-## classification at all: it reads $db.people_audit's own MAX(auditID)
-## directly, which is 0 for an instance with no table or no rows yet (a
-## fresh newinst-created one) and the real high-water mark for a
-## pre-existing one -- the data itself already distinguishes the two
-## cases, with no VERSION-based guess required.
-
 $stack = [ 'gridctl' => $gridctl_dir,
            'dbutils' => __DIR__,
            'common'  => "$wwwpath/common",
@@ -1276,68 +1250,8 @@ if ( $missing ) {
                 . "\nNothing was changed" );
 }
 
-## dbinst#75's "in-place window": a row dbinst's already-
-## upgraded code writes between code going live and step 9 actually
-## running gets shifted a second time by step 9 itself, since step 9
-## otherwise has no way to tell it apart from a genuinely pre-upgrade row.
-## Recording each instance's current max people_audit.auditID here --
-## the earliest point this run can reach it, before steps 1-8 do anything
-## else -- narrows that window to this run's own duration instead of
-## however long the code was already live before this run even started
-## (closing it fully needs dbinst itself to keep writing local time until
-## marked, which is dbinst#75's own half of this item). Only on --apply:
-## a --check run changes nothing in any dbinstance, including this, and
-## recording it during a --check that is not immediately followed by
-## --apply would not narrow anything anyway. Errors here are left for
-## step 9 to report by name; this only ever records a boundary for an
-## instance step 9 can also reach.
-##
-## Pulled into its own function so
-## it can be driven directly in a test with a constructed instance tree,
-## the same way migrations.php's functions already are -- the bug this
-## replaced (branching on instance_is_new_under_required_version(), which
-## read VERSION and could not distinguish a pre-existing instance the
-## mandated pull also brings to $required_version from a newinst-created
-## one) was never actually exercised against a real discover_lims_
-## instance_configs() tree before now.
-function run_people_audit_utc_boundaries( $wwwpath, $us3_home ) {
-    $changes = 0;
-    foreach ( discover_lims_instance_configs( $wwwpath, $us3_home ) as $label => $cfg ) {
-        if ( isset( $cfg[ 'error' ] ) || !is_sql_identifier( $cfg[ 'dbname' ] ) ) {
-            continue;
-        }
-        $conn = @mysqli_connect( $cfg[ 'dbhost' ], $cfg[ 'dbusername' ], $cfg[ 'dbpasswd' ], $cfg[ 'dbname' ] );
-        if ( !$conn ) {
-            continue;
-        }
-
-        ## Already resolved in an earlier run -- checked against this
-        ## instance's own persistent, per-database markers (set by this
-        ## same block, or by step 9), never against step-0's run history on
-        ## this host. An instance that failed to connect on every earlier
-        ## run (a stale password, a restored backup) is still correctly
-        ## recognized here the first time it finally does.
-        if ( people_audit_utc_migration_done( $conn, $cfg[ 'dbname' ] )
-             || people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] ) !== null ) {
-            mysqli_close( $conn );
-            continue;
-        }
-
-        ## Round 15 nit, dbutils#52: only a real, successful INSERT counts
-        ## -- this used to increment unconditionally, so a failed one (a
-        ## stale password that connects but can't write, say) was still
-        ## reported as "recorded ... boundary for N instance(s)."
-        if ( record_people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] ) ) {
-            $changes++;
-        }
-
-        mysqli_close( $conn );
-    }
-    return $changes;
-}
-
-## Step 8's two sizing/probe checks, pulled into their own functions for the
-## same reason run_people_audit_utc_boundaries() above was: so they can be driven directly in a test against
+## Step 8's two sizing/probe checks, pulled into their own functions so they can be driven
+## directly in a test against
 ## a constructed $cluster_details array, including a metascheduler pool
 ## entry, rather than only through the full script's own output. Both skip
 ## a pool entry via is_metascheduler_pool_entry() -- step 3's own existing
@@ -1379,34 +1293,14 @@ function unprobed_active_clusters( $final_clusters, $probes ) {
     return $unprobed;
 }
 
-if ( $apply ) {
-    ## Counted before step 1's idle
-    ## check below, which used to tell an operator "Nothing was changed"
-    ## on refusing a busy host -- not true once a real write already
-    ## landed moments earlier.
-    $boundaries_recorded = run_people_audit_utc_boundaries( $wwwpath, $us3_home );
-    $changes += $boundaries_recorded;
-    ## This used to run and change the count
-    ## silently -- every other action in this script reports what it did,
-    ## so a run that only did this (every instance already migrated or
-    ## connecting) looked identical to one that skipped it entirely.
-    if ( $boundaries_recorded > 0 ) {
-        report( 'ok', "recorded this run's UTC-migration boundary for $boundaries_recorded instance(s)" );
-    }
-}
-
 ## ------------------------------------------------------------- 1. preflight
 
 ## An upgrade runs on an idle host, so every check below has to agree that
 ## nothing is running. Handling live jobs was the earlier design; with the
 ## gridctl.php sweep gone and no claimless pre-upgrade monitor left to guard
 ## against, an idle host is the only state worth reasoning about, and it is the
-## state an operator can actually confirm. Nothing else below this point is
-## changed until all of these pass -- the UTC-boundary recording immediately
-## above this step is the one exception, deliberately run first so every
-## reachable instance's boundary is drawn as early as this script can reach
-## it (see that block's own comment); its own $changes is accounted for
-## below, not assumed away.
+## state an operator can actually confirm. Nothing is changed before all of these
+## pass: a busy host is refused with every instance untouched.
 step( "1. Preflight: the host must be idle" );
 
 if ( !is_file( $listen_config ) ) {
@@ -1857,12 +1751,7 @@ if ( $live_crons ) {
 
 if ( $busy ) {
     error_exit( "the host is not idle (" . implode( '; ', $busy ) . ").\n"
-                . "Quiet it down and rerun. "
-                . ( $changes
-                  ? "$changes change(s) were already made (the UTC-boundary recording above this"
-                    . " step); nothing past that point was"
-                  : "Nothing was" )
-                . " changed" );
+                . "Quiet it down and rerun. Nothing was changed" );
 }
 
 ## ------------------------------------------------------------- 2. listen-config.php

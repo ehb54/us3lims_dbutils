@@ -163,42 +163,13 @@ foreach ( $targets as $label => $cfg ) {
         continue;
     }
 
-    ## THE BUG this answers: the dry run used to
-    ## print "would migrate... (rerun with --apply)" for every not-yet-done
-    ## instance alike, regardless of whether a boundary is recorded --
-    ## giving no warning for exactly the instances --apply then goes on to
-    ## refuse outright (the no-boundary case just below), so an operator
-    ## ran --apply expecting a migration and got a FAIL they had no reason
-    ## to expect from the dry run.
+    ## Rows are selected by their own created_at_utc flag, so a row already written in UTC is never
+    ## converted and no recorded boundary is needed.
     if ( people_audit_utc_migration_done( $conn, $cfg[ 'dbname' ] ) ) {
         echo "[ok] $label ({$cfg['dbname']}): people_audit already migrated to UTC\n";
-    } elseif ( !$apply && people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] ) === null ) {
-        echo "[todo] $label ({$cfg['dbname']}): --apply would REFUSE this instance (no UTC boundary"
-           . " recorded) -- run uslims_upgrade.php --apply instead, or record a boundary by hand"
-           . " first if this is genuinely a pre-4.3.0 instance\n";
     } elseif ( !$apply ) {
         echo "[todo] $label ({$cfg['dbname']}): would migrate people_audit.created_at to UTC"
            . " (rerun with --apply)\n";
-    } elseif ( people_audit_utc_boundary( $conn, $cfg[ 'dbname' ] ) === null ) {
-        ## Refuse, rather than convert: with no boundary recorded,
-        ## migrate_people_audit_created_at_to_utc()
-        ## converts every row -- correct for a genuinely pre-4.3.0 instance
-        ## uslims_upgrade.php never got to run against, but just as
-        ## plausibly a brand-new 4.3.0 instance whose rows are already
-        ## correct UTC, which this script has no way to tell apart from
-        ## people_audit's own data alone. Drawing a boundary here instead
-        ## would be unsafe too: the right boundary is "the last row written
-        ## before the code actually went live", which this script cannot
-        ## reconstruct after the fact any better than a guess. Run
-        ## uslims_upgrade.php (which can tell the two cases apart by reading
-        ## the instance's own VERSION file, instance_is_new_under_required_
-        ## version()) instead, or draw the boundary by hand if this is
-        ## genuinely a pre-4.3.0 instance.
-        echo "[FAIL] $label ({$cfg['dbname']}): no UTC boundary is recorded for this instance;"
-           . " refusing to guess whether every row needs converting or none do -- run"
-           . " uslims_upgrade.php --apply instead, or record a boundary by hand if this is"
-           . " genuinely a pre-4.3.0 instance\n";
-        $failures++;
     } else {
         echo "[apply] $label ({$cfg['dbname']}):\n";
         if ( !migrate_people_audit_created_at_to_utc( $conn, $cfg[ 'dbname' ] ) ) {

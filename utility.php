@@ -920,12 +920,18 @@ function people_audit_utc_migration_done( $db_handle, $db ) {
         return true; # nothing to convert, ever, until the table exists
     }
 
-    if ( !ensure_people_audit_utc_flag_column( $db_handle, $db ) ) {
+    ## Read-only: --check and a busy host ask this too. Without the flag column no row has been
+    ## flagged yet, so every dated row still needs converting.
+    $col = mysqli_query( $db_handle, "SELECT COUNT(*) AS n FROM information_schema.COLUMNS"
+                        . " WHERE TABLE_SCHEMA = '$db' AND TABLE_NAME = 'people_audit' AND COLUMN_NAME = 'created_at_utc'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+    $col_row = $col ? mysqli_fetch_assoc( $col ) : null;
+    if ( !$col_row ) {
         return false; # can't even see the real signal; don't claim done
     }
+    $flag_clause = (int) $col_row[ 'n' ] > 0 ? " AND created_at_utc = 0" : "";
 
     $res = mysqli_query( $db_handle, "SELECT COUNT(*) AS n FROM $db.people_audit" // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
-                        . " WHERE created_at_utc = 0 AND created_at != '0000-00-00 00:00:00'" );
+                        . " WHERE created_at != '0000-00-00 00:00:00'" . $flag_clause );
     $row = $res ? mysqli_fetch_assoc( $res ) : null;
     return $row ? (int) $row[ 'n' ] === 0 : false;
 }
@@ -936,8 +942,8 @@ function people_audit_utc_migration_done( $db_handle, $db ) {
 ## the column to exist before touching it. dbinst's write_audit_row()
 ## cannot require this file under php-fpm (see create_instance.php's own
 ## identical note about the marker table) and so duplicates this exact
-## statement locally; every reader/writer here calls it too, so neither
-## side has to assume the other has already run, regardless of ordering.
+## statement locally; every writer here calls it too, so neither side has to
+## assume the other has already run. Readers check for the column instead.
 function ensure_people_audit_utc_flag_column( $db_handle, $db ) {
     sql_identifier_or_die( $db );
     return (bool) mysqli_query( $db_handle, "ALTER TABLE $db.people_audit" // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
