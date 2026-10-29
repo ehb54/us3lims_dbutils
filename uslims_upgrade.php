@@ -39,6 +39,9 @@ for that dry run; with no options at all this help is printed instead.
 an [input] is open and nothing failed, 1 when a check failed, and 0 otherwise; its last line
 is "SUMMARY failures=N pending=N input=N changes=N".
 
+The last step runs dbinst's tools/check_installation.php and reports each failure it finds (an
+unedited CHANGE-ME placeholder, a missing overlay) as a note; it changes nothing.
+
 This script changes this host's configuration, plus one schema fix step 9 runs inside
 each dbinstance (see below). Otherwise, the stack code and the database schema are
 upgraded separately, and the code must be upgraded first: pull common,
@@ -425,6 +428,20 @@ function apply_refusal( $output ) {
     }
     return "--apply would stop at these, after changing everything before them:\n"
          . implode( "\n", $open ) . "\nRerun with the option each one names. Nothing was changed.";
+}
+
+## The failures dbinst's tools/check_installation.php reports ("[FAIL] name   detail"), as
+## "name: detail".
+function installation_check_failures( $output ) {
+    $failures = [];
+    foreach ( explode( "\n", (string) $output ) as $line ) {
+        if ( preg_match( '/^\s*\[FAIL\s*\]\s+(.+?)\s{2,}(.+?)\s*$/', $line, $m ) ) {
+            $failures[] = "{$m[1]}: {$m[2]}";
+        } elseif ( preg_match( '/^\s*\[FAIL\s*\]\s+(.+?)\s*$/', $line, $m ) ) {
+            $failures[] = $m[ 1 ];
+        }
+    }
+    return $failures;
 }
 
 ## global_config.php's $global_site_admin_email, which common sends submission-failure and outage
@@ -3572,6 +3589,32 @@ if ( !$instance_configs ) {
                                   [ 'people_audit_utc' ] );
 
         mysqli_close( $conn );
+    }
+}
+
+## ------------------------------------------------------------- 10. installation check
+
+## dbinst's own checker, read-only: an unedited shipped placeholder (CHANGE-ME), a legacy config the
+## template left unfilled, a missing overlay. Reported as notes: they need the operator, not this script.
+step( "10. Installation check (dbinst tools/check_installation.php)" );
+$installation_checker = '';
+foreach ( glob( "$wwwpath/uslims3/uslims3_*/tools/check_installation.php" ) ?: [] as $candidate ) {
+    if ( strpos( $candidate, '/uslims3_newlims/' ) === false && strpos( $candidate, '/uslims3_data/' ) === false ) {
+        $installation_checker = $candidate;
+        break;
+    }
+}
+if ( $installation_checker === '' ) {
+    report( 'note', "no instance checkout under $wwwpath/uslims3 has tools/check_installation.php" );
+} else {
+    list( $check_out, $check_err, ) = capture( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( $installation_checker )
+                                              . ' --quiet --dbinst-root=' . escapeshellarg( "$wwwpath/uslims3" ) );
+    $installation_failures = installation_check_failures( $check_out );
+    foreach ( $installation_failures as $failure ) {
+        report( 'note', "installation check: $failure" );
+    }
+    if ( !$installation_failures ) {
+        report( 'ok', "dbinst's installation check reports no failure" );
     }
 }
 
