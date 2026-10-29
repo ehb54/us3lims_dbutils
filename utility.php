@@ -555,8 +555,15 @@ function existing_dbs( $include_global = false ) {
     if ( $db_handle === NULL ) {
         open_db();
     }
-    $res = db_obj_result( $db_handle, "show databases like 'uslims3_%'", True );
+    $res = db_obj_result( $db_handle, "show databases like 'uslims3_%'", True, True );
     $existing_dbs = [];
+    if ( !$res ) {
+        if ( mysqli_errno( $db_handle ) ) {
+            write_logl( "db query failed : show databases like 'uslims3_%'\ndb query error: " . mysqli_error( $db_handle ) . "\n" );
+            exit( 1 );
+        }
+        return $existing_dbs; # no instance databases visible; not a fatal condition
+    }
     while( $row = mysqli_fetch_array($res) ) {
         $this_db = (string)$row[0];
         if ( $this_db != "uslims3_global" || $include_global ) {
