@@ -34,6 +34,11 @@ Upgrade this host to the Slurm submission contract (gridctl#33, common#24, dbins
 Without --apply nothing is changed; each step reports what it would do. Run with --check
 for that dry run; with no options at all this help is printed instead.
 
+--apply first runs that dry run itself and refuses, before changing anything, while any
+[input] line is open (a value it would otherwise ask for and stop at). --check exits 3 when
+an [input] is open and nothing failed, 1 when a check failed, and 0 otherwise; its last line
+is "SUMMARY failures=N pending=N input=N changes=N".
+
 This script changes this host's configuration, plus one schema fix step 9 runs inside
 each dbinstance (see below). Otherwise, the stack code and the database schema are
 upgraded separately, and the code must be upgraded first: pull common,
@@ -310,6 +315,17 @@ if ( !is_admin() ) {
     error_exit( "you must be root to run $self" );
 }
 
+## --apply first runs the same checks without --apply and refuses, before any change, while an
+## [input] it cannot resolve is open. The check pass itself has USLIMS_UPGRADE_PREFLIGHT set.
+if ( $apply && getenv( 'USLIMS_UPGRADE_PREFLIGHT' ) === false ) {
+    echo "Checking for settings this run cannot resolve before changing anything...\n";
+    $check   = capture( apply_check_command( PHP_BINARY, $self, array_slice( $argv, 1 ), interactive() ) );
+    $refusal = apply_refusal( $check[ 0 ] );
+    if ( $refusal !== null ) {
+        error_exit( $refusal );
+    }
+}
+
 ## ------------------------------------------------------------- locations
 
 $us3_entry = posix_getpwnam( 'us3' );
@@ -383,6 +399,48 @@ function report( $status, $msg ) {
         $needs_input++;
     }
     printf( "  [%-5s] %s\n", $status, $msg );
+}
+
+## An [input] that --apply asks for at a terminal ($asked_on_apply) is a todo in the check pass an
+## interactive --apply runs first, since that apply resolves it; anything else stays [input].
+function report_input( $msg, $asked_on_apply ) {
+    if ( $asked_on_apply && getenv( 'USLIMS_UPGRADE_PREFLIGHT' ) === 'interactive' ) {
+        report( 'todo', "$msg; asked for during --apply" );
+    } else {
+        report( 'input', $msg );
+    }
+}
+
+## The check pass --apply runs before changing anything: the same options without --apply, told
+## whether the apply after it can ask at a terminal.
+function apply_check_command( $php, $self, array $args, $interactive ) {
+    $args = array_values( array_filter( $args, function ( $a ) { return $a !== '--apply'; } ) );
+    return 'USLIMS_UPGRADE_PREFLIGHT=' . ( $interactive ? 'interactive' : 'batch' ) . ' '
+         . escapeshellarg( $php ) . ' ' . escapeshellarg( $self )
+         . ( count( $args ) ? ' ' . implode( ' ', array_map( 'escapeshellarg', $args ) ) : '' );
+}
+
+## Null when the check pass left no [input] open, else why --apply refuses. Without this an apply
+## carried out every step before the first [input] and left the host half-converted.
+function apply_refusal( $output ) {
+    $open = preg_grep( '/^\s*\[input\]/', explode( "\n", (string) $output ) );
+    if ( !count( $open ) ) {
+        return null;
+    }
+    return "--apply would stop at these, after changing everything before them:\n"
+         . implode( "\n", $open ) . "\nRerun with the option each one names. Nothing was changed.";
+}
+
+## 1 for a FAIL, or for work an --apply left open; 3 for a dry run with an open [input], so a
+## caller can refuse before pulling new code onto the host; otherwise 0.
+function upgrade_exit_code( $apply, $failures, $needs_input, $declined ) {
+    if ( $failures ) {
+        return 1;
+    }
+    if ( $apply ) {
+        return ( $needs_input || $declined ) ? 1 : 0;
+    }
+    return $needs_input ? 3 : 0;
 }
 
 ## A precondition that later steps write on top of. Stop before changing
@@ -2041,7 +2099,7 @@ if ( !array_key_exists( 'single_tenant_deployment', $gc ) ) {
                          'pass --single-tenant yes|no' );
     }
     if ( $value === null ) {
-        report( 'input', "set \$single_tenant_deployment (pass --single-tenant yes|no)" );
+        report_input( "set \$single_tenant_deployment (pass --single-tenant yes|no)", true );
     } else {
         report( 'todo', "set \$single_tenant_deployment = " . var_export( $value, true ) );
         $managed[] = '$single_tenant_deployment = ' . var_export( $value, true ) . ';';
@@ -2103,7 +2161,7 @@ foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
         }
     }
     if ( $value === null ) {
-        report( 'input', "$name lacks env_script_lines (pass --env $name=... or --env $name=)" );
+        report_input( "$name lacks env_script_lines (pass --env $name=... or --env $name=)", true );
     } else {
         report( 'todo', "set env_script_lines for $name" );
         $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = ' . php_string( $value ) . ';';
@@ -3653,8 +3711,6 @@ if ( $apply && !$failures && !$needs_input && !$declined ) {
        . "  4. confirm no gridctl entry came back:\n"
        . "     crontab -l -u us3 | grep gridctl ; grep -r gridctl /etc/crontab /etc/cron.d\n";
 }
-## A dry run with work outstanding is not a failure, so it exits 0. Under --apply,
-## an [input] item is one thing that can still be outstanding; a confirm() the
-## operator answered no to is another, and both leave real work undone, so both
-## have to fail the exit code or a declined change looks like a clean run.
-exit( $failures || ( $apply && ( $needs_input || $declined ) ) ? 1 : 0 );
+## See upgrade_exit_code(). The summary line is for callers that read --check's outcome.
+echo "SUMMARY failures=$failures pending=$pending input=$needs_input changes=$changes\n";
+exit( upgrade_exit_code( $apply, $failures, $needs_input, $declined ) );
