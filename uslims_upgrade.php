@@ -719,7 +719,7 @@ function us3_listen_unit_user_outcome( $rc, $loadState, $user ) {
 ## literally. \bstart\b distinguishes it from "services.php stop", which
 ## starts nothing.
 function gridctl_daemon_script_pattern() {
-    return '#\b(listen|manage-us3-pipe|submitctl|esign)\.php\b|\bservices\.php\b[^\n]*\bstart\b#';
+    return '#\b(listen|manage-us3-pipe|submitctl|esign)\.php\b|\bservices\.php\b#';
 }
 
 ## us3_listen_unit_user_outcome() above
@@ -748,35 +748,41 @@ function gridctl_daemon_script_pattern() {
 ## there is no OTHER user a personal crontab's line could belong to for
 ## this one to rule out.
 ## @return list<string> one message per risk found; empty when none are.
-function other_root_start_risks( array $service_units, array $cron_lines, $rc_local, $root_crontab = '' ) {
+function other_root_start_risks( array $service_units, array $cron_lines, $rc_local, $root_crontab = '', $service_user = 'us3' ) {
     $pattern = gridctl_daemon_script_pattern();
     $risks   = [];
 
+    ## Any Exec line (start, reload, stop) running services.php or a daemon script, as any account but
+    ## the service account: every one of them runs gridctl code.
     foreach ( $service_units as $unit => $props ) {
-        if ( !preg_match( $pattern, $props[ 'ExecStart' ] ?? '' ) ) {
+        $exec = implode( "\n", array_intersect_key( $props, array_flip( preg_grep( '/^Exec/', array_keys( $props ) ) ) ) );
+        if ( !preg_match( $pattern, $exec ) ) {
             continue;
         }
         $user = $props[ 'User' ] ?? '';
-        if ( $user === '' || $user === 'root' ) {
-            $risks[] = "$unit starts a gridctl daemon with no User=us3 ("
-                     . ( $user === '' ? 'unset, defaults to root' : 'explicitly set to root' ) . ')';
+        if ( $user !== $service_user ) {
+            $risks[] = "$unit runs gridctl with no User=$service_user ("
+                     . ( $user === '' ? 'unset, defaults to root'
+                       : ( $user === 'root' ? 'explicitly set to root' : "set to $user" ) ) . ')';
         }
     }
 
-    ## /etc/crontab's own column layout names the user directly (minute hour
-    ## dom month dow user command); a @reboot line keeps the same shape, just
-    ## with the time fields replaced by the one word "@reboot". /etc/cron.d/*
-    ## files share this system-crontab shape (unlike a per-user crontab,
-    ## which has no user column at all -- cron already runs those as their
-    ## owner, never root, unless the owner itself is root).
+    ## /etc/crontab and /etc/cron.d/* name the user after the schedule: five time fields, or one
+    ## @word (@reboot, @hourly, ...). Any schedule counts, not only @reboot.
     foreach ( $cron_lines as $line ) {
-        if ( preg_match( '/^\s*@reboot\s+(\S+)\s+(.*)$/', $line, $m )
-             && preg_match( $pattern, $m[ 2 ] )
-             && $m[ 1 ] === 'root' ) {
-            ## Round 15 nit, dbutils#52: \@ is not a recognized escape in a
-            ## double-quoted PHP string, so the backslash printed literally
-            ## ("a root \@reboot cron entry...") instead of being dropped.
-            $risks[] = "a root @reboot cron entry starts a gridctl daemon: " . trim( $line );
+        if ( preg_match( '/^\s*(#|$)/', $line ) || preg_match( '/^\s*[A-Za-z_][A-Za-z0-9_]*\s*=/', $line ) ) {
+            continue;
+        }
+        if ( !preg_match( '/^\s*(@\S+|(?:\S+\s+){4}\S+)\s+(\S+)\s+(.*)$/', $line, $m ) || !preg_match( $pattern, $m[ 3 ] ) ) {
+            continue;
+        }
+        ## A per-user crontab line has no user column; its "user" field is then the command.
+        if ( strpos( $m[ 2 ], '/' ) !== false
+             || in_array( $m[ 2 ], [ 'php', 'bash', 'sh', 'nohup', 'cronic', 'cd', 'sudo', 'runuser', 'env' ], true ) ) {
+            continue;
+        }
+        if ( $m[ 2 ] !== $service_user ) {
+            $risks[] = "a {$m[2]} " . ( $m[ 1 ] === '@reboot' ? '@reboot ' : '' ) . "cron entry runs gridctl: " . trim( $line );
         }
     }
 
@@ -1411,7 +1417,7 @@ foreach ( explode( "\n", (string) $unit_list_out ) as $unit ) {
     if ( $unit === '' || $unit === 'us3-listen.service' ) {
         continue;
     }
-    [ $props_out ] = capture( 'systemctl show -p ExecStart -p User ' . escapeshellarg( $unit ) );
+    [ $props_out ] = capture( 'systemctl show -p ExecStart -p ExecStartPre -p ExecStartPost -p ExecReload -p ExecStop -p User ' . escapeshellarg( $unit ) );
     $other_service_units[ $unit ] = systemctl_show_properties( $props_out );
 }
 $cron_lines = [];
@@ -1430,7 +1436,7 @@ if ( $other_risks ) {
         report( 'FAIL', $risk );
     }
 } else {
-    report( 'ok', "no other systemd unit, root cron entry, or rc.local starts a gridctl daemon" );
+    report( 'ok', "no other systemd unit, cron entry or rc.local runs gridctl as an account other than us3" );
 }
 
 ## -- jobmonitors. One per job on the new contract, none on an idle host.
