@@ -136,10 +136,9 @@ Nothing else to undo in the database, with three exceptions. Step 5's gfac.runti
 (see step 5 above) is optional, pilot-scoped and empty until the pilot is turned on;
 dropping it is a separate, deliberate operator step (the teardown statement is documented
 in common's class/prediction/runtime_pilot_table.sql), not part of rolling back this script.
-Step 5 also creates gfac.metascheduler_decision and gfac.cluster_status_nudge (gridctl's
-pick_cluster.php tables) the same optional, purely-additive way -- empty and unused unless
-a metascheduler pseudo-cluster is actually configured; dropping them, if ever wanted, is
-also a separate operator step, not part of rolling back this script.
+Step 5 no longer creates the retired job-count selector's tables (gfac.metascheduler_decision,
+gfac.cluster_status_nudge); an existing decision table is kept as history. Dropping them, if
+ever wanted, is a separate operator step, not part of rolling back this script.
 Step 9 (see step 9 above) rewrites people_audit.created_at in every dbinstance it migrates,
 setting a created_at_utc flag on each row it converts (and on every row dbinst's own
 write_audit_row() has written UTC from the start); it also adds a marker table there
@@ -979,20 +978,32 @@ function conversion_blockers( $want, $have ) {
 ## on every node whose template shipped ppn/maxproc below its real CPU count
 ## (the stock appliance entry does, at ppn 8 / maxproc 16): GA was lowered to
 ## 8 processes even on a 16- or 32-CPU node, instead of using the whole node.
-## ppn and maxproc are single-node whole-node counts, so they are now set to
-## $cpus outright, raising or lowering as needed. ppbj is not a whole-node
+## ppn and maxproc are single-node whole-node counts, so a value still at the
+## stock template's default (ppn 8, maxproc 16) or unset is set to $cpus,
+## raising or lowering as needed. A value above $cpus is lowered. Any other
+## value below $cpus is an operator's limit and is kept: capacity settings are
+## never raised silently. maxproc never exceeds ppn. ppbj is not a whole-node
 ## count -- it caps how much of the node one big job (2DSA/PCSA) may use --
 ## so it keeps the cap-only rule: never raised, only ever lowered to $cpus.
+##
+## $cpus is the node's effective analysis CPU count (effective_node_cpus()),
+## so a reserve Slurm already withholds is not subtracted again here.
 ##
 ## Pure: no reads, no writes, no reporting. $c is the cluster's current
 ## config (only 'ppbj'/'ppn'/'maxproc' are read); returns the three keys this
 ## cluster should have.
-function single_node_sizing( $c, $cpus ) {
+function single_node_sizing( $c, $cpus, array $template = [ 'ppn' => 8, 'maxproc' => 16 ] ) {
     $want = [];
     $want[ 'ppbj' ] = isset( $c[ 'ppbj' ] ) ? (int) $c[ 'ppbj' ] : null;
 
-    $want[ 'ppn' ]     = $cpus;
-    $want[ 'maxproc' ] = $cpus;
+    foreach ( [ 'ppn', 'maxproc' ] as $key ) {
+        $now = isset( $c[ $key ] ) ? (int) $c[ $key ] : null;
+        $operator_limit = $now !== null && $now < $cpus && $now !== ( $template[ $key ] ?? null );
+        $want[ $key ] = $operator_limit ? $now : $cpus;
+    }
+    if ( $want[ 'maxproc' ] > $want[ 'ppn' ] ) {
+        $want[ 'maxproc' ] = $want[ 'ppn' ];
+    }
 
     if ( $want[ 'ppbj' ] === null || $want[ 'ppbj' ] > $cpus ) {
         $want[ 'ppbj' ] = $cpus;
@@ -1002,6 +1013,68 @@ function single_node_sizing( $c, $cpus ) {
         $want[ 'ppbj' ] = $want[ 'ppn' ];
     }
     return $want;
+}
+
+## A node's effective analysis CPUs from its `scontrol -o show node` fields:
+## CPUEfctv where Slurm reports it (23.02 and later), otherwise CPUTot less the
+## CPUs core specialization withholds (CPUSpecList, or CoreSpecCount whole
+## cores). A legacy reduced count (Procs already lowered, no specialization)
+## is taken as it is. Pure; null when CPUTot is missing.
+function effective_node_cpus( array $f ) {
+    if ( isset( $f[ 'CPUEfctv' ] ) && ctype_digit( (string) $f[ 'CPUEfctv' ] ) ) {
+        return (int) $f[ 'CPUEfctv' ];
+    }
+    if ( !isset( $f[ 'CPUTot' ] ) || !ctype_digit( (string) $f[ 'CPUTot' ] ) ) {
+        return null;
+    }
+    $total = (int) $f[ 'CPUTot' ];
+    $list  = isset( $f[ 'CPUSpecList' ] ) ? trim( (string) $f[ 'CPUSpecList' ] ) : '';
+    if ( $list !== '' && $list !== '(null)' ) {
+        $spec = 0;
+        foreach ( explode( ',', $list ) as $part ) {
+            $range = explode( '-', $part );
+            $spec += count( $range ) === 2 ? (int) $range[ 1 ] - (int) $range[ 0 ] + 1 : 1;
+        }
+        return max( 0, $total - $spec );
+    }
+    $cores   = isset( $f[ 'CoreSpecCount' ] ) ? (int) $f[ 'CoreSpecCount' ] : 0;
+    $threads = isset( $f[ 'ThreadsPerCore' ] ) ? max( 1, (int) $f[ 'ThreadsPerCore' ] ) : 1;
+    return max( 0, $total - $cores * $threads );
+}
+
+## Nodes of $partition ('' for every node) from `scontrol -o show node`
+## output: node name => its fields. Pure.
+function scontrol_partition_nodes( $text, $partition ) {
+    $nodes = [];
+    foreach ( explode( "\n", (string) $text ) as $line ) {
+        if ( !preg_match_all( '/(\w+)=(\S*)/', $line, $m, PREG_SET_ORDER ) ) {
+            continue;
+        }
+        $f = [];
+        foreach ( $m as $kv ) {
+            $f[ $kv[ 1 ] ] = $kv[ 2 ];
+        }
+        if ( !isset( $f[ 'NodeName' ] ) ) {
+            continue;
+        }
+        if ( $partition !== '' && !in_array( $partition, explode( ',', $f[ 'Partitions' ] ?? '' ), true ) ) {
+            continue;
+        }
+        $nodes[ $f[ 'NodeName' ] ] = $f;
+    }
+    return $nodes;
+}
+
+## env_script_lines with MPICH's Hydra launcher bound to Slurm and inherited
+## launcher overrides cleared, as config-lims-mpi-runtime writes on a managed
+## install. Unchanged when it already sets HYDRA_RMK. Pure.
+function slurm_launcher_env_lines( $lines ) {
+    if ( strpos( (string) $lines, 'HYDRA_RMK' ) !== false ) {
+        return $lines;
+    }
+    $add = "export HYDRA_RMK=slurm HYDRA_LAUNCHER=slurm\n"
+         . "unset HYDRA_LAUNCHER_EXEC HYDRA_LAUNCHER_EXTRA_ARGS HYDRA_BOOTSTRAP HYDRA_BOOTSTRAP_EXEC HYDRA_HOST_FILE";
+    return trim( (string) $lines ) === '' ? $add : rtrim( (string) $lines ) . "\n" . $add;
 }
 
 ## The managed block's assignments keyed by their target, e.g. '$default_local_cluster'.
@@ -1827,16 +1900,6 @@ $managed = [];     ## PHP assignments for the managed block, in order
 $clusters = is_array( $gc[ 'cluster_details' ] ?? null ) ? $gc[ 'cluster_details' ] : [];
 $active   = array_filter( $clusters, function ( $c ) { return is_array( $c ) && ( $c[ 'active' ] ?? false ); } );
 
-## A metascheduler pool (pick_cluster.php) is recognized the one
-## and only way anything in this stack recognizes it -- a 'clusters' list --
-## which is this function's exact copy of pick_cluster_is_metascheduler_entry()
-## (gridctl's pick_cluster.php) and require_cluster.php's own copy of the same
-## check. It has no host of its own to run env_script_lines/node-sizing/SSH
-## checks against, so it is set aside from $active before any of those run,
-## but -- unlike the submittype-based retirement below -- it is never
-## deactivated or reported as retired: a pool IS the Slurm-submittable path
-## now (pick_cluster_reserve() resolves it to a real cluster before Slurm
-## ever sees the submission), not something the Slurm code cannot submit to.
 ## The active clusters flagged as the host's own node.
 function marked_local_clusters( array $active ) {
     return array_keys( array_filter( $active, function ( $c ) {
@@ -1844,6 +1907,14 @@ function marked_local_clusters( array $active ) {
     } ) );
 }
 
+## A metascheduler pool is recognized the one way anything in this stack
+## recognizes it -- a 'clusters' list -- which is this function's copy of
+## gridctl's dispatch_is_pool_entry() (dispatch_policy.php). It has no host of its own to run env_script_lines/node-sizing/SSH
+## checks against, so it is set aside from $active before any of those run,
+## but -- unlike the submittype-based retirement below -- it is never
+## deactivated or reported as retired: a pool IS the Slurm-submittable path
+## now (the dispatch worker resolves it to a real cluster before Slurm ever
+## sees the submission), not something the Slurm code cannot submit to.
 function is_metascheduler_pool_entry( $c ) {
     return is_array( $c ) && isset( $c[ 'clusters' ] ) && is_array( $c[ 'clusters' ] );
 }
@@ -1851,6 +1922,29 @@ $pools = array_filter( $active, 'is_metascheduler_pool_entry' );
 foreach ( $pools as $name => $c ) {
     report( 'ok', "'$name' is a metascheduler pool (fans out to " . implode( ', ', $c[ 'clusters' ] )
                  . "); left active, excluded from the per-host checks below" );
+}
+
+## The dispatch policy each pool runs under, as a dry run. A pool without its
+## own 'dispatch' key gets the upgrade default: local members as round robin
+## with queue admission, national members as disabled overflow. A pool that
+## cannot dispatch (a national-only pool not yet confirmed, invalid tiers,
+## duplicate controllers, no valid member) refuses new requests with its reason
+## until the site corrects or confirms it; nothing here enables overflow.
+$dispatch_policy_file = "$gridctl_dir/dispatch_policy.php";
+if ( $pools && is_file( $dispatch_policy_file ) ) {
+    require_once $dispatch_policy_file;
+    foreach ( dispatch_policy_report( $clusters, $gc ) as $line ) {
+        report( 'note', "dispatch policy: $line" );
+    }
+    foreach ( array_keys( $pools ) as $name ) {
+        $policy = dispatch_pool_policy( $name, $clusters );
+        if ( !$policy[ 'active' ] ) {
+            report( 'input', "metascheduler pool '$name' cannot dispatch: " . implode( '; ', $policy[ 'reasons' ] )
+                           . "; correct it or confirm it with a 'dispatch' key on the pool, or set it inactive" );
+        }
+    }
+} elseif ( $pools ) {
+    report( 'FAIL', "$dispatch_policy_file is missing; update gridctl before upgrading a host with metascheduler pools" );
 }
 
 ## Entries the Slurm code cannot submit to, left active from an older host:
@@ -2079,9 +2173,14 @@ $host_cluster = $proposal ?? $gc[ 'default_local_cluster' ] ?? null;
 foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
     $given = isset( $env_values[ $name ] ) ? str_replace( '\n', "\n", $env_values[ $name ] ) : null;
     if ( array_key_exists( 'env_script_lines', $c ) ) {
-        if ( $given !== null && $given !== $c[ 'env_script_lines' ] ) {
-            report( 'todo', "change env_script_lines for $name (--env)" );
-            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = ' . php_string( $given ) . ';';
+        $lines = $given !== null ? $given : (string) $c[ 'env_script_lines' ];
+        ## The host's own MPICH launches through Slurm, as the managed roles set it up.
+        $launcher = $name === $host_cluster ? slurm_launcher_env_lines( $lines ) : $lines;
+        if ( $launcher !== $c[ 'env_script_lines' ] ) {
+            report( 'todo', $launcher !== $lines
+                ? "add the Slurm launcher settings to env_script_lines for $name, so MPICH ranks stay in the job's allocation"
+                : "change env_script_lines for $name (--env)" );
+            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = ' . php_string( $launcher ) . ';';
         } else {
             report( 'ok', "$name has env_script_lines" );
         }
@@ -2113,21 +2212,24 @@ foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
     }
     $login = $c[ 'login' ] ?? ( 'us3@' . ( $c[ 'name' ] ?? '' ) );
     $queue = $c[ 'queue' ] ?? '';
-    $sinfo = 'sinfo -h -N -o "%N %c"' . ( $queue !== '' ? ' -p ' . escapeshellarg( $queue ) : '' ) . ' | sort -u';
+    ## The effective analysis CPUs per node, not sinfo's configured count:
+    ## with core specialization Slurm already withholds the reserve.
+    $query = 'scontrol -o show node';
     ## The host's own Slurm is queried locally: SSH to it is only set up in step 4.
     if ( $name !== $host_cluster ) {
-        $sinfo = 'ssh -n -o BatchMode=yes -o ConnectTimeout=15 ' . escapeshellarg( $login ) . ' ' . escapeshellarg( $sinfo );
+        $query = 'ssh -n -o BatchMode=yes -o ConnectTimeout=15 ' . escapeshellarg( $login ) . ' ' . escapeshellarg( $query );
     }
-    $rc    = run_as( 'us3', $sinfo, $sinfo_out, $sinfo_err );
+    $rc    = run_as( 'us3', $query, $node_out, $node_err );
     $nodes = [];
-    foreach ( explode( "\n", $sinfo_out ) as $line ) {
-        if ( preg_match( '/^(\S+)\s+(\d+)$/', trim( $line ), $m ) ) {
-            $nodes[ $m[ 1 ] ] = (int) $m[ 2 ];
+    foreach ( scontrol_partition_nodes( $node_out, $queue ) as $node => $fields ) {
+        $effective = effective_node_cpus( $fields );
+        if ( $effective !== null ) {
+            $nodes[ $node ] = $effective;
         }
     }
     if ( !$nodes ) {
-        report( 'note', "$name: could not query its nodes with sinfo (exit $rc): "
-                        . reason( $sinfo_err !== '' ? $sinfo_err : $sinfo_out )
+        report( 'note', "$name: could not query its nodes with scontrol (exit $rc): "
+                        . reason( $node_err !== '' ? $node_err : $node_out )
                         . "; check single_node, ppn, ppbj and maxproc by hand" );
         continue;
     }
@@ -2147,11 +2249,15 @@ foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
     foreach ( $want as $key => $value ) {
         $now = isset( $c[ $key ] ) ? (int) $c[ $key ] : null;
         if ( $value === $now ) {
+            if ( $key !== 'ppbj' && $now < $cpus ) {
+                report( 'note', "$name keeps $key $now below its $cpus effective CPUs as an operator limit;"
+                                . " raise it by hand to use the whole node" );
+            }
             continue;
         }
         report( 'todo', "set $key for $name to $value (currently "
                         . ( $now === null ? 'unset' : $now )
-                        . "; one node with $cpus CPUs, and a single_node cluster needs"
+                        . "; one node with $cpus effective CPUs, and a single_node cluster needs"
                         . " maxproc <= ppn <= the CPU count -- real Slurm rejects or pends"
                         . " any of these oversubscribed above $cpus, so ppn/maxproc are set"
                         . " to $cpus to use the whole node)" );
@@ -2512,8 +2618,8 @@ foreach ( $ssh_targets as $name => $c ) {
 
 ## ------------------------------------------------------------- 5. breaker directory
 
-step( "5. Circuit-breaker, ssh-control and elog directories, the runtime-advisory pilot table,"
-    . " and the metascheduler pick_cluster() tables" );
+step( "5. Circuit-breaker, dispatch spool, ssh-control and elog directories, the runtime-advisory pilot table,"
+    . " and the retired selector's tables" );
 
 $web_group_entry = posix_getgrnam( $web_group );
 if ( $web_group_entry === false ) {
@@ -2539,6 +2645,32 @@ if ( is_dir( $breaker_dir ) && !is_link( $breaker_dir )
             report( $set ? 'done' : 'FAIL',
                     $set ? "$breaker_dir created as 2770 us3:$web_group"
                          : "$breaker_dir exists but its owner, group or mode could not be set" );
+        }
+    }
+}
+
+## The dispatch worker's receipt spool: a submission outcome the database could
+## not record is kept here until replayed. Only us3 runs the worker, and the
+## receipts are recovery evidence, so the directory is private to it.
+$dispatch_spool = isset( $gc[ 'global_dispatch_spool_dir' ] ) && $gc[ 'global_dispatch_spool_dir' ] !== ''
+                ? rtrim( (string) $gc[ 'global_dispatch_spool_dir' ], '/' )
+                : "$us3_home/lims/etc/dispatch-spool";
+if ( is_dir( $dispatch_spool ) && !is_link( $dispatch_spool )
+     && fileowner( $dispatch_spool ) === $us3_entry[ 'uid' ] && ( fileperms( $dispatch_spool ) & 07777 ) === 0700 ) {
+    report( 'ok', "$dispatch_spool is 0700 us3" );
+} else {
+    report( 'todo', "create $dispatch_spool as 0700 us3" );
+    if ( $apply ) {
+        if ( is_link( $dispatch_spool ) ) {
+            report( 'FAIL', "$dispatch_spool is a symlink; remove it by hand and rerun" );
+        } elseif ( !is_dir( $dispatch_spool ) && !@mkdir( $dispatch_spool, 0700, true ) ) {
+            $last = error_get_last();
+            report( 'FAIL', "could not create $dispatch_spool: " . reason( is_array( $last ) ? $last[ 'message' ] : '' ) );
+        } else {
+            $changes++;
+            $set = chown( $dispatch_spool, 'us3' ) && chgrp( $dispatch_spool, $us3_entry[ 'gid' ] ) && chmod( $dispatch_spool, 0700 );
+            report( $set ? 'done' : 'FAIL',
+                    $set ? "$dispatch_spool created as 0700 us3" : "$dispatch_spool exists but its owner or mode could not be set" );
         }
     }
 }
@@ -2707,51 +2839,6 @@ function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_err
     return [ 'FAIL', "could not create gfac.runtime_prediction: " . reason( (string) $create_error ) ];
 }
 
-## Same classification as runtime_prediction_create_outcome(), generalized to
-## either of the metascheduler pick_cluster() tables (metascheduler_decision,
-## cluster_status_nudge), which share the exact same "purely additive, a
-## missing-privilege error is a note, not a FAIL" reasoning: neither is read
-## or written at all on a host that never configures a metascheduler
-## pseudo-cluster entry.
-## $host_has_pool distinguishes "this
-## table is purely additive, nothing on this host needs it yet" (the
-## runtime-advisory pilot table's own reasoning, genuinely true for a host
-## with no metascheduler pseudo-cluster configured) from "this host
-## actively uses pick_cluster() and is missing the table that keeps two
-## reservations from picking the same cluster" -- a real, silent
-## correctness gap, not an optional one, that the old unconditional 'note'
-## treated identically to the harmless case on every roles-built host.
-function metascheduler_table_create_outcome( $table, $sql_file, $create_sql, $create_ok,
-                                              $create_errno, $create_error, $host_has_pool = false ) {
-    if ( trim( (string) $create_sql ) === '' ) {
-        return [ 'FAIL', "gfac.$table's SQL file has no SQL left after stripping comments" ];
-    }
-    if ( $create_ok ) {
-        return [ 'done', "gfac.$table created" ];
-    }
-    if ( in_array( (int) $create_errno, [ 1142, 1044 ], true ) ) {
-        ## 1142 (command denied) / 1044 (access denied to database): see
-        ## runtime_prediction_create_outcome()'s own comment -- the gfac
-        ## account lacking CREATE is an expected, optional gap when nothing
-        ## on this host uses pick_cluster() yet. Once a pool is configured,
-        ## the same gap means every pick runs with no audit trail and no
-        ## protection against two reservations taking the same cluster --
-        ## this needs doing, not a note an operator can reasonably ignore.
-        if ( $host_has_pool ) {
-            return [ 'FAIL', "gfac.$table could not be created (gfac account lacks privilege: "
-                            . reason( (string) $create_error ) . "), and this host has a"
-                            . " metascheduler pool configured -- pick_cluster() will run with no"
-                            . " audit trail and no protection against two reservations choosing the"
-                            . " same cluster. Grant CREATE on gfac to the account this ran as, or run"
-                            . " by hand: mysql gfac < $sql_file" ];
-        }
-        return [ 'note', "gfac account lacks privilege to create gfac.$table (metascheduler"
-                        . " pick_cluster()): " . reason( (string) $create_error )
-                        . "; an account with CREATE on gfac can run it by hand:"
-                        . " mysql gfac < $sql_file" ];
-    }
-    return [ 'FAIL', "could not create gfac.$table: " . reason( (string) $create_error ) ];
-}
 
 ## Same classification as runtime_prediction_create_outcome(), for the
 ## additive ALTER an existing pilot table without the prediction_cluster
@@ -2962,92 +3049,19 @@ if ( !is_file( $runtime_table_sql ) ) {
     }
 }
 
-## -- metascheduler pick_cluster() tables (gridctl/pick_cluster.php,
-## -- pick_cluster_reserve.php). Both purely
-## -- additive, same reasoning as the runtime advisory pilot table above: a
-## -- host that never configures a metascheduler pseudo-cluster entry in
-## -- global_config.php never writes to either, and CREATE TABLE IF NOT
-## -- EXISTS is safe to run on every upgrade regardless of whether it does.
-## -- Without this, the first metascheduler pseudo-cluster submission on an
-## -- upgraded host would fail outright (metascheduler_decision) or silently
-## -- lose its double-booking protection (cluster_status_nudge), neither of
-## -- which gridctl's own code can create for itself at runtime.
-foreach ( [
-    'metascheduler_decision' => "$gridctl_dir/metascheduler_decision_table.sql",
-    'cluster_status_nudge'   => "$gridctl_dir/cluster_status_nudge_table.sql",
-] as $metascheduler_table => $metascheduler_table_sql ) {
-    if ( !is_file( $metascheduler_table_sql ) ) {
-        ## An old gridctl checkout that predates the metascheduler feature:
-        ## not required for this upgrade, same reasoning as the runtime
-        ## advisory pilot table's own missing-file case above.
-        report( 'note', "$metascheduler_table_sql not present; skipping the optional metascheduler"
-              . " gfac.$metascheduler_table table -- not required for this upgrade" );
+## -- The retired job-count selector's tables. The dispatch worker replaced
+## -- pick_cluster() and its reservations, so neither table is created any
+## -- more. An existing gfac.metascheduler_decision is kept as history and the
+## -- dispatch daemon purges it on $global_metascheduler_decision_retention_seconds;
+## -- gfac.cluster_status_nudge holds no history and is reported as removable.
+foreach ( [ 'metascheduler_decision', 'cluster_status_nudge' ] as $retired_table ) {
+    $exists = mysqli_query( $gdb, "SHOW TABLES IN gfac LIKE '$retired_table'" ); // NOSONAR a fixed table name
+    if ( !$exists || mysqli_num_rows( $exists ) === 0 ) {
         continue;
     }
-
-    $exists = mysqli_query( $gdb, "SHOW TABLES IN gfac LIKE '$metascheduler_table'" ); // NOSONAR $metascheduler_table is a hardcoded array key above, not user input
-    if ( $exists && mysqli_num_rows( $exists ) > 0 ) {
-        report( 'ok', "gfac.$metascheduler_table already exists" );
-        continue;
-    }
-
-    ## Reuses the runtime-advisory pilot table's own CREATE-on-gfac probe:
-    ## its check (ALL PRIVILEGES or CREATE, at gfac or global scope) has
-    ## nothing runtime-prediction-specific in it, and a roles-built gfac
-    ## account (SELECT/INSERT/UPDATE/DELETE only) is exactly the same account
-    ## either table would be missing CREATE on.
-    if ( ! gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
-        ## Same escalation as metascheduler_table_create_outcome()'s own
-        ## CREATE-denied branch: this
-        ## path never attempts the CREATE at all (it infers
-        ## the privilege gap from SHOW GRANTS instead), so it has to
-        ## duplicate that one escalation decision rather than call through
-        ## a function shaped around an actual attempt's errno/error.
-        ## Applies to --apply too, as in the runtime_prediction block above,
-        ## so --apply never attempts a CREATE already known to fail.
-        if ( !empty( $pools ) ) {
-            report( 'FAIL', "gfac.$metascheduler_table cannot be created (gfac account lacks"
-                  . " privilege), and this host has a metascheduler pool configured --"
-                  . " pick_cluster() will run with no audit trail and no protection against two"
-                  . " reservations choosing the same cluster. Grant CREATE on gfac to the account"
-                  . " this will run as, or run by hand: mysql gfac < $metascheduler_table_sql" );
-        } else {
-            report( 'note', "gfac account lacks privilege to create gfac.$metascheduler_table"
-                  . " (metascheduler pick_cluster()); an account with CREATE on gfac can run it by"
-                  . " hand: mysql gfac < $metascheduler_table_sql" );
-        }
-        continue;
-    }
-
-    report( 'todo', "create gfac.$metascheduler_table (metascheduler pick_cluster())" );
-    if ( $apply ) {
-        ## Unlike the runtime-advisory pilot table's file, these two start with
-        ## a `USE gfac;` statement (added so a human running `mysql gfac <
-        ## file.sql` by hand doesn't have to remember to select the database
-        ## first). mysqli_query() can only run one statement, so that line has
-        ## to be stripped here same as the `--` comments -- $gdb is already
-        ## connected to gfac (the mysqli_connect() call above), so dropping it
-        ## loses nothing.
-        $lines  = explode( "\n", (string) file_get_contents( $metascheduler_table_sql ) );
-        $create = trim( implode( "\n", array_filter( $lines,
-            function ( $line ) { return !preg_match( '/^\s*--/', $line ) && !preg_match( '/^\s*USE\s+\S+\s*;?\s*$/i', $line ); } ) ) );
-
-        $create_ok = $create !== '' ? mysqli_query( $gdb, $create ) : false;
-        $errno = 0;
-        $error = '';
-        if ( $create !== '' && !$create_ok ) {
-            $errno = mysqli_errno( $gdb );
-            $error = mysqli_error( $gdb );
-        }
-        if ( $create_ok ) {
-            $changes++;
-        }
-
-        list( $status, $message ) = metascheduler_table_create_outcome(
-            $metascheduler_table, $metascheduler_table_sql, $create, $create_ok, $errno, $error,
-            !empty( $pools ) );
-        report( $status, $message );
-    }
+    report( 'note', $retired_table === 'metascheduler_decision'
+        ? "gfac.metascheduler_decision is kept as decision history from the retired selector; it is purged on its retention setting"
+        : "gfac.cluster_status_nudge is no longer used by the dispatcher; it can be dropped" );
 }
 
 ## ------------------------------------------------------------- 6. crontabs
@@ -3518,7 +3532,7 @@ if ( !$apply ) {
     }
 }
 
-step( "9. Per-instance catch-up (\$common_dir, people_audit UTC migration)" );
+step( "9. Per-instance catch-up (\$common_dir, people_audit UTC migration, dispatch tables)" );
 
 ## Unlike dbupgrade/stage2_import_dbinsts.php (which imports a 4.2.0
 ## dbinstance wholesale onto a new host), this upgrade runs against the
@@ -3558,6 +3572,10 @@ run_host_migrations( null, $required_version, $apply,
                       [ 'wwwpath' => $wwwpath, 'us3_home' => $us3_home ],
                       [ 'dbinst_base_common_dir_backfill' ] );
 
+run_host_migrations( $gdb, $required_version, $apply, [ 'wwwpath' => $wwwpath ],
+                     [ 'dispatch_gfac_tables', 'gfac_analysis_request_id' ] );
+$dispatch_gfac_server = function_exists( 'dispatch_server_identity' ) ? dispatch_server_identity( $gdb ) : '';
+
 if ( !$instance_configs ) {
     report( 'note', "no $wwwpath/uslims3 config.php found; nothing to migrate" );
 } else {
@@ -3572,6 +3590,7 @@ if ( !$instance_configs ) {
             'cfg'           => $cfg,
             'instance_path' => $instance_paths[ $label ] ?? null,
             'wwwpath'       => $wwwpath,
+            'gfac_server'   => $dispatch_gfac_server,
         ];
 
         ## common_dir_backfill (migrations/4.3.0_common_dir_backfill.php)
@@ -3604,6 +3623,8 @@ if ( !$instance_configs ) {
 
         run_instance_migrations( $conn, $cfg[ 'dbname' ], $required_version, $apply, $context,
                                   [ 'people_audit_utc' ] );
+        run_instance_migrations( $conn, $cfg[ 'dbname' ], $required_version, $apply, $context,
+                                  [ 'dispatch_instance_tables' ] );
 
         mysqli_close( $conn );
     }

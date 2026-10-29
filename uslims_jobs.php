@@ -691,13 +691,24 @@ function active_jobmonitors() {
     exec( 'ps -eo pid=,args=', $lines );
     $active = [];
     foreach ( $lines as $line ) {
-        if ( !preg_match( '#^\s*(\d+)\s+(?:\S*nice\s+-?\d+\s+)?\S*php[0-9.]*\s+'
-                          . '\S*jobmonitor/jobmonitor\.php\s+(\S+)\s+(\S+)#', $line, $m ) ) {
-            continue;
+        $parsed = jobmonitor_ps_entry( $line );
+        if ( $parsed !== null ) {
+            $active[ $parsed[ 'key' ] ] = $parsed[ 'pid' ];
         }
-        $active[ $m[ 2 ] . ':' . $m[ 3 ] ] = $m[ 1 ];
     }
     return $active;
+}
+
+## One `ps -eo pid=,args=` line as array( pid, key ), or null when it is not a
+## launched jobmonitor.php. A monitor started with its cluster is keyed
+## "db:gfacID@cluster", matching its job directory; otherwise "db:gfacID".
+function jobmonitor_ps_entry( $line ) {
+    if ( !preg_match( '#^\s*(\d+)\s+(?:\S*nice\s+-?\d+\s+)?\S*php[0-9.]*\s+'
+                      . '\S*jobmonitor/jobmonitor\.php\s+(\S+)\s+(\S+)(?:\s+\S+\s+(\S+))?#', $line, $m ) ) {
+        return null;
+    }
+    $cluster = isset( $m[ 4 ] ) ? trim( $m[ 4 ], "'" ) : '';
+    return [ 'pid' => $m[ 1 ], 'key' => $m[ 2 ] . ':' . $m[ 3 ] . ( $cluster !== '' ? '@' . $cluster : '' ) ];
 }
 
 function jm_only_report( $jm_active ) {
@@ -905,7 +916,9 @@ if ( $running || $restart || $restart_only ) {
             }
             $res = db_obj_result( $db_handle,
                 "select count(*) as n from gfac.analysis where gfacID='"
-                . mysqli_real_escape_string( $db_handle, $gfacid ) . "'", false, true );
+                . mysqli_real_escape_string( $db_handle, $gfacid ) . "'"
+                . ( empty( $info[ 'cluster' ] ) ? '' : " and COALESCE(NULLIF(metaschedulerClusterExecuting, ''), cluster)='"
+                    . mysqli_real_escape_string( $db_handle, $info[ 'cluster' ] ) . "'" ), false, true );
             if ( $res !== false && (int) $res->{"n"} > 0 ) {
                 ## The row is back, or was never deleted: the monitor restart below
                 ## owns this job, so leave the marker to that run.
@@ -948,6 +961,7 @@ if ( $running || $restart || $restart_only ) {
     $jm_restart_db       = [];
     $jm_restart_gfacid   = [];
     $jm_restart_hpcreqid = [];
+    $jm_restart_cluster  = [];
     ## Shown under plain --restart too, not only --running:
     ## $out's full table is gated on $running below, so an orphan row was
     ## skipped with no sign of it anywhere a boot-time --restart run (which
@@ -957,7 +971,14 @@ if ( $running || $restart || $restart_only ) {
     while( $row = mysqli_fetch_array($res) ) {
         $db     = $row[ 'us3_db' ];
         $gfacid = $row[ 'gfacID' ];
-        $jm_key = "$db:$gfacid";
+        ## The execution cluster and the row's own request fix this job when two
+        ## clusters reuse a job number; a monitor started before that is keyed
+        ## by the job number alone.
+        $exec_cluster = !empty( $row[ 'metaschedulerClusterExecuting' ] ) ? $row[ 'metaschedulerClusterExecuting' ] : $row[ 'cluster' ];
+        $jm_key = "$db:$gfacid@$exec_cluster";
+        if ( !array_key_exists( $jm_key, $jm_active ) && array_key_exists( "$db:$gfacid", $jm_active ) ) {
+            $jm_key = "$db:$gfacid";
+        }
 
         ## emptyok=true: gridctl can leave a gfac.analysis row with no
         ## HPCAnalysisResult behind (a deleted request or database).
@@ -976,6 +997,9 @@ if ( $running || $restart || $restart_only ) {
             $reqid = $reshpc->{ "HPCAnalysisRequestID" };
         } else {
             $reqid = "unknown";
+        }
+        if ( !empty( $row[ 'HPCAnalysisRequestID' ] ) ) {
+            $reqid = $row[ 'HPCAnalysisRequestID' ];
         }
 
         if ( array_key_exists( $jm_key, $jm_active ) ) {
@@ -997,6 +1021,7 @@ if ( $running || $restart || $restart_only ) {
             $jm_restart_db      [] = $db;
             $jm_restart_gfacid  [] = $gfacid;
             $jm_restart_hpcreqid[] = $reqid;
+            $jm_restart_cluster [] = $exec_cluster;
         }
 
         $out .=
@@ -1048,7 +1073,8 @@ if ( $running || $restart || $restart_only ) {
         ## job lock so a later --restart as us3 cannot replace it either.
         ## runuser_wrap_if_root() picks the right one instead of assuming
         ## root unconditionally.
-        $inner_cmd = "php $us3bin/jobmonitor/jobmonitor.php $db $gfacid $hpcreqid";
+        $inner_cmd = "php $us3bin/jobmonitor/jobmonitor.php $db $gfacid $hpcreqid "
+                   . escapeshellarg( $jm_restart_cluster[ $index ] );
         $cmd       = runuser_wrap_if_root( $inner_cmd );
         echo "restarting: $cmd\n";
         run_cmd( $cmd );

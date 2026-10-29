@@ -557,6 +557,13 @@ function open_db() {
     }
 }    
     
+## mysqldump command for the named gfac dispatch tables (uslims_daily_backup.php).
+function dispatch_backup_command( $myconf, array $tables, $dumpfile, $logf ) {
+    $names = implode( ' ', array_map( 'escapeshellarg', $tables ) );
+    return "mysqldump --defaults-file=$myconf --single-transaction --quick -u root gfac $names > "
+         . escapeshellarg( $dumpfile ) . " 2>> $logf";
+}
+
 function existing_dbs( $include_global = false ) {
     global $db_handle;
     if ( $db_handle === NULL ) {
