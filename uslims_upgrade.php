@@ -427,6 +427,20 @@ function apply_refusal( $output ) {
          . implode( "\n", $open ) . "\nRerun with the option each one names. Nothing was changed.";
 }
 
+## global_config.php's $global_site_admin_email, which common sends submission-failure and outage
+## notices to, from listen-config.php's $admin_email (the host's administrator; an instance page's
+## $admin_email is that instance's contact). [ status, managed line or null ].
+function site_admin_email_change( array $gc, array $listen ) {
+    $site_admin = trim( (string) ( $listen[ 'admin_email' ] ?? '' ) );
+    if ( $site_admin === '' ) {
+        return [ 'note', null ];
+    }
+    if ( ( $gc[ 'global_site_admin_email' ] ?? '' ) === $site_admin ) {
+        return [ 'ok', null ];
+    }
+    return [ 'todo', '$global_site_admin_email = ' . var_export( $site_admin, true ) . ';' ];
+}
+
 ## 1 for a FAIL, or for work an --apply left open; 3 for a dry run with an open [input], so a
 ## caller can refuse before pulling new code onto the host; otherwise 0.
 function upgrade_exit_code( $apply, $failures, $needs_input, $declined ) {
@@ -1976,6 +1990,18 @@ foreach ( array( 'global_max_queue_time_hours', 'global_max_run_time_hours' ) as
     } else {
         report( 'ok', "\$$timer is 0" );
     }
+}
+
+## Site admin for common's notices
+list( $site_admin_status, $site_admin_line ) = site_admin_email_change( $gc, $old_listen );
+if ( $site_admin_status === 'todo' ) {
+    report( 'todo', "set \$global_site_admin_email from listen-config.php's \$admin_email" );
+    $managed[] = $site_admin_line;
+} elseif ( $site_admin_status === 'note' ) {
+    report( 'note', "listen-config.php has no \$admin_email, so \$global_site_admin_email is not set;"
+                   . " common's admin notices go to each instance's own \$admin_email" );
+} else {
+    report( 'ok', "\$global_site_admin_email is listen-config.php's \$admin_email" );
 }
 
 ## Tenant scope: unset reads as single tenant; set it explicitly either way
