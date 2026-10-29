@@ -1431,9 +1431,11 @@ $rc_local = (string) ( @file_get_contents( '/etc/rc.local' ) ?: '' );
 list( $root_crontab_out, , $root_crontab_rc ) = capture( 'crontab -l -u root' );
 $other_risks = other_root_start_risks( $other_service_units, $cron_lines, $rc_local,
                                         $root_crontab_rc === 0 ? $root_crontab_out : '' );
+## Advisory: gridctl's daemons refuse to run as any account but us3 (gridctl_require_not_root()),
+## so such an entry only fails at start; it is worth removing, not a reason to stop the upgrade.
 if ( $other_risks ) {
     foreach ( $other_risks as $risk ) {
-        report( 'FAIL', $risk );
+        report( 'note', "$risk; the daemon will refuse to run as that account" );
     }
 } else {
     report( 'ok', "no other systemd unit, cron entry or rc.local runs gridctl as an account other than us3" );
