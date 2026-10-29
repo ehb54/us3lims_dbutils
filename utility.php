@@ -990,9 +990,12 @@ function create_people_audit_utc_migration_marker_table( $db_handle, $db ) {
 ##              too (not only fixed at that one call site), so a future
 ##              caller with the same mistake fails loudly via this return
 ##              value instead of reintroducing the identical silent miss.
-function mark_people_audit_utc_migration_done( $db_handle, $db, $note, $max_audit_id = null ) {
+## $create false inside a transaction: CREATE TABLE commits it implicitly.
+function mark_people_audit_utc_migration_done( $db_handle, $db, $note, $max_audit_id = null, $create = true ) {
     sql_identifier_or_die( $db );
-    create_people_audit_utc_migration_marker_table( $db_handle, $db );
+    if ( $create ) {
+        create_people_audit_utc_migration_marker_table( $db_handle, $db );
+    }
 
     $note_esc   = mysqli_real_escape_string( $db_handle, substr( $note, 0, 64 ) );
     $sys_res    = mysqli_query( $db_handle, "SELECT @@system_time_zone AS tz" );
@@ -1271,21 +1274,9 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
     # time zone, not a value this function guesses or hardcodes. 'SYSTEM'
     # (the common default) defers to the OS's own tz rules via CONVERT_TZ,
     # so DST in the historical data is still handled correctly without
-    # needing mysql.time_zone_* loaded -- except for a row genuinely written
-    # during the repeated local hour when clocks fall back (e.g. 1:30am
-    # occurring twice): that instant is ambiguous by nature, and the
-    # original data carries no way to tell which of the two occurrences a
-    # given row meant. Confirmed directly (MariaDB, mysql.time_zone_name
-    # loaded, 'America/Chicago'): CONVERT_TZ() resolves the ambiguous hour
-    # to daylight time (the first occurrence), not standard -- a row that
-    # actually meant the second (standard-time) occurrence converts up to
-    # 60 minutes off. The default 'SYSTEM' resolves the exact same ambiguous
-    # hour the other way, to standard time instead (confirmed directly: a
-    # server with its OS zone set to 'America/Chicago' reads
-    # @@system_time_zone as 'CDT' but CONVERT_TZ(..., 'SYSTEM', '+00:00')
-    # against the repeated 01:30 applies the -6h CST offset, not -5h CDT) --
-    # a row genuinely written during the hour's daylight-time occurrence
-    # converts up to 60 minutes off instead. Accepted (README).
+    # needing mysql.time_zone_* loaded. A row written during the repeated
+    # hour when clocks fall back is ambiguous; which occurrence it resolves
+    # to depends on the zone and the conversion path (README, dbupgrade).
     if ( $writer_tz !== null && $writer_tz !== '' ) {
         $from_tz = $writer_tz;
     } else {
@@ -1343,11 +1334,8 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
         return false;
     }
 
-    # Atomic: a failure part-way used to
-    # leave some rows converted with no marker, so the next run shifted
-    # them a second time. ALTER TABLE above already committed on its own
-    # (DDL always does) before this starts, so it is not part of the
-    # all-or-nothing unit; everything from here on is.
+    # One transaction for the conversion and its marker row, with no DDL inside it (DDL commits
+    # implicitly); the marker table and flag column were created above.
     mysqli_begin_transaction( $db_handle );
     $ok = true;
 
@@ -1460,13 +1448,13 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
     $max_row = $max_res ? mysqli_fetch_assoc( $max_res ) : null;
     $max_audit_id = ( $max_row && $max_row[ 'max_id' ] !== null ) ? (int) $max_row[ 'max_id' ] : null;
 
-    # Marker travels with the dbinstance itself (see the function-level
-    # comment above), so a later migration attempt against this same
-    # dbinstance -- by either caller -- skips it instead of shifting
-    # already-correct rows again. Part of the same transaction as the
-    # conversion itself, so a crash between the UPDATE and this INSERT
-    # cannot leave rows converted with nothing recorded either.
-    mark_people_audit_utc_migration_done( $db_handle, $db, $from_tz, $max_audit_id );
+    # The marker travels with the dbinstance, so a later run skips it.
+    if ( !mark_people_audit_utc_migration_done( $db_handle, $db, $from_tz, $max_audit_id, false ) ) {
+        echo "WARNING: $db.people_audit: could not record the UTC migration ("
+           . mysqli_error( $db_handle ) . "); rolled back, nothing converted.\n";
+        mysqli_rollback( $db_handle );
+        return false;
+    }
     mysqli_commit( $db_handle );
     return true;
 }
