@@ -30,7 +30,7 @@ $required_version = "4.3.0";
 $notes = <<<__EOD
 usage: $self {options}
 
-Upgrade this host to the Slurm submission contract (gridctl#33, common#24, dbinst#57).
+Upgrade this host to the Slurm submission contract.
 Without --apply nothing is changed; each step reports what it would do. Run with --check
 for that dry run; with no options at all this help is printed instead.
 
@@ -90,11 +90,11 @@ Steps
     --activate that isn't active yet (and, for the host's own cluster, authorizes
     the key) and checks ssh for us3 and the web account
 5 : creates the shared circuit-breaker directory, the shared ssh-control directory
-    (common#24, sticky bit so one account cannot rename another's subdirectory
-    under it), elog.txt and its HMAC key (dbinst#75, provisioned shared from the
+    (sticky bit so one account cannot rename another's subdirectory
+    under it), elog.txt and its HMAC key (provisioned shared from the
     start so a split web/us3 account host does not depend on whichever account
     happens to touch them first), and gfac.runtime_prediction (the runtime
-    advisory pilot table, common#31 -- optional, pilot-scoped; a missing SQL
+    advisory pilot table -- optional, pilot-scoped; a missing SQL
     file or no CREATE privilege is a note here, not a failure)
 6 : removes the gridctl cron entries (gridctl.php, and the gridctl_pro/dev names before it)
 7 : installs the Content-Security-Policy as Report-Only unless a policy is already
@@ -103,8 +103,8 @@ Steps
     already configured -- without it, every page's CSS/images/JS 404 after a hand upgrade
 8 : verifies the result, including that every active cluster passes the submission
     sizing gate rather than refusing every job
-9 : migrates each dbinstance's people_audit.created_at to UTC if not already done
-    (dbutils#52), using the running config.php (or overlay) each instance already
+9 : migrates each dbinstance's people_audit.created_at to UTC if not already done,
+    using the running config.php (or overlay) each instance already
     connects with -- idempotent, so a host dbupgrade/stage1+stage2 already migrated
     is reported 'ok' here, not migrated again
 
@@ -666,7 +666,7 @@ function systemctl_show_properties( $output ) {
 ##
 ## THE BUG this answers: --check
 ## reported "All checks passed" on a host whose us3-listen unit had no
-## User= line at all. gridctl#33's services.php now refuses to start as
+## User= line at all. gridctl's services.php refuses to start as
 ## root, so that host could never actually start the gridctl services --
 ## not a style nit, a host that can never come up after a reboot.
 ##
@@ -2543,8 +2543,8 @@ if ( is_dir( $breaker_dir ) && !is_link( $breaker_dir )
     }
 }
 
-## Where submit_slurm's reused ssh/scp connection keeps its control socket
-## (common#24), mirroring remote_exec::default_control_dir()'s own default.
+## Where submit_slurm's reused ssh/scp connection keeps its control socket,
+## mirroring remote_exec::default_control_dir()'s own default.
 ## Sticky bit, not just 2770 like the breaker dir: unlike the breaker, every
 ## account also creates its OWN subdirectory under here at runtime
 ## (remote_exec::controlPath()), and without the sticky bit either account
@@ -2575,7 +2575,7 @@ if ( is_dir( $ssh_control_dir ) && !is_link( $ssh_control_dir )
     }
 }
 
-## elog.php's own state (dbinst#75): elog.txt and its HMAC key, so a split
+## elog.php's own state: elog.txt and its HMAC key, so a split
 ## web/us3 account host does not depend on whichever account happens to
 ## create them first. elog.txt is provisioned empty rather than left for
 ## elog() to create on first use, because elog() only narrows a *brand new*
@@ -2596,7 +2596,7 @@ if ( is_dir( $ssh_control_dir ) && !is_link( $ssh_control_dir )
 ## elog() on those pages, and moving that load order is a much larger
 ## change than this setting is worth.
 $elog_dir = "$us3_home/lims/etc";
-## elog.txt.1 is deliberately not provisioned here: dbinst#75 rotates by
+## elog.txt.1 is deliberately not provisioned here: elog.php rotates by
 ## rename(), not by writing .1 in place, and a rename() needs write access
 ## to $elog_dir itself, not just to the file being provisioned -- a
 ## provisioned .1 does not give the web account that on a split-account
@@ -2609,7 +2609,7 @@ $elog_dir = "$us3_home/lims/etc";
 ## every rotation there leaves .1 owned us3:apache, so a provisioned 0660
 ## us3:<web group> .1 would never stay that way and --check would never
 ## converge.
-## See dbinst#75's elog.php for the accepted limitation this leaves: the
+## See dbinst's elog.php for the accepted limitation this leaves: the
 ## web account cannot rotate elog.txt on a split-account host today.
 $elog_targets = [
     "$elog_dir/elog.txt"        => [ 0660, '' ],
@@ -2648,7 +2648,7 @@ foreach ( $elog_targets as $path => $spec ) {
         ## 0644 root:root for uslims_upgrade.php, run as root), leaving the
         ## HMAC key itself world-readable until those calls run. An
         ## unrelated account polling the directory in the meantime read it
-        ## every time. Matches dbinst#75's own elog_hmac_key().
+        ## every time. Matches dbinst's own elog_hmac_key().
         $old_umask = umask( 0077 );
         $written = file_put_contents( $path, $content );
         umask( $old_umask );
@@ -2665,7 +2665,7 @@ foreach ( $elog_targets as $path => $spec ) {
 }
 
 ## Classifies the outcome of actually running gfac.runtime_prediction's
-## CREATE TABLE (common#31's pilot table), given facts the caller has
+## CREATE TABLE (the runtime advisory pilot table), given facts the caller has
 ## already gathered -- pure, no DB access, no globals -- so the "optional,
 ## pilot-scoped" downgrade below (a missing-privilege error is a note, not a
 ## FAIL) is pinned down by a real unit test (in the lims aggregator's test
@@ -2700,7 +2700,7 @@ function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_err
         ## operator running the suggested command from anywhere but the
         ## dbutils checkout itself.
         return [ 'note', "gfac account lacks privilege to create the optional runtime advisory"
-                        . " pilot table (common#31): " . reason( (string) $create_error )
+                        . " pilot table: " . reason( (string) $create_error )
                         . "; an account with CREATE on gfac can run it by hand:"
                         . " mysql gfac < $runtime_table_sql" ];
     }
@@ -2768,7 +2768,7 @@ function runtime_prediction_alter_outcome( $alter_sql, $alter_ok, $alter_errno, 
     }
     if ( in_array( (int) $alter_errno, [ 1142, 1044 ], true ) ) {
         return [ 'note', "gfac account lacks privilege to add the optional runtime advisory"
-                        . " pilot table's prediction_cluster columns (common#31): "
+                        . " pilot table's prediction_cluster columns: "
                         . reason( (string) $alter_error )
                         . "; an account with ALTER on gfac can run it by hand:"
                         . " mysql gfac < $runtime_table_alter_sql" ];
@@ -2851,18 +2851,18 @@ function mysqli_grant_rows( $link ) {
     return $grants;
 }
 
-## Purely additive and optional: $global_runtime_advisory_enabled (common#31)
+## Purely additive and optional: $global_runtime_advisory_enabled
 ## gates whether anything ever reads or writes this table, and
 ## CREATE TABLE IF NOT EXISTS is safe to run on every upgrade whether or not
 ## the pilot is turned on for this host -- that is how an admin enables it
 ## later without a separate migration step.
 $runtime_table_sql = "$wwwpath/common/class/prediction/runtime_pilot_table.sql";
 if ( !is_file( $runtime_table_sql ) ) {
-    ## The runtime advisory pilot (common#31) is optional, not a required
+    ## The runtime advisory pilot is optional, not a required
     ## part of this upgrade: a common checkout that predates it, or one
     ## built without the pilot, is not an upgrade failure.
     report( 'note', "$runtime_table_sql not present; skipping the optional runtime advisory"
-          . " pilot table (common#31) -- not required for this upgrade" );
+          . " pilot table -- not required for this upgrade" );
 } else {
     ## The additive migration for a table created before prediction_cluster/
     ## prediction_cluster_source existed. Checked beside $runtime_table_sql
@@ -2897,11 +2897,11 @@ if ( !is_file( $runtime_table_sql ) ) {
             ## neither, so without this, --check would report this as a
             ## pending change forever that --apply could never actually make.
             report( 'note', "gfac account lacks privilege to add the optional runtime advisory"
-                  . " pilot table's prediction_cluster columns (common#31); an account with ALTER"
+                  . " pilot table's prediction_cluster columns; an account with ALTER"
                   . " on gfac can run it by hand: mysql gfac < $runtime_table_alter_sql" );
         } else {
             report( 'todo', "add gfac.runtime_prediction.prediction_cluster[_source] columns"
-                  . " (runtime advisory pilot, common#31): $runtime_table_alter_sql" );
+                  . " (runtime advisory pilot): $runtime_table_alter_sql" );
             if ( $apply ) {
                 $lines = explode( "\n", (string) file_get_contents( $runtime_table_alter_sql ) );
                 $alter = trim( implode( "\n", array_filter( $lines,
@@ -2932,10 +2932,10 @@ if ( !is_file( $runtime_table_sql ) ) {
         ## reliable enough for --check alone to depend on, so it is
         ## reliable enough for --apply to skip the doomed attempt on too.
         report( 'note', "gfac account lacks privilege to create the optional runtime advisory"
-              . " pilot table (common#31); an account with CREATE on gfac can run it by hand:"
+              . " pilot table; an account with CREATE on gfac can run it by hand:"
               . " mysql gfac < $runtime_table_sql" );
     } else {
-        report( 'todo', "create gfac.runtime_prediction (runtime advisory pilot, common#31)" );
+        report( 'todo', "create gfac.runtime_prediction (runtime advisory pilot)" );
         if ( $apply ) {
             ## The file is documentation plus one statement: strip the '--'
             ## comment lines (which include the teardown DROP TABLE, meant to

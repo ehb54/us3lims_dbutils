@@ -1039,7 +1039,7 @@ if ( $running || $restart || $restart_only ) {
         $hpcreqid = $jm_restart_hpcreqid[ $index ];
         ## This script itself can run as either root (an operator's manual
         ## --restart) or us3 (us3lims-roles' boot-time us3-listen.service,
-        ## the only account gridctl#33's refuse-root-start even permits to
+        ## the only account gridctl's refuse-root-start even permits to
         ## reach this code path). A monitor launched as root instead of us3
         ## breaks it the same way a bare unconditional wrap once did when
         ## this ran as us3: common's account-match gate
@@ -1334,7 +1334,7 @@ function runuser_bin() {
 ## -- confirmed for real: us3lims-roles' us3-listen.service runs
 ## services.php start as us3, which runs uslims_jobs.php --restart, so
 ## after every reboot zero monitors came back for jobs that were running
-## when the host went down. gridctl#33 now refuses to even start the
+## when the host went down. gridctl refuses to even start the
 ## daemons as root, so running this script as root to sidestep the bug
 ## is no longer an option either -- us3 is the only account that can ever
 ## reach this code path.
