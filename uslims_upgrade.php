@@ -3478,10 +3478,10 @@ if ( !$apply ) {
     ## A
     ## metascheduler pool entry (the same "clusters"-list shape step 3
     ## above already carves out of $active via is_metascheduler_pool_entry()
-    ## -- identical to gridctl's own pick_cluster_is_metascheduler_entry())
+    ## -- identical to gridctl's own dispatch_is_pool_entry())
     ## lives in $cluster_details the same as every real cluster, but is
     ## never itself a schedulable target: it has no ppn and no
-    ## cluster_config.php probe of its own, because pick_cluster() resolves
+    ## cluster_config.php probe of its own, because the dispatch worker resolves
     ## it to a separate, ordinary active entry that already has both. Both
     ## checks below used to treat the pool entry as if it were that real
     ## cluster and fail it on both counts, so --apply exited rc 1 on any
