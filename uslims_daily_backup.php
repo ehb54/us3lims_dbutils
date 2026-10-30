@@ -258,6 +258,32 @@ foreach ( $dbnames_used as $db => $val ) {
     $cdumped[] = $cdumpfile;
 }
 
+## gfac's dispatch tables (controller claims, rotation state, turn events,
+## decisions). The rest of gfac is transient job data and is not backed up.
+$dispatch_tables = [];
+$res = mysqli_query( $db_handle, "SHOW TABLES IN gfac LIKE 'dispatch\\_%'" );
+while ( $res && ( $row = mysqli_fetch_row( $res ) ) ) {
+    $dispatch_tables[] = $row[ 0 ];
+}
+if ( $dispatch_tables ) {
+    $dumpfile = "gfac_dispatch-dump-$date.sql";
+    echo "starting: exporting gfac dispatch tables to $dumpfile\n";
+    backup_rsync_run_cmd( dispatch_backup_command( $myconf, $dispatch_tables, $dumpfile, $logf ) );
+    if ( !file_exists( $dumpfile ) ) {
+        backup_rsync_failure( "Error exporting '$dumpfile' terminating" );
+    }
+    backup_rsync_run_cmd( "sudo chown $backup_user:$backup_user $dumpfile" );
+    backup_rsync_run_cmd( "sudo chmod $backup_file_mode $dumpfile" );
+    $dumped[] = $dumpfile;
+    backup_rsync_run_cmd( "$compresswith $dumpfile" );
+    if ( !file_exists( "$dumpfile.$compressext" ) ) {
+        backup_rsync_failure( "Error compressing '$dumpfile.$compressext' terminating" );
+    }
+    backup_rsync_run_cmd( "sudo chown $backup_user:$backup_user $dumpfile.$compressext" );
+    backup_rsync_run_cmd( "sudo chmod $backup_file_mode $dumpfile.$compressext" );
+    $cdumped[] = "$dumpfile.$compressext";
+}
+
 ## export all GRANTS
 # also dump the grant table in the form of a script to re-establish
 # be sure to edit and remove problematic ones, i.e., root

@@ -1,6 +1,15 @@
 <?php
 
 $self = __FILE__;
+
+## Report failed connections and queries as values, not exceptions (PHP
+## 8.1+), matching uslims_upgrade.php/uslims_jobs.php: without this, a
+## failing conversion UPDATE (migrate_people_audit_created_at_to_utc(),
+## utility.php) threw uncaught on 8.2 -- after the drop loop had already
+## dropped every instance (rc 255, the ones after the failure simply gone),
+## instead of warning and continuing to the next instance as intended.
+mysqli_report( MYSQLI_REPORT_OFF );
+
 # user defines
 $us3home         = "/home/us3";
 $us3ini          = "$us3home/lims/.us3lims.ini";
@@ -65,6 +74,10 @@ and edit with appropriate values
 require "../utility.php";
 file_perms_must_be( $use_config_file );
 require $use_config_file;
+
+# migrate_people_audit_created_at_to_utc() now lives in ../utility.php: both
+# this import pipeline and uslims_upgrade.php's in-place path call the same
+# tested function instead of each carrying its own copy.
 
 # main
 
@@ -156,6 +169,19 @@ foreach ( $dbnames_used as $db => $v ) {
     db_obj_result( $db_handle, $query );
 }
 echo "All metadata found\n";
+echoline( '=' );
+
+# A dump that does not fit this host's schema would fail its import after the drop below.
+echo "Checking every dump against this host's us3.sql\n";
+$dumps = [];
+foreach ( $dbnames_used as $db => $v ) {
+    $dumps[ $db ] = [ "export-$use_dbhost-$db.sql.$compressext", "export-$use_dbhost-$db-autoincrements.sql" ];
+}
+$errors = preflight_instance_imports( $db_handle, "mysql --defaults-file=$cwd/my.cnf -u root", $limsdbpath, $dumps );
+if ( strlen( $errors ) ) {
+    error_exit( "ERRORS (nothing was dropped):\n" . $errors . "Terminating" );
+}
+echo "All dumps fit\n";
 echoline( '=' );
 
 get_yn_answer( "Have you made a binary backup using uslims_db_binary_backup.php?", true );
@@ -255,6 +281,12 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
             }
         }
 
+        # The data-only dump carries rows for objects us3.sql does not define.
+        check_db();
+        if ( !prepare_imported_instance_schema( $db_handle, $db ) ) {
+            error_exit( "could not prepare $db for import: " . mysqli_error( $db_handle ) );
+        }
+
         $cmds = [
     "$uncompresswith $sqldata | mysql --defaults-file=$cwd/my.cnf -u root $db"
     ,"mysql --defaults-file=$cwd/my.cnf -u root $db < export-$use_dbhost-$db-autoincrements.sql"
@@ -266,6 +298,18 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
                 echo "command returns: $res\n";
             }
         }
+
+        # The writer's own zone, captured at export time (stage1), not
+        # this (the importing) host's.
+        # Missing for a package made before this file existed: null falls
+        # back to migrate_people_audit_created_at_to_utc()'s original
+        # behavior (this host's own session zone), same as every other
+        # caller.
+        $tzfile = "export-$use_dbhost-$db-timezone.txt";
+        $writer_tz = file_exists( $tzfile ) ? trim( file_get_contents( $tzfile ) ) : null;
+
+        check_db();
+        migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz );
     }
 }
 

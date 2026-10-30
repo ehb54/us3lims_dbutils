@@ -238,6 +238,39 @@ foreach ( $dbnames_used as $db => $val ) {
     }
     echo "completed: exporting $db autoincrements to $autoincfile\n";
     $extra_files[] = $autoincfile;
+
+    # This host's own session time zone, captured now while $db_handle is
+    # still the connection that actually wrote these rows -- stage2 cannot
+    # ask the source host anything once this package is the only thing that
+    # survives the trip, and without this it fell back to reading the
+    # *importing* host's own zone instead.
+    # Read, not guessed, same as migrate_people_audit_created_at_to_utc()'s
+    # own default would read if it ran locally on this host right now.
+    $tzfile  = "export-$use_dbhost-$db-timezone.txt";
+    $tz_res  = mysqli_query( $db_handle, "SELECT @@session.time_zone AS tz" );
+    $tz_row  = $tz_res ? mysqli_fetch_assoc( $tz_res ) : null;
+    $from_tz = ( $tz_row && $tz_row[ 'tz' ] !== '' ) ? $tz_row[ 'tz' ] : 'SYSTEM';
+    ## THE BUG this answers: recording the
+    ## literal word 'SYSTEM' here meant nothing once carried into stage2's
+    ## package -- it is relative to whichever host evaluates it, and
+    ## stage2 evaluates it on the IMPORTING host, not this one. Resolved to
+    ## this host's real zone name before it ever leaves this host; a
+    ## package that cannot even say what zone it was exported from is not
+    ## safe to import blind, so this is a hard stop here, not a note.
+    if ( $from_tz === 'SYSTEM' ) {
+        $resolved = resolve_system_timezone();
+        if ( $resolved === null ) {
+            ## $db is interpolated, so the message names the actual dbinstance.
+            error_exit( "this host's own OS time zone could not be resolved (neither"
+                      . " /etc/timezone nor /etc/localtime gave a usable zone name);"
+                      . " $db's people_audit rows cannot be exported safely without it"
+                      . " -- set a named zone explicitly (not 'SYSTEM') for this MySQL"
+                      . " session and rerun" );
+        }
+        $from_tz = $resolved;
+    }
+    file_put_contents( $tzfile, $from_tz );
+    $extra_files[] = $tzfile;
 }
 
 # package
