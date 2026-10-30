@@ -897,6 +897,15 @@ function dbutils_owned_tables() {
     return [ '_dbutils_people_audit_utc_migrated', '_dbutils_people_audit_utc_boundary' ];
 }
 
+## Runs $sql with $schema bound to its one ? placeholder; the result set, or false.
+function schema_query( $db_handle, $sql, $schema ) {
+    $stmt = mysqli_prepare( $db_handle, $sql );
+    if ( !$stmt || !mysqli_stmt_bind_param( $stmt, 's', $schema ) || !mysqli_stmt_execute( $stmt ) ) {
+        return false;
+    }
+    return mysqli_stmt_get_result( $stmt );
+}
+
 ## Whether $db's people_audit was already migrated by a previous call,
 ## from either caller. Pulled out of migrate_people_audit_created_at_to_utc()
 ## so uslims_upgrade.php step 9 and migrate_people_audit_utc.php can decide
@@ -929,8 +938,8 @@ function people_audit_utc_migration_done( $db_handle, $db ) {
 
     ## Read-only: --check and a busy host ask this too. Without the flag column no row has been
     ## flagged yet, so every dated row still needs converting.
-    $col = mysqli_query( $db_handle, "SELECT COUNT(*) AS n FROM information_schema.COLUMNS"
-                        . " WHERE TABLE_SCHEMA = '$db' AND TABLE_NAME = 'people_audit' AND COLUMN_NAME = 'created_at_utc'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+    $col = schema_query( $db_handle, "SELECT COUNT(*) AS n FROM information_schema.COLUMNS"
+                        . " WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'people_audit' AND COLUMN_NAME = 'created_at_utc'", $db );
     $col_row = $col ? mysqli_fetch_assoc( $col ) : null;
     if ( !$col_row ) {
         return false; # can't even see the real signal; don't claim done
@@ -1155,8 +1164,8 @@ function dump_insert_columns( array $files ) {
 function import_schema_mismatches( $db_handle, $db, array $insert_columns ) {
     sql_identifier_or_die( $db );
     $have = [];
-    $res = mysqli_query( $db_handle, "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS"
-                         . " WHERE TABLE_SCHEMA = '$db'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
+    $res = schema_query( $db_handle, "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.COLUMNS"
+                         . " WHERE TABLE_SCHEMA = ?", $db );
     if ( !$res ) {
         error_exit( "could not read the columns of $db: " . mysqli_error( $db_handle ) );
     }
