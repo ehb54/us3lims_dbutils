@@ -12,7 +12,8 @@ return [
     'run'           => function ( $gdb, $db, $apply, $context ) {
         global $changes;
 
-        $has = mysqli_query( $gdb, "SHOW COLUMNS FROM `$db`.analysis LIKE 'HPCAnalysisRequestID'" );
+        $has = schema_query( $gdb, "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? "
+                                 . "AND TABLE_NAME = 'analysis' AND COLUMN_NAME = 'HPCAnalysisRequestID'", $db );
         if ( $has && mysqli_num_rows( $has ) > 0 ) {
             report( 'ok', "$db.analysis has HPCAnalysisRequestID" );
             return;
