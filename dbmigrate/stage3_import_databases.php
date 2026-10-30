@@ -294,6 +294,7 @@ if ( get_yn_answer( "create dbinstances" ) ) {
                 echo "command returns: $res\n";
             }
         }
+        people_usernamepam_before_load( $db );
         $querys = [
     "delete from $db.abstractCenterpiece"
     ,"delete from $db.abstractRotor"
@@ -322,6 +323,7 @@ if ( get_yn_answer( "create dbinstances" ) ) {
                 echo "command returns: $res\n";
             }
         }
+        people_usernamepam_after_load( $db );
         if ( $create_php ) {
             $cmds = [
     "git clone https://github.com/ehb54/us3lims_dbinst.git $htmlpath/$db"

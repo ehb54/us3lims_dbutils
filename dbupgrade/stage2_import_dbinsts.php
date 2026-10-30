@@ -231,6 +231,7 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
                 echo "command returns: $res\n";
             }
         }
+        people_usernamepam_before_load( $db );
         $querys = [
     "GRANT ALL ON $db.* TO '$dbuser'@'localhost' IDENTIFIED BY '$dbpasswd'"
     ,"GRANT ALL ON $db.* TO '$dbuser'@'%' IDENTIFIED BY '$dbpasswd'"
@@ -266,6 +267,7 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
                 echo "command returns: $res\n";
             }
         }
+        people_usernamepam_after_load( $db );
     }
 }
 

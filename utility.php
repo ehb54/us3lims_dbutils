@@ -291,6 +291,42 @@ function existing_stash_dbs() {
     return $existing_dbs;
 }
 
+# people.userNamePAM is UNIQUE NOT NULL with no default (us3_sql, 2024-05-29), so a
+# data only dump of an older dbinstance loads '' for every person and the second one
+# aborts the import on the unique key.  the import pipelines call before_load after
+# us3.sql and after_load once the data is in: the column is nullable during the load,
+# then set from email (as us3lims_dbinst register.php does for non-PAM users) and made
+# NOT NULL again.  a schema without the column is left alone.
+
+function people_usernamepam_query( $db, $q ) {
+    global $db_handle;
+    check_db();
+    $query =
+        "select count(*) from information_schema.columns"
+        . " where table_schema='$db' and table_name='people' and column_name='userNamePAM'";
+    $res = db_obj_result( $db_handle, $query );
+    if ( !$res->{'count(*)'} ) {
+        return 0;
+    }
+    check_db();
+    if ( !mysqli_query( $db_handle, $q ) ) {
+        error_exit( "db query failed : $q\ndb query error: " . mysqli_error($db_handle) );
+    }
+    return mysqli_affected_rows( $db_handle );
+}
+
+function people_usernamepam_before_load( $db ) {
+    people_usernamepam_query( $db, "ALTER TABLE $db.people MODIFY userNamePAM VARCHAR(63) NULL" );
+}
+
+function people_usernamepam_after_load( $db ) {
+    $filled = people_usernamepam_query( $db, "UPDATE $db.people SET userNamePAM = email WHERE userNamePAM IS NULL" );
+    if ( $filled ) {
+        echo "NOTICE: $db.people : userNamePAM not in the dump, set from email for $filled person(s)\n";
+    }
+    people_usernamepam_query( $db, "ALTER TABLE $db.people MODIFY userNamePAM VARCHAR(63) NOT NULL" );
+}
+
 function boolstr( $val, $truestr = "True", $falsestr = "" ) {
     return $val ? $truestr : $falsestr;
 }
