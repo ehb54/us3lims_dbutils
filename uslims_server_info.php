@@ -105,7 +105,10 @@ echo "\n";
 
 ## qt_version + qwt version
 $qt_vers  = trim( run_cmd( "ls -l /opt/qt | sed 's/^.*\/qt-//g'" ) );
-$qwt_vers = trim( run_cmd( "ls -d /opt/qt-$qt_vers-qwt-* 2>/dev/null | sed 's|^.*-qwt-||' | head -1", false ) );
+# qwt version from the ultrascan/gui modulefile: /opt can hold several qwt builds for one qt
+# ( e.g. qt-5.15.19-qwt-6.1.6 and -6.3.0 ) and the /opt/qwt symlink may point at the wrong one,
+# so the module ( what the deployed gui actually links against ) is the authoritative source
+$qwt_vers = trim( run_cmd( "grep -hoE 'qwt-[0-9.]+' /etc/modulefiles/ultrascan/gui /etc/modulefiles/ultrascan/gui-build 2>/dev/null | head -1 | sed 's/^qwt-//'", false ) );
 if ( strlen( $qwt_vers ) ) {
     echo sprintf( "%s qwt %s\n", $qt_vers, $qwt_vers );
 } else {
