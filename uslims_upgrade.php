@@ -445,12 +445,11 @@ function installation_check_failures( $output ) {
 
 ## global_config.php's $global_site_admin_email, which common sends submission-failure and outage
 ## notices to, from listen-config.php's $admin_email (the host's administrator; an instance page's
-## $admin_email is that instance's contact). [ status, managed line or null ].
+## $admin_email is that instance's contact). Without one, root@localhost, as gridctl's
+## notices fall back. [ status, managed line or null ].
 function site_admin_email_change( array $gc, array $listen ) {
     $site_admin = trim( (string) ( $listen[ 'admin_email' ] ?? '' ) );
-    if ( $site_admin === '' ) {
-        return [ 'note', null ];
-    }
+    $site_admin = $site_admin === '' ? 'root@localhost' : $site_admin;
     if ( ( $gc[ 'global_site_admin_email' ] ?? '' ) === $site_admin ) {
         return [ 'ok', null ];
     }
@@ -2109,13 +2108,12 @@ foreach ( array( 'global_max_queue_time_hours', 'global_max_run_time_hours' ) as
 ## Site admin for common's notices
 list( $site_admin_status, $site_admin_line ) = site_admin_email_change( $gc, $old_listen );
 if ( $site_admin_status === 'todo' ) {
-    report( 'todo', "set \$global_site_admin_email from listen-config.php's \$admin_email" );
+    report( 'todo', trim( (string) ( $old_listen[ 'admin_email' ] ?? '' ) ) === ''
+        ? "set \$global_site_admin_email to root@localhost, where gridctl's notices go: listen-config.php has no \$admin_email"
+        : "set \$global_site_admin_email from listen-config.php's \$admin_email" );
     $managed[] = $site_admin_line;
-} elseif ( $site_admin_status === 'note' ) {
-    report( 'note', "listen-config.php has no \$admin_email, so \$global_site_admin_email is not set;"
-                   . " common's admin notices go to each instance's own \$admin_email" );
 } else {
-    report( 'ok', "\$global_site_admin_email is listen-config.php's \$admin_email" );
+    report( 'ok', "\$global_site_admin_email is set" );
 }
 
 ## Tenant scope: unset reads as single tenant; set it explicitly either way
