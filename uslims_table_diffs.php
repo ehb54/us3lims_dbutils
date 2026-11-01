@@ -136,8 +136,9 @@ foreach ( $schema_tables as $table => $v ) {
 }
 
 if ( $only_extras ) {
-    if ( count( $in_db_not_schema ) ) {
-        echo implode( "\n", array_keys($in_db_not_schema ) ) . "\n";
+    $extras = schema_extra_tables( array_keys( $db_tables ), array_keys( $schema_tables ) );
+    if ( count( $extras ) ) {
+        echo implode( "\n", $extras ) . "\n";
     }
     exit;
 }

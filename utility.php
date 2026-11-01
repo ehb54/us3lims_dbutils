@@ -904,6 +904,17 @@ function dbutils_owned_tables() {
     return [ '_dbutils_people_audit_utc_migrated', '_dbutils_people_audit_utc_boundary' ];
 }
 
+## Per-instance dispatch tables (common class/dispatch_schema.php); a schema_rev#.sql
+## older than 4.3.0 lacks them, but their rows must move with the instance.
+function dispatch_instance_tables() {
+    return [ 'dispatch_request', 'dispatch_attempt', 'dispatch_event' ];
+}
+
+## Tables in $db_tables that $schema_tables lacks and an export may leave out.
+function schema_extra_tables( array $db_tables, array $schema_tables ) {
+    return array_values( array_diff( $db_tables, $schema_tables, dbutils_owned_tables(), dispatch_instance_tables() ) );
+}
+
 ## Runs $sql with $schema bound to its one ? placeholder; the result set, or false.
 function schema_query( $db_handle, $sql, $schema ) {
     $stmt = mysqli_prepare( $db_handle, $sql );
@@ -1136,7 +1147,8 @@ function prepare_imported_instance_schema( $db_handle, $db ) {
 }
 
 ## The tables and columns a data-only dump writes to: [ table => [ column, ... ] ],
-## read from --complete-insert INSERT lines and autoincrement ALTER lines.
+## read from --complete-insert INSERT lines, LOCK TABLES and "Dumping data" lines (written for an
+## empty table too) and autoincrement ALTER lines.
 ## Reads .sql, .gz and .xz files.
 function dump_insert_columns( array $files ) {
     $readers = [ 'sql' => 'cat', 'gz' => 'gzip -dc', 'xz' => 'xz -dc' ];
@@ -1154,7 +1166,8 @@ function dump_insert_columns( array $files ) {
                     $cols[ trim( $col, " `" ) ] = true;
                 }
                 $columns[ $m[ 1 ] ] = $cols;
-            } elseif ( preg_match( '/^alter table (?:[^ .]+\.)?([^ ]+) auto_increment/i', $line, $m )
+            } elseif ( ( preg_match( '/^(?:LOCK TABLES|-- Dumping data for table) `([^`]+)`/', $line, $m )
+                         || preg_match( '/^alter table (?:[^ .]+\.)?([^ ]+) auto_increment/i', $line, $m ) )
                        && !isset( $columns[ $m[ 1 ] ] ) ) {
                 $columns[ $m[ 1 ] ] = [];
             }
