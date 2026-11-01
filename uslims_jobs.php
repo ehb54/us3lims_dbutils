@@ -65,6 +65,9 @@ Options
 --queue-messages           : include queue message detail
 --monitor                  : monitor the output (requires --gfacid)
 --running                  : report on all running jobs (gfac.analysis & active jobmonitor.php)
+--busy                     : print "idle" and exit 0, or the work in flight and exit 1 (2 when it cannot be read):
+                             unfinished gfac.analysis rows, live jobmonitors and unsettled dispatch requests,
+                             as uslims_upgrade.php's idle check counts them
 --restart                  : restart jobmonitors if needed (e.g. after a system reboot)
 --restart-only       n     : restart n jobmonitors if needed (typically for debugging purposes)
 --check-log                : checks the log (requires --gfacid & exclusive of --monitor)
@@ -96,6 +99,7 @@ $fullrpt        = false;
 $qmesgs         = false;
 $monitor        = false;
 $running        = false;
+$busy_check     = false;
 $restart        = false;
 $restart_only   = false;
 $checklog       = false;
@@ -172,6 +176,11 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--running": {
             array_shift( $u_argv );
             $running = true;
+            break;
+        }
+        case "--busy": {
+            array_shift( $u_argv );
+            $busy_check = true;
             break;
         }
         case "--restart": {
@@ -256,6 +265,19 @@ and edit with appropriate values
             
 file_perms_must_be( $use_config_file );
 require $use_config_file;
+
+if ( $busy_check ) {
+    open_db();
+    list( $busy_lines, $busy_notes ) = jobs_busy_report(
+        analysis_row_counts( $db_handle ),
+        active_jobmonitors(),
+        dispatch_work_in_flight( $db_handle ) );
+    foreach ( $busy_notes as $note ) {
+        echo "note: $note\n";
+    }
+    echo $busy_lines ? implode( "\n", $busy_lines ) . "\n" : "idle\n";
+    exit( !$busy_lines ? 0 : ( preg_grep( '/could not be read/', $busy_lines ) ? 2 : 1 ) );
+}
 
 if ( !$db && !$running && !$restart && !$restart_only && !$getpriorids ) {
     error_exit( "ERROR: no database specified" );
@@ -686,6 +708,30 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
 ##
 ## The pattern also has to match the launched form rather than anything merely
 ## naming the script, so a grep or an editor on the file is not counted.
+## --busy's answer: [ busy lines, notes ]. A finished row without a monitor is not work in
+## flight (uslims_upgrade.php's idle check accepts it); it is named with its remedy instead.
+function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines ) {
+    $busy  = [];
+    $notes = [];
+    if ( $analysis === null ) {
+        $busy[] = "gfac.analysis could not be read";
+    } else {
+        if ( $analysis[ 'unfinished' ] ) {
+            $busy[] = "{$analysis['unfinished']} unfinished job(s) in gfac.analysis"
+                    . ( $monitors ? '' : " and no jobmonitor; run php uslims_jobs.php --restart as us3 to resume them" );
+        }
+        $parked = $analysis[ 'timed_out' ] + $analysis[ 'finished' ];
+        if ( $parked && !$monitors ) {
+            $notes[] = "$parked finished or timed-out job(s) in gfac.analysis have no monitor;"
+                     . " they do not make the host busy. Run php uslims_jobs.php --restart as us3 to close them out";
+        }
+    }
+    if ( $monitors ) {
+        $busy[] = count( $monitors ) . " jobmonitor(s) running";
+    }
+    return [ array_merge( $busy, $dispatch_lines ), $notes ];
+}
+
 function active_jobmonitors() {
     $lines = [];
     exec( 'ps -eo pid=,args=', $lines );

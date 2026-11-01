@@ -910,6 +910,75 @@ function dispatch_instance_tables() {
     return [ 'dispatch_request', 'dispatch_attempt', 'dispatch_event' ];
 }
 
+## gfac.analysis rows by phase: unfinished (any status outside the terminal ones, an
+## unknown status included), timed_out (parked *_TIMEOUT, no monitor needed to wait for)
+## and finished (terminal; a row a cleanup has not removed yet). null when unreadable.
+function analysis_row_counts( $gdb, $schema = 'gfac' ) {
+    sql_identifier_or_die( $schema );
+    $res = mysqli_query( $gdb, "SELECT COUNT(*) AS total," // NOSONAR $schema is validated above
+        . " SUM( status IS NULL OR status NOT IN ( 'COMPLETE', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA',"
+        . " 'ERROR', 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ) ) AS unfinished,"
+        . " SUM( status IN ( 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ) ) AS timed_out"
+        . " FROM $schema.analysis" );
+    $row = $res ? mysqli_fetch_assoc( $res ) : null;
+    if ( !$row ) {
+        return null;
+    }
+    $unfinished = (int) $row[ 'unfinished' ];
+    $timed_out  = (int) $row[ 'timed_out' ];
+    return [ 'unfinished' => $unfinished, 'timed_out' => $timed_out,
+             'finished' => (int) $row[ 'total' ] - $unfinished - $timed_out ];
+}
+
+## Dispatch requests in $db the dispatch worker still has to settle (queued, waiting,
+## in submission or of unknown outcome); 0 without the tables, null when unreadable.
+function dispatch_unsettled_requests( $conn, $db ) {
+    sql_identifier_or_die( $db );
+    $has = schema_query( $conn, "SELECT COUNT(*) FROM information_schema.TABLES"
+                         . " WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'dispatch_request'", $db );
+    $row = $has ? mysqli_fetch_row( $has ) : null;
+    if ( !$row ) {
+        return null;
+    }
+    if ( !(int) $row[ 0 ] ) {
+        return 0;
+    }
+    $res = mysqli_query( $conn, "SELECT COUNT(*) FROM $db.dispatch_request WHERE state IN" // NOSONAR $db is validated above
+        . " ( 'PENDING', 'ASSESSING', 'WAITING', 'STAGING', 'SUBMITTING', 'SUBMISSION_UNKNOWN' )" );
+    $row = $res ? mysqli_fetch_row( $res ) : null;
+    return $row ? (int) $row[ 0 ] : null;
+}
+
+## Unsettled dispatch work in every instance the dispatch worker serves, read as the
+## worker reads it (listen-config.php's $user): [ "db: reason", ... ]; empty when settled.
+function dispatch_work_in_flight( $link ) {
+    if ( !$link ) {
+        return [ "dispatch requests could not be read: " . mysqli_connect_error() ];
+    }
+    $res = mysqli_query( $link, "SELECT TABLE_SCHEMA FROM information_schema.TABLES"
+        . " WHERE TABLE_NAME = 'dispatch_request' AND TABLE_SCHEMA LIKE 'uslims3\\_%' ORDER BY TABLE_SCHEMA" );
+    if ( !$res ) {
+        return [ "dispatch requests could not be read: " . mysqli_error( $link ) ];
+    }
+    $lines = [];
+    foreach ( mysqli_fetch_all( $res ) as [ $db ] ) {
+        $n = is_sql_identifier( $db ) ? dispatch_unsettled_requests( $link, $db ) : null;
+        if ( $n === null ) {
+            $lines[] = "$db: its dispatch requests could not be read";
+        } elseif ( $n > 0 ) {
+            $lines[] = "$db: $n dispatch request(s) not yet settled";
+        }
+    }
+    return $lines;
+}
+
+## The LIMS scripts cron drives; gridctl_pro/dev are the pre-upgrade names.
+function lims_cron_script_regex() {
+    return '#(gridctl(_pro|_dev)?\.php|cluster_status\.php|update_notice\.php|listen\.php'
+         . '|jobmonitor\.php|dispatch_heartbeat_check\.php|uslims_daily_backup\.php|uslims_daily_rsync\.php'
+         . '|save-jobstats\.sh)#';
+}
+
 ## Tables in $db_tables that $schema_tables lacks and an export may leave out.
 function schema_extra_tables( array $db_tables, array $schema_tables ) {
     return array_values( array_diff( $db_tables, $schema_tables, dbutils_owned_tables(), dispatch_instance_tables() ) );

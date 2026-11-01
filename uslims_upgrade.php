@@ -1210,9 +1210,7 @@ function cleanup_claims( $us3_home ) {
 ## or a file path. An upgrade needs these commented out: left running, cron
 ## restarts the listener or a controller partway through.
 function live_lims_crontabs() {
-    ## The LIMS scripts cron drives. gridctl_pro/dev are the pre-upgrade names.
-    $lims = '#(gridctl(_pro|_dev)?\.php|cluster_status\.php|update_notice\.php|listen\.php'
-            . '|jobmonitor\.php|uslims_daily_backup\.php|uslims_daily_rsync\.php|save-jobstats\.sh)#';
+    $lims = lims_cron_script_regex();
     list( $us3_tab, $err, $rc ) = capture( 'crontab -l -u us3' );
     $tabs = [ 'us3' => $rc === 0 ? $us3_tab : '' ];
     ## Keyed by realpath, not the glob path, so a symlink under /etc/cron.d
@@ -1433,7 +1431,7 @@ $busy = [];
 ## (?:\S*/)? : the path prefix is optional, not just the slash alone, so a
 ## daemon started by hand from its own directory ("cd ~us3/lims/bin && php
 ## listen.php", with no path on the command line at all) still matches.
-$listeners = processes( '#^\s*(\d+)\s+\S*php[0-9.]*\s+(?:\S*/)?(listen|manage-us3-pipe|submitctl|esign)\.php(\s|$)#' );
+$listeners = processes( '#^\s*(\d+)\s+\S*php[0-9.]*\s+(?:\S*/)?(listen|manage-us3-pipe|submitctl|dispatchone|esign)\.php(\s|$)#' );
 if ( $listeners === null ) {
     report( 'FAIL', "could not read the process list, so the host cannot be shown to be idle" );
     $busy[] = 'process list unreadable';
@@ -1569,20 +1567,12 @@ if ( $webservers === null ) {
 ## -- terminal statuses is a job still in play. Terminal statuses are listed
 ## -- rather than active ones, so a status this script does not know about counts
 ## -- as busy and errs toward refusing.
-$res = mysqli_query( $gdb, <<<'SQL'
-SELECT SUM( status IS NULL
-            OR status NOT IN ( 'COMPLETE', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA',
-                               'ERROR', 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ) ) AS unfinished,
-       SUM( status IN ( 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ) )                  AS timed_out
-  FROM analysis
-SQL
-);
-if ( !$res ) {
+$row = analysis_row_counts( $gdb, $old_listen[ 'gDB' ] ?? 'gfac' );
+if ( $row === null ) {
     report( 'FAIL', "could not query gfac.analysis: " . mysqli_error( $gdb ) );
     $busy[] = 'gfac.analysis unreadable';
 } else {
-    $row        = mysqli_fetch_assoc( $res );
-    $unfinished = (int) $row[ 'unfinished' ];
+    $unfinished = $row[ 'unfinished' ];
     ## A *_TIMEOUT row is counted terminal here on purpose, but it is not a
     ## finished job: its monitor is meant to re-enter the second window and
     ## escalate it. On an idle host no monitor is running, and the old code could
@@ -1601,6 +1591,21 @@ if ( !$res ) {
     } else {
         report( 'ok', "no unfinished job in gfac.analysis" );
     }
+}
+
+## -- dispatch requests. Queued, waiting or in-submission work is the worker's to settle.
+$dispatch_link = @mysqli_connect( $old_listen[ 'dbhost' ] ?? 'localhost', $old_listen[ 'user' ] ?? '', $old_listen[ 'passwd' ] ?? '' );
+$dispatch_busy = dispatch_work_in_flight( $dispatch_link );
+if ( $dispatch_link ) {
+    mysqli_close( $dispatch_link );
+}
+if ( $dispatch_busy ) {
+    foreach ( $dispatch_busy as $line ) {
+        report( 'FAIL', "$line; let the dispatch worker settle them or cancel them on the dispatch dashboard, then rerun" );
+    }
+    $busy[] = 'dispatch work in flight';
+} else {
+    report( 'ok', "no unsettled dispatch request" );
 }
 
 ## -- cleanup claims. A live claim means a cleanup is mid-import.
