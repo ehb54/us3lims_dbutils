@@ -1417,6 +1417,21 @@ function sizing_gate_refusals( $final_clusters ) {
     return [ 'refused' => $refused, 'checked' => $checked ];
 }
 
+## Active clusters whose sbatch_directives or structured keys the submission code refuses.
+function site_directive_refusals( $final_clusters ) {
+    $refused = [];
+    foreach ( $final_clusters as $name => $c ) {
+        if ( !is_array( $c ) || !( $c[ 'active' ] ?? false ) || is_metascheduler_pool_entry( $c ) ) {
+            continue;
+        }
+        $error = jobsubmit::site_directive_error( $name, $c );
+        if ( $error !== '' ) {
+            $refused[] = $error;
+        }
+    }
+    return $refused;
+}
+
 function unprobed_active_clusters( $final_clusters, $probes ) {
     $unprobed = [];
     foreach ( $final_clusters as $name => $c ) {
@@ -3576,6 +3591,15 @@ if ( !$apply ) {
             } else {
                 report( 'ok', "every active cluster has an active status probe" );
             }
+        }
+
+        ## sbatch_directives the submission code refuses, checked with its own rule (common's jobsubmit).
+        $jobsubmit_file = rtrim( common_dir_default( $wwwpath ), '/' ) . '/class/jobsubmit.php';
+        if ( is_file( $jobsubmit_file ) ) {
+            require_once $jobsubmit_file;
+        }
+        if ( method_exists( 'jobsubmit', 'site_directive_error' ) ) {
+            $refused = array_merge( $refused, site_directive_refusals( $final_clusters ) );
         }
 
         if ( $refused ) {
