@@ -412,7 +412,9 @@ function report_input( $msg, $asked_on_apply ) {
 ## The check pass --apply runs before changing anything: the same options without --apply, told
 ## whether the apply after it can ask at a terminal.
 function apply_check_command( $php, $self, array $args, $interactive ) {
-    $args = array_values( array_filter( $args, function ( $a ) { return $a !== '--apply'; } ) );
+    ## --check, not no options: a bare --apply's check pass otherwise printed the help.
+    $args = array_merge( array( '--check' ),
+                         array_values( array_filter( $args, function ( $a ) { return $a !== '--apply' && $a !== '--check'; } ) ) );
     return 'USLIMS_UPGRADE_PREFLIGHT=' . ( $interactive ? 'interactive' : 'batch' ) . ' '
          . escapeshellarg( $php ) . ' ' . escapeshellarg( $self )
          . ( count( $args ) ? ' ' . implode( ' ', array_map( 'escapeshellarg', $args ) ) : '' );
@@ -421,7 +423,14 @@ function apply_check_command( $php, $self, array $args, $interactive ) {
 ## Null when the check pass left no [input] open, else why --apply refuses. Without this an apply
 ## carried out every step before the first [input] and left the host half-converted.
 function apply_refusal( $output ) {
-    $open = preg_grep( '/^\s*\[input\]/', explode( "\n", (string) $output ) );
+    $lines = explode( "\n", (string) $output );
+    ## A check pass that ended without its SUMMARY line (an error, a crash) proved nothing.
+    if ( !preg_grep( '/^SUMMARY /', $lines ) ) {
+        $tail = array_slice( array_filter( array_map( 'trim', $lines ), 'strlen' ), -5 );
+        return "--apply's check pass did not finish, so nothing was changed"
+             . ( $tail ? ":\n" . implode( "\n", $tail ) : '' );
+    }
+    $open = preg_grep( '/^\s+\[input\]/', $lines );
     if ( !count( $open ) ) {
         return null;
     }
