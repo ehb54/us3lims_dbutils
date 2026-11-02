@@ -20,12 +20,13 @@ return [
         }
 
         $alter = "ALTER TABLE `$db`.analysis ADD COLUMN HPCAnalysisRequestID int(11) DEFAULT NULL AFTER us3_db";
-        report( 'todo', "add $db.analysis.HPCAnalysisRequestID" );
-        if ( !$apply ) {
-            return;
-        }
+        ## Checked in --check too, so --check reports what --apply would fail on.
         if ( !gfac_runtime_table_alter_privileged( mysqli_grant_rows( $gdb ) ) ) {
             report( 'FAIL', "the gfac account cannot alter $db.analysis; as an account with ALTER on gfac run: $alter" );
+            return;
+        }
+        report( 'todo', "add $db.analysis.HPCAnalysisRequestID" );
+        if ( !$apply ) {
             return;
         }
         if ( !mysqli_query( $gdb, $alter ) ) {

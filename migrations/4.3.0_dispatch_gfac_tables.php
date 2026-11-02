@@ -29,14 +29,15 @@ return [
             return;
         }
 
-        report( 'todo', 'create gfac dispatch tables: ' . implode( '; ', $missing ) );
-        if ( !$apply ) {
-            return;
-        }
+        ## Checked in --check too, so --check reports what --apply would fail on.
         if ( !gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
             report( 'FAIL', 'the gfac account cannot create tables; as an account with CREATE on gfac run:'
                           . " php -r 'require \"$schema\"; \$l = mysqli_connect(\"localhost\", \"root\", getenv(\"DBPW\"));"
                           . " print_r(dispatch_schema_ensure(\$l, \"gfac\", \"$sql_file\"));'" );
+            return;
+        }
+        report( 'todo', 'create gfac dispatch tables: ' . implode( '; ', $missing ) );
+        if ( !$apply ) {
             return;
         }
         $errors = dispatch_schema_ensure( $gdb, $db, $sql_file );
