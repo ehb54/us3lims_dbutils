@@ -1169,17 +1169,9 @@ function mark_people_audit_utc_migration_done( $db_handle, $db, $note, $max_audi
                              . " VALUES ( '$note_esc', $sys_tz_sql, $max_id_sql )" );
 }
 
-## The highest people_audit.auditID that record_people_audit_utc_boundary()
-## saw already written the moment it ran, or null if nothing ever recorded
-## one here (stage2, migrate_people_audit_utc.php run standalone, or an
-## in-place host upgraded before uslims_upgrade.php recorded a boundary at
-## all).
-##
-## migrate_people_audit_created_at_to_utc() does not use this value to
-## decide which rows to convert; it reads created_at_utc per row, since the
-## boundary is only a snapshot of when this run started. migrate_people_audit_utc.php's
-## own refuse-without-a-boundary check still reads this directly, and step
-## 0 still records and reports it.
+## The highest people_audit.auditID recorded in an instance's boundary table, or null without one.
+## No step records a boundary now: the conversion reads each row's created_at_utc flag. The table
+## survives on instances from earlier 4.3.0 test builds and is carried through dumps and imports.
 function people_audit_utc_boundary( $db_handle, $db ) {
     sql_identifier_or_die( $db );
     $has = mysqli_query( $db_handle, "SHOW TABLES IN $db LIKE '_dbutils_people_audit_utc_boundary'" ); // NOSONAR $db is validated above by sql_identifier_or_die(), not an untrusted value
@@ -1191,30 +1183,8 @@ function people_audit_utc_boundary( $db_handle, $db ) {
     return $row ? (int) $row[ 'auditID' ] : null;
 }
 
-## Captures, once, the highest people_audit.auditID that already exists --
-## so a later conversion can tell a row dbinst's already-upgraded code
-## wrote in UTC (auditID above this) from one still in local time (auditID
-## at or below it). Without this, every row written between dbinst's new
-## code going live and the conversion actually running gets shifted a
-## second time, landing it earlier than rows written before it. uslims_upgrade.php calls this
-## at step 0, before steps 1-8 run, which is the earliest point in a given
-## run it can -- narrowing the window to this run's own duration, not
-## closing it: the code could have already been live, writing rows, for
-## however long before this run started at all. Closing that larger window
-## needs dbinst itself to keep writing local time until the instance is
-## marked, which is dbinst's responsibility, not dbutils's. stage2 and
-## migrate_people_audit_utc.php never call this, so neither ever has a
-## boundary to apply, and their conversions still cover every row, which
-## is correct for both: stage2's rows all predate the fix by definition,
-## and the standalone script is for a host that upgraded before this
-## existed, with no earlier run of this script to have drawn one.
-##
-## Idempotent and permanent once set: a later call (a rerun after an
-## earlier FAILed step, or an --apply after an earlier --apply) must never
-## move the boundary forward, or rows written since the first call --
-## already correctly UTC -- would be misclassified as still needing
-## conversion. No-ops once the migration itself is done; nothing is left
-## to bound.
+## Records, once, the highest existing people_audit.auditID in the boundary table. No step
+## calls it now (see people_audit_utc_boundary()).
 ## Pulled out so stage2_import_dbinsts.php can create this table right
 ## after loading us3.sql, before importing that dbinstance's data dump --
 ## the exact same reason create_people_audit_utc_migration_marker_table()
@@ -1338,6 +1308,11 @@ function import_schema_mismatches( $db_handle, $db, array $insert_columns ) {
 ## $mysql is the mysql command line, without a database name.
 ## @return string one line per instance that would not import; empty when all fit
 function preflight_instance_imports( $db_handle, $mysql, $limsdbpath, array $dumps ) {
+    ## Every dump is read first: an unreadable one stops here, before the scratch schema exists.
+    $columns = [];
+    foreach ( $dumps as $db => $files ) {
+        $columns[ $db ] = dump_insert_columns( $files );
+    }
     $scratch = "_dbutils_import_preflight";
     if ( !mysqli_query( $db_handle, "DROP DATABASE IF EXISTS $scratch" )
          || !mysqli_query( $db_handle, "CREATE DATABASE $scratch" ) ) {
@@ -1349,7 +1324,7 @@ function preflight_instance_imports( $db_handle, $mysql, $limsdbpath, array $dum
     }
     $errors = "";
     foreach ( $dumps as $db => $files ) {
-        $missing = import_schema_mismatches( $db_handle, $scratch, dump_insert_columns( $files ) );
+        $missing = import_schema_mismatches( $db_handle, $scratch, $columns[ $db ] );
         if ( count( $missing ) ) {
             $errors .= "$db: not in the imported schema: " . implode( ', ', $missing ) . "\n";
         }

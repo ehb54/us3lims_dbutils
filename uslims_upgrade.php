@@ -77,11 +77,13 @@ Steps
 
 0 : every stack checkout is at $required_version or newer (read from each repository's VERSION),
     and gridctl carries the version-2 artifacts the later steps need
-1 : preflight. The host must be idle: none of listen, manage-us3-pipe, submitctl or esign
-    running (however they were started, not only via the us3-listen unit), no jobmonitor,
-    nothing from /opt/ultrascan3/bin, no unfinished job in gfac.analysis, no cleanup claim,
+1 : preflight. The host must be idle: none of listen, manage-us3-pipe, submitctl, dispatchone
+    or esign running (however they were started, not only via the us3-listen unit), no jobmonitor,
+    nothing from /opt/ultrascan3/bin, no unfinished job in gfac.analysis, no unsettled dispatch
+    request in any instance, no cleanup claim,
     an empty local Slurm queue with no node running work, no other client running a
-    statement on MariaDB, nobody else logged in, and the LIMS cron entries commented out
+    statement on MariaDB, nobody else logged in, and the LIMS cron entries (the dispatch
+    heartbeat check among them) commented out
 2 : rewrites listen-config.php from gridctl's template, carrying the site's values
 3 : deactivates clusters the Slurm code cannot submit to, or with --convert-http converts
     the national HPC ones to SSH instead, then sets the global_config.php
@@ -104,10 +106,13 @@ Steps
     already configured -- without it, every page's CSS/images/JS 404 after a hand upgrade
 8 : verifies the result, including that every active cluster passes the submission
     sizing gate rather than refusing every job
-9 : migrates each dbinstance's people_audit.created_at to UTC if not already done,
-    using the running config.php (or overlay) each instance already
-    connects with -- idempotent, so a host dbupgrade/stage1+stage2 already migrated
-    is reported 'ok' here, not migrated again
+9 : creates the gfac dispatch tables (us3_sql's gfac/gfac_dispatch.sql) and adds
+    gfac.analysis.HPCAnalysisRequestID; then, in each dbinstance, using the running
+    config.php (or overlay) it already connects with: migrates people_audit.created_at to
+    UTC if not already done (idempotent, so a host dbupgrade/stage1+stage2 already migrated
+    is reported 'ok' here), creates the dispatch tables (us3_dispatch.sql) and loads the
+    release's stored procedures (us3_procedures.sql) when they are not this release's
+10: runs dbinst's tools/check_installation.php and reports what it finds as notes
 
 Undoing it
 
@@ -133,7 +138,11 @@ To roll back, with the services stopped:
      (Debian: "a2disconf lims-common-alias" first), and reload Apache -- also
      new, not rewritten, and also not backed up.
 
-Nothing else to undo in the database, with three exceptions. Step 5's gfac.runtime_prediction
+Nothing else to undo in the database, with these exceptions. Step 9's dispatch tables (the 7
+gfac.dispatch_* tables, and dispatch_request, dispatch_attempt and dispatch_event in each
+dbinstance) and gfac.analysis.HPCAnalysisRequestID are additive: the release before this one
+ignores them, so they stay. Step 9 also reloads each dbinstance's stored procedures; going back
+means loading the older release's us3_procedures.sql the same way. Step 5's gfac.runtime_prediction
 (see step 5 above) is optional, pilot-scoped and empty until the pilot is turned on;
 dropping it is a separate, deliberate operator step (the teardown statement is documented
 in common's class/prediction/runtime_pilot_table.sql), not part of rolling back this script.
@@ -758,6 +767,13 @@ function gridctl_daemon_script_pattern() {
 function other_root_start_risks( array $service_units, array $cron_lines, $rc_local, $root_crontab = '', $service_user = 'us3' ) {
     $pattern = gridctl_daemon_script_pattern();
     $risks   = [];
+    $quoted  = preg_quote( $service_user, '#' );
+    ## Starts a daemon: not a services.php status call, and not handed to the service account first.
+    $starts  = function ( $command ) use ( $pattern, $quoted ) {
+        return preg_match( $pattern, $command )
+            && !preg_match( '#\bservices\.php\s+status\b#', $command )
+            && !preg_match( "#\b(runuser\s+(-u|-l|--user=?)\s*$quoted|su\s+(-\s+|-l\s+)?$quoted|sudo\s+(-u|--user=?)\s*$quoted)\b#", $command );
+    };
 
     ## Any Exec line (start, reload, stop) running services.php or a daemon script, as any account but
     ## the service account: every one of them runs gridctl code.
@@ -780,7 +796,7 @@ function other_root_start_risks( array $service_units, array $cron_lines, $rc_lo
         if ( preg_match( '/^\s*(#|$)/', $line ) || preg_match( '/^\s*[A-Za-z_][A-Za-z0-9_]*\s*=/', $line ) ) {
             continue;
         }
-        if ( !preg_match( '/^\s*(@\S+|(?:\S+\s+){4}\S+)\s+(\S+)\s+(.*)$/', $line, $m ) || !preg_match( $pattern, $m[ 3 ] ) ) {
+        if ( !preg_match( '/^\s*(@\S+|(?:\S+\s+){4}\S+)\s+(\S+)\s+(.*)$/', $line, $m ) || !$starts( $m[ 3 ] ) ) {
             continue;
         }
         ## A per-user crontab line has no user column; its "user" field is then the command.
@@ -789,7 +805,8 @@ function other_root_start_risks( array $service_units, array $cron_lines, $rc_lo
             continue;
         }
         if ( $m[ 2 ] !== $service_user ) {
-            $risks[] = "a {$m[2]} " . ( $m[ 1 ] === '@reboot' ? '@reboot ' : '' ) . "cron entry runs gridctl: " . trim( $line );
+            $risks[] = ( preg_match( '/^[aeiou]/i', $m[ 2 ] ) ? 'an' : 'a' ) . " {$m[2]} "
+                     . ( $m[ 1 ] === '@reboot' ? '@reboot ' : '' ) . "cron entry runs gridctl: " . trim( $line );
         }
     }
 
@@ -797,7 +814,7 @@ function other_root_start_risks( array $service_units, array $cron_lines, $rc_lo
         if ( preg_match( '/^\s*#/', $line ) || trim( $line ) === '' ) {
             continue;
         }
-        if ( preg_match( $pattern, $line ) ) {
+        if ( $starts( $line ) ) {
             $risks[] = "an entry in root's own crontab starts a gridctl daemon: " . trim( $line );
         }
     }
@@ -1960,7 +1977,9 @@ if ( $pools && is_file( $dispatch_policy_file ) ) {
     foreach ( array_keys( $pools ) as $name ) {
         $policy = dispatch_pool_policy( $name, $clusters );
         if ( !$policy[ 'active' ] ) {
-            report( 'input', "metascheduler pool '$name' cannot dispatch: " . implode( '; ', $policy[ 'reasons' ] )
+            ## The pool refuses its own requests with this reason; the rest of the host converges.
+            report( 'note', "metascheduler pool '$name' cannot dispatch and refuses new requests: "
+                           . implode( '; ', $policy[ 'reasons' ] )
                            . "; correct it or confirm it with a 'dispatch' key on the pool, or set it inactive" );
         }
     }
@@ -2529,12 +2548,7 @@ foreach ( $ssh_targets as $name => $c ) {
     if ( $web_user !== 'us3' ) {
         $accounts[ $web_user ] = $web_entry;
     }
-    ## 'name'/'login' may be a bare host with no account part (the default
-    ## is "us3@$host" above, but a config can override 'login' to just the
-    ## host) -- in that case the login user is implicitly 'us3'.
-    $login_user = strpos( $login, '@' ) !== false
-                ? substr( $login, 0, strpos( $login, '@' ) )
-                : 'us3';
+    $login_user = entry_login_user( $login );
     foreach ( $accounts as $account => $entry ) {
         ## is_local() in remote_exec.php only takes the local cp/exec path
         ## when the calling account matches the entry's login user; every
@@ -3184,6 +3198,13 @@ function common_alias_conf_installs_alias( $contents ) {
     return (bool) preg_match( '#^\s*Alias\s+/common/(css|images|js)\b#mi', (string) $contents );
 }
 
+## The account part of a cluster entry's login, as common's remote_exec reads it: none for a bare
+## host, so no account takes the local path and every account's ssh setup is checked.
+function entry_login_user( $login ) {
+    $at = strpos( (string) $login, '@' );
+    return $at !== false ? substr( (string) $login, 0, $at ) : '';
+}
+
 ## What the /common alias step does, given the loaded files that have the alias: install ours when
 ## none does, remove ours once another file (us3lims-roles' https vhost) has it too, else keep.
 function common_alias_action( array $files_with_alias, $own_conf ) {
@@ -3729,7 +3750,9 @@ if ( $apply && !$failures && !$needs_input && !$declined ) {
        . "  1. re-enable the LIMS cron entries that were commented out for the upgrade,\n"
        . "     but NOT any gridctl entry: step 6 removed those deliberately, because each\n"
        . "     job's own jobmonitor now carries it to a terminal state. Re-enabling one\n"
-       . "     puts the sweep back and undoes part of this upgrade\n"
+       . "     puts the sweep back and undoes part of this upgrade. If the host has no dispatch\n"
+       . "     heartbeat check yet (us3lims-roles adds it), add it to /etc/crontab:\n"
+       . "     */5 * * * * us3 /usr/bin/php $us3bin/dispatch_heartbeat_check.php >/dev/null 2>&1\n"
        . "  2. start the services as us3:   sudo -u us3 bash -c 'cd $us3bin && php services.php start'\n"
        . "  3. refresh the cluster health table once, so no cluster shows as stale:\n"
        . "     sudo -u us3 php $gridctl_dir/cluster_status.php\n"

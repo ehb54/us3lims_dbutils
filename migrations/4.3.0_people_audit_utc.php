@@ -1,18 +1,9 @@
 <?php
 ## Converts an instance's people_audit.created_at from local time to UTC.
-## Idempotent via a marker table inside the instance itself
-## (people_audit_utc_migration_done()/migrate_people_audit_created_at_to_utc(),
-## utility.php) -- a host dbupgrade/stage1+stage2 already migrated reports
-## 'ok' here, not migrated again. Shared with the standalone
-## migrate_people_audit_utc.php and dbupgrade/stage2_import_dbinsts.php, so
-## all three paths agree on what "already migrated" means; this file is
-## only the uslims_upgrade.php-specific wiring (reporting, $changes), not a
-## second implementation of the migration itself.
-##
-## Native signal, no generic ledger needed: people_audit_utc_migration_done()
-## already answers this more precisely than a plain applied/not-applied row
-## could (it also knows about the writer's time zone and the per-instance
-## boundary), and is the same check two other call sites already depend on.
+## Done when no dated row lacks its created_at_utc flag (people_audit_utc_migration_done(),
+## utility.php), so a host dbupgrade/stage1+stage2 already migrated reports 'ok' here. The
+## conversion itself is migrate_people_audit_created_at_to_utc(), shared with
+## migrate_people_audit_utc.php and dbupgrade/stage2_import_dbinsts.php.
 return [
     'id'            => 'people_audit_utc',
     'since_version' => '4.3.0',
@@ -46,12 +37,7 @@ return [
             echo "    $line\n";
         }
 
-        ## A skip (false -- zone tables not loaded, the marker table could
-        ## not be created, or the UPDATE itself failed) used to still count
-        ## as "1 change(s) made" here, right next to its own WARNING above
-        ## saying nothing actually happened. Reported as a failure instead,
-        ## so it shows up in the run's own summary, not just buried in the
-        ## WARNING text.
+        ## A skip (false: the zone cannot be resolved, or the UPDATE failed) is a failure, not a change.
         if ( $migrated ) {
             $changes++;
         } else {

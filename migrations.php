@@ -5,11 +5,9 @@
 ## migrations/ -- never editing this file or uslims_upgrade.php itself.
 ##
 ## Each file in migrations/ returns one definition:
-##   'id'            => a short, permanent name. Never reused or renamed
-##                       once shipped -- it is the ledger key where one is
-##                       used (see utility.php's create_migration_ledger_
-##                       table() for when a migration needs its own table
-##                       instead).
+##   'id'            => a short, permanent name, never reused or renamed once
+##                       shipped. Each migration decides from the database itself
+##                       whether it is already done; there is no ledger.
 ##   'since_version' => the release that introduced it, "x.y.z".
 ##   'scope'         => 'host' (runs once per host, against gfac) or
 ##                       'instance' (runs once per LIMS instance, against
