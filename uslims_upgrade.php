@@ -37,7 +37,8 @@ for that dry run; with no options at all this help is printed instead.
 --apply first runs that dry run itself and refuses, before changing anything, while any
 [input] line is open (a value it would otherwise ask for and stop at). --check exits 3 when
 an [input] is open and nothing failed, 1 when a check failed, and 0 otherwise; its last line
-is "SUMMARY failures=N pending=N input=N changes=N".
+is "SUMMARY failures=N pending=N input=N changes=N instance_failures=N", the last counting the
+failures that concern one instance only (step 9).
 
 The last step runs dbinst's tools/check_installation.php and reports each failure it finds (an
 unedited CHANGE-ME placeholder, a missing overlay) as a note; it changes nothing.
@@ -361,6 +362,8 @@ $global_config = "$wwwpath/common/global_config.php";
 $breaker_dir   = "$us3_home/lims/etc/circuit-breaker";
 
 $failures    = 0;
+## The FAILs of step 9's per-instance work: a caller can tell one broken instance from a broken host.
+$instance_failures = 0;
 $changes     = 0;
 $pending     = 0;
 $needs_input = 0;
@@ -3600,6 +3603,7 @@ $dispatch_gfac_server = function_exists( 'dispatch_server_identity' ) ? dispatch
 if ( !$instance_configs ) {
     report( 'note', "no $wwwpath/uslims3 config.php found; nothing to migrate" );
 } else {
+    $failures_before_instances = $failures;
     foreach ( $instance_configs as $label => $cfg ) {
         if ( isset( $cfg[ 'error' ] ) ) {
             report( 'note', "$label: " . reason( $cfg[ 'error' ] ) . "; convert people_audit by hand" );
@@ -3652,6 +3656,7 @@ if ( !$instance_configs ) {
 
         mysqli_close( $conn );
     }
+    $instance_failures = $failures - $failures_before_instances;
 }
 
 ## ------------------------------------------------------------- 10. installation check
@@ -3732,5 +3737,5 @@ if ( $apply && !$failures && !$needs_input && !$declined ) {
        . "     crontab -l -u us3 | grep gridctl ; grep -r gridctl /etc/crontab /etc/cron.d\n";
 }
 ## See upgrade_exit_code(). The summary line is for callers that read --check's outcome.
-echo "SUMMARY failures=$failures pending=$pending input=$needs_input changes=$changes\n";
+echo "SUMMARY failures=$failures pending=$pending input=$needs_input changes=$changes instance_failures=$instance_failures\n";
 exit( upgrade_exit_code( $apply, $failures, $needs_input, $declined ) );
