@@ -972,6 +972,62 @@ function dispatch_work_in_flight( $link ) {
     return $lines;
 }
 
+## A us3_sql file with its SOURCE lines expanded, as the mysql client reads it; null when unreadable.
+function sql_file_expanded( $dir, $file ) {
+    $text = @file_get_contents( rtrim( $dir, '/' ) . '/' . $file );
+    if ( $text === false ) {
+        return null;
+    }
+    $missing = false;
+    $text = preg_replace_callback( '/^\s*SOURCE\s+(\S+?)\s*;?\s*$/mi', function ( $m ) use ( $dir, &$missing ) {
+        $inner = sql_file_expanded( $dir, $m[ 1 ] );
+        $missing = $missing || $inner === null;
+        return (string) $inner;
+    }, $text );
+    return $missing ? null : $text;
+}
+
+## The release's stored procedures (us3_procedures.sql and the files it loads), as a checksum.
+function release_procedures_checksum( $sql_dir ) {
+    $text = sql_file_expanded( $sql_dir, 'us3_procedures.sql' );
+    return $text === null ? null : hash( 'sha256', $text );
+}
+
+## The checksum recorded in $db when its procedures were last loaded by dbutils; '' when never.
+function instance_procedures_checksum( $conn, $db ) {
+    sql_identifier_or_die( $db );
+    $res = schema_query( $conn, "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ?"
+                         . " AND ROUTINE_NAME = '_dbutils_procedures_checksum'", $db );
+    $row = $res ? mysqli_fetch_row( $res ) : null;
+    if ( !$row || !(int) $row[ 0 ] ) {
+        return '';
+    }
+    $res = mysqli_query( $conn, "SELECT `$db`._dbutils_procedures_checksum()" ); // NOSONAR $db is validated above
+    $row = $res ? mysqli_fetch_row( $res ) : null;
+    return $row ? (string) $row[ 0 ] : '';
+}
+
+## Loads us3_procedures.sql into $db with the instance's own account (it holds ALL on its
+## database), then records $checksum. $client_options: extra mysql options. [ ok, error text ].
+function load_instance_procedures( array $cfg, $sql_dir, $checksum, $client_options = '' ) {
+    $db = $cfg[ 'dbname' ];
+    sql_identifier_or_die( $db );
+    $opts = tempnam( sys_get_temp_dir(), 'dbutils-my' );
+    chmod( $opts, 0600 );
+    file_put_contents( $opts, "[client]\nhost=" . $cfg[ 'dbhost' ] . "\nuser=" . $cfg[ 'dbusername' ]
+                            . "\npassword=\"" . addcslashes( (string) $cfg[ 'dbpasswd' ], '"\\' ) . "\"\n" );
+    $mysql = 'mysql --defaults-extra-file=' . escapeshellarg( $opts ) . ( $client_options !== '' ? " $client_options" : '' )
+           . ' ' . escapeshellarg( $db );
+    list( $out, $err, $rc ) = capture( 'cd ' . escapeshellarg( $sql_dir ) . " && $mysql < us3_procedures.sql" );
+    if ( $rc === 0 ) {
+        $mark = "DROP FUNCTION IF EXISTS _dbutils_procedures_checksum;\n"
+              . "CREATE FUNCTION _dbutils_procedures_checksum() RETURNS CHAR(64) DETERMINISTIC RETURN '$checksum';\n";
+        list( $out, $err, $rc ) = capture( "echo " . escapeshellarg( $mark ) . " | $mysql" );
+    }
+    unlink( $opts );
+    return [ $rc === 0, trim( $err . ' ' . $out ) ];
+}
+
 ## The LIMS scripts cron drives; gridctl_pro/dev are the pre-upgrade names.
 function lims_cron_script_regex() {
     return '#(gridctl(_pro|_dev)?\.php|cluster_status\.php|update_notice\.php|listen\.php'

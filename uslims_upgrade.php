@@ -3647,6 +3647,8 @@ if ( !$instance_configs ) {
                                   [ 'people_audit_utc' ] );
         run_instance_migrations( $conn, $cfg[ 'dbname' ], $required_version, $apply, $context,
                                   [ 'dispatch_instance_tables' ] );
+        run_instance_migrations( $conn, $cfg[ 'dbname' ], $required_version, $apply, $context,
+                                  [ 'instance_procedures' ] );
 
         mysqli_close( $conn );
     }
