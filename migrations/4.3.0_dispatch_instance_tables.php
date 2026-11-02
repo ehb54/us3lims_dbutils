@@ -18,6 +18,11 @@ return [
             return;
         }
         require_once $schema;
+        $sql_file = $context[ 'sql_dir' ] . '/us3_dispatch.sql';
+        if ( !is_file( $sql_file ) ) {
+            report( 'FAIL', "$label: $sql_file not found; update the us3_sql checkout first" );
+            return;
+        }
 
         $gfac_server = $context[ 'gfac_server' ] ?? '';
         $here = dispatch_server_identity( $conn );
@@ -27,8 +32,7 @@ return [
             return;
         }
 
-        $ddl = dispatch_instance_table_ddl( $db );
-        $missing = dispatch_schema_problems( $conn, $db, array_keys( $ddl ) );
+        $missing = dispatch_schema_problems( $conn, $db, dispatch_instance_tables() );
         if ( !$missing ) {
             report( 'ok', "$label ($db): dispatch tables exist (InnoDB)" );
             return;
@@ -38,7 +42,7 @@ return [
         if ( !$apply ) {
             return;
         }
-        $errors = dispatch_schema_ensure( $conn, $ddl );
+        $errors = dispatch_schema_ensure( $conn, $db, $sql_file );
         if ( $errors ) {
             report( 'FAIL', "$label ($db): " . implode( '; ', $errors ) );
             return;

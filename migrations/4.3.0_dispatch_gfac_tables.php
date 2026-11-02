@@ -1,7 +1,7 @@
 <?php
 ## Creates the dispatch scheduler's shared gfac tables (controller claims,
-## rotation state, turn events, decisions) from common's dispatch_schema.php,
-## the one definition every installer uses. Required before the dispatcher is
+## rotation state, turn events, decisions) from us3_sql's gfac/gfac_dispatch.sql,
+## their one definition, with common's dispatch_schema.php loader. Required before the dispatcher is
 ## activated, so a missing privilege is a FAIL with the exact remedy.
 return [
     'id'            => 'dispatch_gfac_tables',
@@ -17,9 +17,13 @@ return [
             return;
         }
         require_once $schema;
+        $sql_file = $context[ 'sql_dir' ] . '/gfac/gfac_dispatch.sql';
+        if ( !is_file( $sql_file ) ) {
+            report( 'FAIL', "$sql_file not found; update the us3_sql checkout before the dispatch tables can be created" );
+            return;
+        }
 
-        $ddl = dispatch_gfac_table_ddl( $db );
-        $missing = dispatch_schema_problems( $gdb, $db, array_keys( $ddl ) );
+        $missing = dispatch_schema_problems( $gdb, $db, dispatch_gfac_tables() );
         if ( !$missing ) {
             report( 'ok', 'gfac dispatch tables exist (InnoDB)' );
             return;
@@ -32,10 +36,10 @@ return [
         if ( !gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
             report( 'FAIL', 'the gfac account cannot create tables; as an account with CREATE on gfac run:'
                           . " php -r 'require \"$schema\"; \$l = mysqli_connect(\"localhost\", \"root\", getenv(\"DBPW\"));"
-                          . " print_r(dispatch_schema_ensure(\$l, dispatch_gfac_table_ddl()));'" );
+                          . " print_r(dispatch_schema_ensure(\$l, \"gfac\", \"$sql_file\"));'" );
             return;
         }
-        $errors = dispatch_schema_ensure( $gdb, $ddl );
+        $errors = dispatch_schema_ensure( $gdb, $db, $sql_file );
         if ( $errors ) {
             report( 'FAIL', 'gfac dispatch tables: ' . implode( '; ', $errors ) );
             return;

@@ -3575,7 +3575,9 @@ run_host_migrations( null, $required_version, $apply,
                       [ 'wwwpath' => $wwwpath, 'us3_home' => $us3_home ],
                       [ 'dbinst_base_common_dir_backfill' ] );
 
-run_host_migrations( $gdb, $required_version, $apply, [ 'wwwpath' => $wwwpath ],
+## us3_sql's checkout: the dispatch tables' definitions.
+$sql_dir = "$us3_home/lims/database/sql";
+run_host_migrations( $gdb, $required_version, $apply, [ 'wwwpath' => $wwwpath, 'sql_dir' => $sql_dir ],
                      [ 'dispatch_gfac_tables', 'gfac_analysis_request_id' ] );
 $dispatch_gfac_server = function_exists( 'dispatch_server_identity' ) ? dispatch_server_identity( $gdb ) : '';
 
@@ -3594,6 +3596,7 @@ if ( !$instance_configs ) {
             'instance_path' => $instance_paths[ $label ] ?? null,
             'wwwpath'       => $wwwpath,
             'gfac_server'   => $dispatch_gfac_server,
+            'sql_dir'       => $sql_dir,
         ];
 
         ## common_dir_backfill (migrations/4.3.0_common_dir_backfill.php)

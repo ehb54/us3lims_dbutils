@@ -904,9 +904,9 @@ function dbutils_owned_tables() {
     return [ '_dbutils_people_audit_utc_migrated', '_dbutils_people_audit_utc_boundary' ];
 }
 
-## Per-instance dispatch tables (common class/dispatch_schema.php); a schema_rev#.sql
+## Per-instance dispatch tables (us3_sql us3_dispatch.sql); a schema_rev#.sql
 ## older than 4.3.0 lacks them, but their rows must move with the instance.
-function dispatch_instance_tables() {
+function dispatch_tables_newer_than_schema_revs() {
     return [ 'dispatch_request', 'dispatch_attempt', 'dispatch_event' ];
 }
 
@@ -981,7 +981,7 @@ function lims_cron_script_regex() {
 
 ## Tables in $db_tables that $schema_tables lacks and an export may leave out.
 function schema_extra_tables( array $db_tables, array $schema_tables ) {
-    return array_values( array_diff( $db_tables, $schema_tables, dbutils_owned_tables(), dispatch_instance_tables() ) );
+    return array_values( array_diff( $db_tables, $schema_tables, dbutils_owned_tables(), dispatch_tables_newer_than_schema_revs() ) );
 }
 
 ## Runs $sql with $schema bound to its one ? placeholder; the result set, or false.
