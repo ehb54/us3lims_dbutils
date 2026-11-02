@@ -702,12 +702,6 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
     @unlink( $marker );
 }
 
-## "php:<path>", matched no row, and the job read as unmonitored: --restart then
-## started a second monitor for a job that already had one, and two monitors
-## import the same results twice.
-##
-## The pattern also has to match the launched form rather than anything merely
-## naming the script, so a grep or an editor on the file is not counted.
 ## --busy's answer: [ busy lines, notes ]. A finished row without a monitor is not work in
 ## flight (uslims_upgrade.php's idle check accepts it); it is named with its remedy instead.
 function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines ) {
@@ -732,6 +726,12 @@ function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines ) {
     return [ array_merge( $busy, $dispatch_lines ), $notes ];
 }
 
+## "php:<path>", matched no row, and the job read as unmonitored: --restart then
+## started a second monitor for a job that already had one, and two monitors
+## import the same results twice.
+##
+## The pattern also has to match the launched form rather than anything merely
+## naming the script, so a grep or an editor on the file is not counted.
 function active_jobmonitors() {
     $lines = [];
     exec( 'ps -eo pid=,args=', $lines );

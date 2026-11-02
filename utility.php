@@ -930,8 +930,12 @@ function analysis_row_counts( $gdb, $schema = 'gfac' ) {
              'finished' => (int) $row[ 'total' ] - $unfinished - $timed_out ];
 }
 
-## Dispatch requests in $db the dispatch worker still has to settle (queued, waiting,
-## in submission or of unknown outcome); 0 without the tables, null when unreadable.
+## Dispatch requests in $db that are work in flight for an idle check: queued, waiting, in
+## submission, of unknown outcome, or accepted by Slurm but maybe not yet tracked in
+## gfac.analysis. MONITORED is left to gfac.analysis and the jobmonitor checks, BLOCKED waits
+## for a person with nothing in flight. 0 without the tables, null when unreadable.
+## (The worker's own filter, dispatch_worker_busy_instances(), also needs MONITORED and
+## BLOCKED requests for its housekeeping; it answers a different question.)
 function dispatch_unsettled_requests( $conn, $db ) {
     sql_identifier_or_die( $db );
     $has = schema_query( $conn, "SELECT COUNT(*) FROM information_schema.TABLES"
@@ -944,7 +948,7 @@ function dispatch_unsettled_requests( $conn, $db ) {
         return 0;
     }
     $res = mysqli_query( $conn, "SELECT COUNT(*) FROM $db.dispatch_request WHERE state IN" // NOSONAR $db is validated above
-        . " ( 'PENDING', 'ASSESSING', 'WAITING', 'STAGING', 'SUBMITTING', 'SUBMISSION_UNKNOWN' )" );
+        . " ( 'PENDING', 'ASSESSING', 'WAITING', 'STAGING', 'SUBMITTING', 'SUBMISSION_UNKNOWN', 'ACCEPTED' )" );
     $row = $res ? mysqli_fetch_row( $res ) : null;
     return $row ? (int) $row[ 0 ] : null;
 }
