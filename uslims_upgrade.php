@@ -1085,6 +1085,11 @@ function slurm_launcher_env_lines( $lines ) {
     return trim( (string) $lines ) === '' ? $add : rtrim( (string) $lines ) . "\n" . $add;
 }
 
+## env_script_lines as written for $name: the host's own cluster also gets the Slurm launcher settings. Pure.
+function cluster_env_script_lines( $name, $host_cluster, $lines ) {
+    return $name === $host_cluster ? slurm_launcher_env_lines( $lines ) : $lines;
+}
+
 ## The managed block's assignments keyed by their target, e.g. '$default_local_cluster'.
 function block_settings( $block ) {
     $settings = [];
@@ -2187,7 +2192,7 @@ foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
     if ( array_key_exists( 'env_script_lines', $c ) ) {
         $lines = $given !== null ? $given : (string) $c[ 'env_script_lines' ];
         ## The host's own MPICH launches through Slurm, as the managed roles set it up.
-        $launcher = $name === $host_cluster ? slurm_launcher_env_lines( $lines ) : $lines;
+        $launcher = cluster_env_script_lines( $name, $host_cluster, $lines );
         if ( $launcher !== $c[ 'env_script_lines' ] ) {
             report( 'todo', $launcher !== $lines
                 ? "add the Slurm launcher settings to env_script_lines for $name, so MPICH ranks stay in the job's allocation"
@@ -2209,8 +2214,10 @@ foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
     if ( $value === null ) {
         report_input( "$name lacks env_script_lines (pass --env $name=... or --env $name=)", true );
     } else {
+        ## With the launcher settings in the same run, so one --apply converges.
         report( 'todo', "set env_script_lines for $name" );
-        $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = ' . php_string( $value ) . ';';
+        $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = '
+                   . php_string( cluster_env_script_lines( $name, $host_cluster, $value ) ) . ';';
     }
 }
 
