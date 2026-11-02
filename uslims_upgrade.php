@@ -328,7 +328,7 @@ if ( !is_admin() ) {
 if ( $apply && getenv( 'USLIMS_UPGRADE_PREFLIGHT' ) === false ) {
     echo "Checking for settings this run cannot resolve before changing anything...\n";
     $check   = capture( apply_check_command( PHP_BINARY, $self, array_slice( $argv, 1 ), interactive() ) );
-    $refusal = apply_refusal( $check[ 0 ] );
+    $refusal = apply_refusal( $check[ 0 ], $check[ 1 ] );
     if ( $refusal !== null ) {
         error_exit( $refusal );
     }
@@ -434,11 +434,13 @@ function apply_check_command( $php, $self, array $args, $interactive ) {
 
 ## Null when the check pass left no [input] open, else why --apply refuses. Without this an apply
 ## carried out every step before the first [input] and left the host half-converted.
-function apply_refusal( $output ) {
+function apply_refusal( $output, $errors = '' ) {
     $lines = explode( "\n", (string) $output );
-    ## A check pass that ended without its SUMMARY line (an error, a crash) proved nothing.
+    ## A check pass that ended without its SUMMARY line (an error, a crash) proved nothing; its
+    ## own reason (error_exit() writes to stderr: "the host is not idle", ...) is passed on.
     if ( !preg_grep( '/^SUMMARY /', $lines ) ) {
-        $tail = array_slice( array_filter( array_map( 'trim', $lines ), 'strlen' ), -5 );
+        $tail = array_slice( array_filter( array_map( 'trim', array_merge( $lines, explode( "\n", (string) $errors ) ) ),
+                                           'strlen' ), -6 );
         return "--apply's check pass did not finish, so nothing was changed"
              . ( $tail ? ":\n" . implode( "\n", $tail ) : '' );
     }
@@ -470,8 +472,13 @@ function installation_check_failures( $output ) {
 ## notices fall back. [ status, managed line or null ].
 function site_admin_email_change( array $gc, array $listen ) {
     $site_admin = trim( (string) ( $listen[ 'admin_email' ] ?? '' ) );
+    $current    = trim( (string) ( $gc[ 'global_site_admin_email' ] ?? '' ) );
+    ## Without a listen-config address, one set by hand stays; only an unset one becomes root@localhost.
+    if ( $site_admin === '' && $current !== '' ) {
+        return [ 'ok', null ];
+    }
     $site_admin = $site_admin === '' ? 'root@localhost' : $site_admin;
-    if ( ( $gc[ 'global_site_admin_email' ] ?? '' ) === $site_admin ) {
+    if ( $current === $site_admin ) {
         return [ 'ok', null ];
     }
     return [ 'todo', '$global_site_admin_email = ' . var_export( $site_admin, true ) . ';' ];
@@ -3198,6 +3205,12 @@ function common_alias_conf_installs_alias( $contents ) {
     return (bool) preg_match( '#^\s*Alias\s+/common/(css|images|js)\b#mi', (string) $contents );
 }
 
+## Step 9's FAILs that concern single instances: none when every instance failed, which is the
+## host's problem (a database server mismatch, a broken checkout), not one broken instance. Pure.
+function instance_scoped_failures( $failed_instances, $instances, $loop_failures ) {
+    return $failed_instances > 0 && $failed_instances < $instances ? (int) $loop_failures : 0;
+}
+
 ## The account part of a cluster entry's login, as common's remote_exec reads it: none for a bare
 ## host, so no account takes the local path and every account's ssh setup is checked.
 function entry_login_user( $login ) {
@@ -3624,8 +3637,20 @@ $dispatch_gfac_server = function_exists( 'dispatch_server_identity' ) ? dispatch
 if ( !$instance_configs ) {
     report( 'note', "no $wwwpath/uslims3 config.php found; nothing to migrate" );
 } else {
+    ## The release's instance SQL is checked once: missing, it is the host's failure, not each instance's.
+    foreach ( [ 'us3_dispatch.sql', 'us3_procedures.sql' ] as $instance_sql ) {
+        if ( !is_readable( "$sql_dir/$instance_sql" ) ) {
+            report( 'FAIL', "$sql_dir/$instance_sql cannot be read; update the us3_sql checkout first" );
+        }
+    }
     $failures_before_instances = $failures;
+    $failed_instances = [];
+    $instance_mark    = null;
     foreach ( $instance_configs as $label => $cfg ) {
+        if ( $instance_mark !== null && $failures > $instance_mark[ 1 ] ) {
+            $failed_instances[] = $instance_mark[ 0 ];
+        }
+        $instance_mark = [ $label, $failures ];
         if ( isset( $cfg[ 'error' ] ) ) {
             report( 'note', "$label: " . reason( $cfg[ 'error' ] ) . "; convert people_audit by hand" );
             continue;
@@ -3677,7 +3702,12 @@ if ( !$instance_configs ) {
 
         mysqli_close( $conn );
     }
-    $instance_failures = $failures - $failures_before_instances;
+    if ( $instance_mark !== null && $failures > $instance_mark[ 1 ] ) {
+        $failed_instances[] = $instance_mark[ 0 ];
+    }
+    ## Every instance failing is a host problem (a server mismatch, a broken checkout), not one broken instance.
+    $instance_failures = instance_scoped_failures( count( $failed_instances ), count( $instance_configs ),
+                                                   $failures - $failures_before_instances );
 }
 
 ## ------------------------------------------------------------- 10. installation check

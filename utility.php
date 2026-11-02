@@ -1012,6 +1012,12 @@ function instance_procedures_checksum( $conn, $db ) {
 function load_instance_procedures( array $cfg, $sql_dir, $checksum, $client_options = '' ) {
     $db = $cfg[ 'dbname' ];
     sql_identifier_or_die( $db );
+    ## An option file holds one value per line.
+    foreach ( [ 'dbhost', 'dbusername', 'dbpasswd' ] as $key ) {
+        if ( strpbrk( (string) $cfg[ $key ], "\r\n" ) !== false ) {
+            return [ false, "$key contains a line break; load us3_procedures.sql into $db by hand" ];
+        }
+    }
     $opts = tempnam( sys_get_temp_dir(), 'dbutils-my' );
     chmod( $opts, 0600 );
     file_put_contents( $opts, "[client]\nhost=" . $cfg[ 'dbhost' ] . "\nuser=" . $cfg[ 'dbusername' ]
