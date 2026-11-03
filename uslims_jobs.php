@@ -1053,10 +1053,17 @@ if ( $running || $restart || $restart_only ) {
         ## services.php's own start() runs --restart at every boot; exiting
         ## here on the first such row (the old emptyok=false) would skip
         ## restarting the monitor for every row after it, not just this one.
+        ## A row from before gfac.analysis recorded the request is the request no other row with
+        ## this job number claims (a reset controller reuses numbers), oldest first.
+        $unclaimed = array_key_exists( 'HPCAnalysisRequestID', $row )
+            ? " and HPCAnalysisRequestID not in (select HPCAnalysisRequestID from gfac.analysis"
+              . " where gfacID=\"$gfacid\" and HPCAnalysisRequestID is not null)"
+            : '';
         $reshpc =
             db_obj_result(
                 $db_handle
-                ,"select HPCAnalysisRequestID from $db.HPCAnalysisResult where gfacID=\"$gfacid\" limit 1"
+                ,"select HPCAnalysisRequestID from $db.HPCAnalysisResult where gfacID=\"$gfacid\"$unclaimed"
+                 . " order by HPCAnalysisResultID limit 1"
                 , false
                 , true
             );
