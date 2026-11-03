@@ -1784,7 +1784,13 @@ if ( $sq_rc !== 0 ) {
             ## someone else's job, not us3's. On a known-shared host that is
             ## routine and not this upgrade's business; on a single-tenant
             ## appliance there is no "someone else", so it still blocks.
-            if ( $single_tenant === false ) {
+            ## A host that already recorded itself as shared needs no --single-tenant no on every run.
+            $gc_tenant = is_file( $global_config ) ? config_vars( $global_config, $tenant_why ) : null;
+            $shared    = $single_tenant === false
+                      || ( $single_tenant === null && is_array( $gc_tenant )
+                           && array_key_exists( 'single_tenant_deployment', $gc_tenant )
+                           && !$gc_tenant[ 'single_tenant_deployment' ] );
+            if ( $shared ) {
                 report( 'note', count( $working ) . " node(s) running work, on a shared cluster where that"
                                 . " may not be us3's: " . implode( ', ', $working ) );
             } else {
