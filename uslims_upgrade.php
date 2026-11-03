@@ -510,7 +510,7 @@ function site_admin_email_change( array $gc, array $listen, $given = null ) {
     if ( $given !== null ) {
         return $current === $given ? [ 'ok', null ] : [ 'todo', '$global_site_admin_email = ' . var_export( $given, true ) . ';' ];
     }
-    if ( $site_admin === roles_former_default_admin_email() ) {
+    if ( strcasecmp( $site_admin, roles_former_default_admin_email() ) === 0 ) {
         return [ $current === '' ? 'input' : ( $current === $site_admin ? 'note' : 'ok' ), null ];
     }
     ## A set address stays (an earlier --site-admin-email or a hand edit); only an unset one, or the
@@ -2245,6 +2245,24 @@ if ( $site_admin_status === 'todo' ) {
                   . " is someone else, rerun with --site-admin-email ADDRESS" );
 } else {
     report( 'ok', "\$global_site_admin_email is set" );
+}
+
+## listen-config.php's $admin_email, which gridctl's own notices read, follows the site admin while it
+## is still the roles' former default: each tier keeps its own recipient, set here to the same address.
+$listen_admin    = trim( (string) ( $old_listen[ 'admin_email' ] ?? '' ) );
+$site_admin_addr = $site_admin_email !== null ? $site_admin_email : trim( (string) ( $gc[ 'global_site_admin_email' ] ?? '' ) );
+if ( strcasecmp( $listen_admin, $former_admin ) === 0 && $site_admin_addr !== ''
+     && strcasecmp( $site_admin_addr, $former_admin ) !== 0 ) {
+    report( 'todo', "set listen-config.php's \$admin_email (gridctl's notices) to $site_admin_addr, replacing the roles' former default" );
+    if ( $apply ) {
+        $listen_text = substitute( (string) file_get_contents( $listen_config ), 'admin_email', $site_admin_addr, $listen_replaced );
+        if ( $listen_replaced ) {
+            write_file( $listen_config, $listen_text );
+            report( 'done', "listen-config.php's \$admin_email is $site_admin_addr" );
+        } else {
+            report( 'FAIL', "listen-config.php has no \$admin_email line to set; set it to $site_admin_addr by hand" );
+        }
+    }
 }
 
 ## Tenant scope: unset reads as single tenant; set it explicitly either way
