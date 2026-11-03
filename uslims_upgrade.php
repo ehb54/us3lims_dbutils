@@ -3588,6 +3588,8 @@ if ( $verify_all ) {
     report( $left ? 'FAIL' : 'ok', "no crontab drives gridctl"
             . ( $left ? ': ' . implode( ', ', $left ) : '' ) );
 
+}
+
     ## The gridctl probe above covers us3 reading listen-config.php; the web
     ## tier reading global_config.php is the path nothing else exercises.
     $rc = run_as( $web_user, 'test -r ' . escapeshellarg( $global_config ), $g_out, $g_err );
@@ -3596,13 +3598,18 @@ if ( $verify_all ) {
             . ( $rc === 0 ? '' : ( $gc_stat ? ' (' . owner_of( $gc_stat ) . ')' : '' )
                                 . ' ' . reason( $g_err !== '' ? $g_err : $g_out ) ) );
 
-    $rc = run_as( $web_user, 'test -w ' . escapeshellarg( $breaker_dir ), $w_out, $w_err );
+    ## No step changes these, so --check runs them with other changes pending too. A breaker
+    ## directory a later step creates is judged by whether its parent can be reached.
+    $breaker_probe = ( !$apply && !is_dir( $breaker_dir ) ) ? 'test -x ' . escapeshellarg( dirname( $breaker_dir ) )
+                                                         : 'test -w ' . escapeshellarg( $breaker_dir );
+    $rc = run_as( $web_user, $breaker_probe, $w_out, $w_err );
     if ( $rc !== 0 ) {
         ## test -w prints nothing on failure, so $w_err/$w_out are usually empty
         ## and the real cause is left unsaid. A failed stat means $web_user cannot
         ## even see the directory, which is an ancestor not being traversable
         ## (missing execute permission on it), not $breaker_dir's own mode.
-        $stat_rc = run_as( $web_user, 'stat ' . escapeshellarg( $breaker_dir ), $stat_out, $stat_err );
+        $stat_rc = run_as( $web_user, 'stat ' . escapeshellarg( is_dir( $breaker_dir ) ? $breaker_dir : dirname( $breaker_dir ) ),
+                           $stat_out, $stat_err );
         $why     = $stat_rc !== 0
                  ? "an ancestor directory of $breaker_dir is not traversable for $web_user"
                    . " (missing execute permission), not just $breaker_dir itself"
@@ -3611,7 +3618,6 @@ if ( $verify_all ) {
     } else {
         report( 'ok', "$web_user can write the breaker directory" );
     }
-}
 
     ## Where the web account is not us3, submit_slurm.php launches the jobmonitor
     ## through 'sudo -u us3 /usr/bin/php', so the submission succeeds and the job
