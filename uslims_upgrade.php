@@ -189,6 +189,9 @@ Options
 --web-user name              : account the web code runs as (default: the PHP-FPM pool user, else apache, else www-data)
 --env cluster=lines          : env_script_lines for a cluster ('' for none); sets or changes it; repeatable
 --local-cluster name         : cluster used for GUI requests naming 'localhost'; sets or changes it
+--site-admin-email address   : who receives the site's submission-failure and outage notices
+                               (\$global_site_admin_email); sets or changes it. Needed when listen-config.php
+                               still has the roles' former default address.
 --single-tenant yes|no       : yes on an appliance (one institution), no on a shared host; sets or changes it.
                                'no' also downgrades a busy sinfo node from this run's own FAIL to a note,
                                since someone else's work on a shared cluster is not this upgrade's business
@@ -235,6 +238,7 @@ $web_user      = '';
 $env_values    = [];
 $local_cluster = null;
 $single_tenant = null;
+$site_admin_email = null;
 $convert_http  = false;
 $activate_want = [];
 
@@ -299,6 +303,12 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                 if ( $one !== '' ) {
                     $activate_want[] = $one;
                 }
+            }
+            break;
+        case "--site-admin-email":
+            $site_admin_email = trim( (string) opt_value( $u_argv, $opt ) );
+            if ( !filter_var( $site_admin_email, FILTER_VALIDATE_EMAIL ) && $site_admin_email !== 'root@localhost' ) {
+                error_exit( "--site-admin-email takes an email address, not '$site_admin_email'" );
             }
             break;
         case "--single-tenant":
@@ -466,13 +476,26 @@ function installation_check_failures( $output ) {
     return $failures;
 }
 
+## The fixed $admin_email the roles' main branch wrote into every listen-config.php: an address
+## of one institution, not each site's own.
+function roles_former_default_admin_email() {
+    return 'us3-admin@biophysics.uleth.ca';
+}
+
 ## global_config.php's $global_site_admin_email, which common sends submission-failure and outage
 ## notices to, from listen-config.php's $admin_email (the host's administrator; an instance page's
-## $admin_email is that instance's contact). Without one, root@localhost, as gridctl's
-## notices fall back. [ status, managed line or null ].
-function site_admin_email_change( array $gc, array $listen ) {
+## $admin_email is that instance's contact), or from --site-admin-email ($given). Without one,
+## root@localhost, as gridctl's notices fall back. The roles' former default is never copied: it
+## is an [input], and once copied a note. [ status, managed line or null ].
+function site_admin_email_change( array $gc, array $listen, $given = null ) {
     $site_admin = trim( (string) ( $listen[ 'admin_email' ] ?? '' ) );
     $current    = trim( (string) ( $gc[ 'global_site_admin_email' ] ?? '' ) );
+    if ( $given !== null ) {
+        return $current === $given ? [ 'ok', null ] : [ 'todo', '$global_site_admin_email = ' . var_export( $given, true ) . ';' ];
+    }
+    if ( $site_admin === roles_former_default_admin_email() ) {
+        return [ $current === '' ? 'input' : ( $current === $site_admin ? 'note' : 'ok' ), null ];
+    }
     ## Without a listen-config address, one set by hand stays; only an unset one becomes root@localhost.
     if ( $site_admin === '' && $current !== '' ) {
         return [ 'ok', null ];
@@ -2169,12 +2192,20 @@ foreach ( array( 'global_max_queue_time_hours', 'global_max_run_time_hours' ) as
 }
 
 ## Site admin for common's notices
-list( $site_admin_status, $site_admin_line ) = site_admin_email_change( $gc, $old_listen );
+list( $site_admin_status, $site_admin_line ) = site_admin_email_change( $gc, $old_listen, $site_admin_email );
+$former_admin = roles_former_default_admin_email();
 if ( $site_admin_status === 'todo' ) {
-    report( 'todo', trim( (string) ( $old_listen[ 'admin_email' ] ?? '' ) ) === ''
-        ? "set \$global_site_admin_email to root@localhost, where gridctl's notices go: listen-config.php has no \$admin_email"
-        : "set \$global_site_admin_email from listen-config.php's \$admin_email" );
+    report( 'todo', $site_admin_email !== null ? "set \$global_site_admin_email to $site_admin_email (--site-admin-email)"
+        : ( trim( (string) ( $old_listen[ 'admin_email' ] ?? '' ) ) === ''
+            ? "set \$global_site_admin_email to root@localhost, where gridctl's notices go: listen-config.php has no \$admin_email"
+            : "set \$global_site_admin_email from listen-config.php's \$admin_email" ) );
     $managed[] = $site_admin_line;
+} elseif ( $site_admin_status === 'input' ) {
+    report_input( "set \$global_site_admin_email (pass --site-admin-email ADDRESS): listen-config.php's \$admin_email is"
+                  . " $former_admin, the roles' former default, not necessarily this site's administrator", false );
+} elseif ( $site_admin_status === 'note' ) {
+    report( 'note', "\$global_site_admin_email is $former_admin, the roles' former default; if this site's administrator"
+                  . " is someone else, rerun with --site-admin-email ADDRESS" );
 } else {
     report( 'ok', "\$global_site_admin_email is set" );
 }
