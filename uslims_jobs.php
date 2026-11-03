@@ -1053,25 +1053,22 @@ if ( $running || $restart || $restart_only ) {
         ## services.php's own start() runs --restart at every boot; exiting
         ## here on the first such row (the old emptyok=false) would skip
         ## restarting the monitor for every row after it, not just this one.
-        ## A row from before gfac.analysis recorded the request is the request no other row with
-        ## this job number claims (a reset controller reuses numbers), oldest first.
-        $unclaimed = array_key_exists( 'HPCAnalysisRequestID', $row )
-            ? " and HPCAnalysisRequestID not in (select HPCAnalysisRequestID from gfac.analysis"
-              . " where gfacID=\"$gfacid\" and HPCAnalysisRequestID is not null)"
-            : '';
-        $reshpc =
-            db_obj_result(
-                $db_handle
-                ,"select HPCAnalysisRequestID from $db.HPCAnalysisResult where gfacID=\"$gfacid\"$unclaimed"
-                 . " order by HPCAnalysisResultID limit 1"
-                , false
-                , true
-            );
-
-        if ( $reshpc ) {
-            $reqid = $reshpc->{ "HPCAnalysisRequestID" };
-        } else {
-            $reqid = "unknown";
+        ## Where gfac.analysis records the request, a row without one is never guessed at:
+        ## the upgrade fills in those with a single match and reports the rest. Before
+        ## that column exists the job number alone is all there is.
+        $reqid = "unknown";
+        if ( !array_key_exists( 'HPCAnalysisRequestID', $row ) ) {
+            $reshpc =
+                db_obj_result(
+                    $db_handle
+                    ,"select HPCAnalysisRequestID from $db.HPCAnalysisResult where gfacID=\"$gfacid\""
+                     . " order by HPCAnalysisResultID limit 1"
+                    , false
+                    , true
+                );
+            if ( $reshpc ) {
+                $reqid = $reshpc->{ "HPCAnalysisRequestID" };
+            }
         }
         if ( !empty( $row[ 'HPCAnalysisRequestID' ] ) ) {
             $reqid = $row[ 'HPCAnalysisRequestID' ];
