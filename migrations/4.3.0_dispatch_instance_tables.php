@@ -35,6 +35,25 @@ return [
         $missing = dispatch_schema_problems( $conn, $db, dispatch_instance_tables() );
         if ( !$missing ) {
             report( 'ok', "$label ($db): dispatch tables exist (InnoDB)" );
+            ## Job numbers restart after a controller reset, so the job key includes the request.
+            $key = schema_query( $conn, "SELECT GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) FROM information_schema.STATISTICS "
+                               . "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'dispatch_attempt' AND INDEX_NAME = 'schedulerJob'", $db );
+            $cols = $key ? (string) ( mysqli_fetch_row( $key )[ 0 ] ?? '' ) : '';
+            if ( $cols === 'cluster,schedulerJobID,dispatchRequestID' ) {
+                return;
+            }
+            report( 'todo', "$label ($db): add the request to dispatch_attempt's job key" );
+            if ( !$apply ) {
+                return;
+            }
+            $alter = "ALTER TABLE `$db`.dispatch_attempt " . ( $cols !== '' ? 'DROP INDEX schedulerJob, ' : '' )
+                   . 'ADD UNIQUE KEY schedulerJob (cluster, schedulerJobID, dispatchRequestID)';
+            if ( !mysqli_query( $conn, $alter ) ) {
+                report( 'FAIL', "$label ($db): " . mysqli_error( $conn ) );
+                return;
+            }
+            $changes++;
+            report( 'done', "$label ($db): added the request to dispatch_attempt's job key" );
             return;
         }
 
