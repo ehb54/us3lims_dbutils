@@ -67,9 +67,9 @@ than assuming a specific starting point. A host several releases behind just see
        - old_domain_name is required for metadata & httpd config changes.
    - optionally sets up redirects
  - uslims_upgrade.php
-   - moves an existing host to the Slurm submission contract; run as root after pulling common, every instance, gridctl and dbutils
+   - moves an existing host to the Slurm submission contract; run as root after pulling common, every instance, gridctl, dbutils and us3_sql (```uslims_git_info.php --update-pull util``` and ```--update-pull lims```)
    - host configuration only: the stack code and the database schema are upgraded separately, and the code must be in place first
-     0. checks that every stack checkout is at 4.3.0 or newer, read from each repository's VERSION, and refuses to go further while one is older (each instance docroot is its own dbinst clone, so each is checked on its own)
+     0. checks that every stack checkout (us3_sql included) is at 4.3.0 or newer, read from each repository's VERSION, and refuses to go further while one is older (each instance docroot is its own dbinst clone, so each is checked on its own)
      1. refuses to run unless the host is idle: none of listen, manage-us3-pipe, submitctl, dispatchone or esign running (however they were started, not only via the us3-listen unit), no jobmonitor and no unfinished gfac.analysis row, no unsettled dispatch request, no cleanup claim, an empty local Slurm queue, no node allocated, no other client on MariaDB, nobody else logged in, and the LIMS cron entries commented out; every failing check is reported before it stops
      2. rewrites listen-config.php from the gridctl template, carrying the site's values
      3. deactivates cluster entries the Slurm code cannot submit to (metascheduler entries, and anything whose submittype is not slurm), or with --convert-http converts the national HPC entries left over from Airavata (active or not) to the template's SSH shape -- conversion never activates an entry or its status probe, deliberately -- then sets the global_config.php settings the new code requires (both stall timers 0, tenant scope, local cluster, env_script_lines per cluster, and single_node with maxproc <= ppn <= CPUs on one-node appliances)

@@ -1346,16 +1346,22 @@ function version_at_least( $version, $minimum ) {
                             $minimum, '>=' );
 }
 
-$stack = [ 'gridctl' => $gridctl_dir,
-           'dbutils' => __DIR__,
-           'common'  => "$wwwpath/common",
-           'webinfo' => "$wwwpath/uslims3" ];
+## Every checkout the upgrade reads: step 9 loads the instance tables and procedures from us3_sql.
 ## newinst's create_instance.php clones dbinst once per instance, so every
 ## instance docroot is its own checkout and is upgraded on its own.
-foreach ( glob( "$wwwpath/uslims3/*/VERSION" ) ?: [] as $version_file ) {
-    $dir = dirname( $version_file );
-    $stack[ basename( $dir ) ] = $dir;
+function upgrade_stack_checkouts( $gridctl_dir, $dbutils_dir, $wwwpath, $us3_home ) {
+    $stack = [ 'gridctl' => $gridctl_dir,
+               'dbutils' => $dbutils_dir,
+               'us3_sql' => "$us3_home/lims/database/sql",
+               'common'  => "$wwwpath/common",
+               'webinfo' => "$wwwpath/uslims3" ];
+    foreach ( glob( "$wwwpath/uslims3/*/VERSION" ) ?: [] as $version_file ) {
+        $dir = dirname( $version_file );
+        $stack[ basename( $dir ) ] = $dir;
+    }
+    return $stack;
 }
+$stack = upgrade_stack_checkouts( $gridctl_dir, __DIR__, $wwwpath, $us3_home );
 
 $stale = [];
 foreach ( $stack as $label => $dir ) {
