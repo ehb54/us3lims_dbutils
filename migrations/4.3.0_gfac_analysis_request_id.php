@@ -5,7 +5,11 @@ if ( !function_exists( 'gfac_analysis_request_backfill' ) ) {
     function gfac_analysis_request_backfill( $gdb, $db, $apply ) {
         global $changes;
 
-        $rows = mysqli_query( $gdb, "SELECT id, gfacID, us3_db, cluster, metaschedulerClusterExecuting"
+        if ( !preg_match( '/^\w+$/', (string) $db ) ) {
+            report( 'FAIL', "invalid gfac database name '$db'" );
+            return;
+        }
+        $rows = mysqli_query( $gdb, "SELECT id, gfacID, us3_db, cluster, metaschedulerClusterExecuting" // NOSONAR $db is validated above
                                   . " FROM `$db`.analysis WHERE HPCAnalysisRequestID IS NULL" );
         if ( !$rows ) {
             report( 'FAIL', "$db.analysis: could not read rows without a request: " . mysqli_error( $gdb ) );
