@@ -1044,7 +1044,7 @@ function instance_routines( $conn, $db ) {
 ## The marker for $db's procedures: the release's checksum and a fingerprint of the routines as
 ## loaded, so a later change to them (a rollback to older procedures) is seen as not this release's.
 function instance_procedures_marker( $release_checksum, array $routines ) {
-    return $release_checksum . ':' . hash( 'sha256', json_encode( $routines ) );
+    return $release_checksum . ':' . hash( 'sha256', json_encode( $routines, JSON_INVALID_UTF8_SUBSTITUTE ) );
 }
 
 ## Record in $db that its routines are the release's in $sql_dir, as load_instance_procedures()

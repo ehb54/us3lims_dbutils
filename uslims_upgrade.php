@@ -476,6 +476,17 @@ function installation_check_failures( $output ) {
     return $failures;
 }
 
+## $clusters with 'active' as step 3 leaves it: [ name => entry ]. An --activate cluster is
+## checked by --activate itself, which also turns its probe on.
+function dry_run_cluster_activity( array $clusters, array $active ) {
+    foreach ( $clusters as $name => $c ) {
+        if ( is_array( $c ) ) {
+            $clusters[ $name ][ 'active' ] = isset( $active[ $name ] );
+        }
+    }
+    return $clusters;
+}
+
 ## How much of step 8 a run checks: 'all' with --apply, or on a dry run with nothing to change
 ## (the host as it stands is the result); 'unchanged' otherwise, the checks no change here affects.
 function verify_scope( $apply, $pending ) {
@@ -502,8 +513,9 @@ function site_admin_email_change( array $gc, array $listen, $given = null ) {
     if ( $site_admin === roles_former_default_admin_email() ) {
         return [ $current === '' ? 'input' : ( $current === $site_admin ? 'note' : 'ok' ), null ];
     }
-    ## Without a listen-config address, one set by hand stays; only an unset one becomes root@localhost.
-    if ( $site_admin === '' && $current !== '' ) {
+    ## A set address stays (an earlier --site-admin-email or a hand edit); only an unset one, or the
+    ## root@localhost fallback once listen-config.php has an address, is filled in.
+    if ( $current !== '' && ( $current !== 'root@localhost' || $site_admin === '' ) ) {
         return [ 'ok', null ];
     }
     $site_admin = $site_admin === '' ? 'root@localhost' : $site_admin;
@@ -819,8 +831,12 @@ function other_root_start_risks( array $service_units, array $cron_lines, $rc_lo
     ## Any Exec line (start, reload, stop) running services.php or a daemon script, as any account but
     ## the service account: every one of them runs gridctl code.
     foreach ( $service_units as $unit => $props ) {
-        $exec = implode( "\n", array_intersect_key( $props, array_flip( preg_grep( '/^Exec/', array_keys( $props ) ) ) ) );
-        if ( !preg_match( $pattern, $exec ) || $handoff( $exec ) ) {
+        ## Each Exec line on its own: one handed to us3 does not cover another that is not.
+        $as_root = array_filter( array_intersect_key( $props, array_flip( preg_grep( '/^Exec/', array_keys( $props ) ) ) ),
+                                 function ( $line ) use ( $pattern, $handoff ) {
+                                     return preg_match( $pattern, $line ) && !$handoff( $line );
+                                 } );
+        if ( !$as_root ) {
             continue;
         }
         $user = $props[ 'User' ] ?? '';
@@ -860,7 +876,8 @@ function other_root_start_risks( array $service_units, array $cron_lines, $rc_lo
         }
     }
 
-    foreach ( explode( "\n", (string) $rc_local ) as $line ) {
+    ## A line continued with a backslash is one command.
+    foreach ( explode( "\n", preg_replace( '/\\\\\s*\n/', ' ', (string) $rc_local ) ) as $line ) {
         if ( !preg_match( '/^\s*#/', $line ) && $starts( $line ) ) {
             $risks[] = "/etc/rc.local starts a gridctl daemon, and rc.local always runs as root";
             break;
@@ -3621,6 +3638,11 @@ if ( $verify_all ) {
     } else {
         $final_clusters = is_array( $final[ 'cluster_details' ] ?? null )
                         ? $final[ 'cluster_details' ] : [];
+        ## A dry run with changes pending reads the file before step 3 changes it: judge each
+        ## cluster by whether it stays active.
+        if ( !$verify_all ) {
+            $final_clusters = dry_run_cluster_activity( $final_clusters, $active );
+        }
         ## The sizing gate reads values step 3 may still change.
         $sizing  = $verify_all ? sizing_gate_refusals( $final_clusters ) : [ 'refused' => [], 'checked' => 0 ];
         $refused = $sizing[ 'refused' ];
