@@ -1057,7 +1057,7 @@ function record_instance_procedures_marker( $conn, $db, $sql_dir ) {
     }
     $marker = instance_procedures_marker( $release, instance_routines( $conn, $db ) );
     return mysqli_query( $conn, "DROP FUNCTION IF EXISTS `$db`._dbutils_procedures_checksum" ) // NOSONAR $db is validated above
-        && mysqli_query( $conn, "CREATE FUNCTION `$db`._dbutils_procedures_checksum() RETURNS VARCHAR(160)"
+        && mysqli_query( $conn, "CREATE FUNCTION `$db`._dbutils_procedures_checksum() RETURNS VARCHAR(160)" // NOSONAR $db is validated above
                               . " DETERMINISTIC RETURN '" . mysqli_real_escape_string( $conn, $marker ) . "'" );
 }
 
