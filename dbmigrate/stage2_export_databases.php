@@ -298,38 +298,15 @@ foreach ( $dbnames_used as $db => $val ) {
         $to_db = $db;
     }
     $dumpfile = "export-$metadata_dbhost-$to_db.sql";
-    $cmd = "mysqldump --defaults-file=my.cnf -u root --no-create-info --complete-insert";
     $retval = trim( run_cmd( "cd .. && php uslims_table_diffs.php --only-extras --rev $schema_rev $db" ) );
-    if ( strlen( $retval ) ) {
-        $ignore_tables = explode( "\n", $retval );
-    } else {
-        $ignore_tables = [];
-    }
+    $extra_tables = strlen( $retval ) ? explode( "\n", $retval ) : [];
     ## dbutils' own bookkeeping tables (_dbutils_people_audit_utc_migrated,
-    ## _dbutils_people_audit_utc_boundary) are NOT excluded here: they
-    ## answer "has this instance's own data
-    ## already been converted to UTC", which is a property of the data
-    ## itself and stays meaningful on whatever host ends up storing it --
-    ## the same reasoning dbupgrade's stage1 (stage1_export_dbinsts.php)
-    ## already relies on, which dumps every table a dbinstance has with no
-    ## exclusion at all. Excluding them here used to mean a dbmigrate target
-    ## had no record a source instance was ever migrated, so it converted
-    ## every row a second time on its first --apply, and again on a later
-    ## stage2. stage3_import_databases.php now pre-creates both tables
-    ## before loading this dump's data, the same way stage2_import_dbinsts.php
-    ## already does for the dbupgrade path -- see that function's own comment
-    ## for why ERROR 1146 would otherwise abort mid-import.
-    if ( count( $ignore_tables ) ) {
-        $tables_ignored       = implode( "\n", $ignore_tables ) . "\n";
-        $tables_ignored_fname = "export-$metadata_dbhost-$db-tables-ignored.txt";
-        file_put_contents( $tables_ignored_fname, $tables_ignored );
-        $extra_files[] = $tables_ignored_fname;
-        echo "WARNING : " . count( $ignore_tables ) . " tables ignored in $db : " . implode( ' ', $ignore_tables ) . "\n";
-    }
-    foreach ( $ignore_tables as $ignore_table ) {
-        $cmd .= " --ignore-table=$db.$ignore_table";
-    }
-    $cmd .= " $db > $dumpfile";
+    ## _dbutils_people_audit_utc_boundary) are exported too: they record that
+    ## this instance's data was already converted to UTC, which stays true on
+    ## the new host. stage3_import_databases.php pre-creates them before
+    ## loading the data, as stage2_import_dbinsts.php does for dbupgrade.
+    echo dbmigrate_extra_tables_note( $db, $schema_rev, $extra_tables );
+    $cmd = dbmigrate_export_command( $db, $dumpfile );
     echo "starting: exporting $db to $dumpfile\n";
     run_cmd( $cmd );
     if ( !file_exists( $dumpfile ) ) {

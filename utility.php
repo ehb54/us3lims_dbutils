@@ -910,6 +910,24 @@ function dispatch_tables_newer_than_schema_revs() {
     return [ 'dispatch_request', 'dispatch_attempt', 'dispatch_event' ];
 }
 
+## dbmigrate's data-only export of $db. Every table goes: one an older schema_rev#.sql lacks
+## may be one the new host's us3.sql defines, and stage3 refuses, before anything is
+## created, a dump with a table its us3.sql does not define.
+function dbmigrate_export_command( $db, $dumpfile ) {
+    sql_identifier_or_die( $db );
+    return "mysqldump --defaults-file=my.cnf -u root --no-create-info --complete-insert $db > "
+         . escapeshellarg( $dumpfile );
+}
+
+## The note naming the tables an older schema file lacks, or '' when there are none.
+function dbmigrate_extra_tables_note( $db, $schema_rev, array $extras ) {
+    if ( !$extras ) {
+        return '';
+    }
+    return "NOTE : " . count( $extras ) . " tables in $db are not in schema_rev$schema_rev.sql and are exported too;"
+         . " stage3 checks them against the new host's us3.sql: " . implode( ' ', $extras ) . "\n";
+}
+
 ## gfac.analysis rows by phase: unfinished (any status outside the terminal ones, an
 ## unknown status included), timed_out (parked *_TIMEOUT, no monitor needed to wait for)
 ## and finished (terminal; a row a cleanup has not removed yet). null when unreadable.
