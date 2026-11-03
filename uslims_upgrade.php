@@ -476,6 +476,12 @@ function installation_check_failures( $output ) {
     return $failures;
 }
 
+## How much of step 8 a run checks: 'all' with --apply, or on a dry run with nothing to change
+## (the host as it stands is the result); 'unchanged' otherwise, the checks no change here affects.
+function verify_scope( $apply, $pending ) {
+    return $apply || (int) $pending === 0 ? 'all' : 'unchanged';
+}
+
 ## The fixed $admin_email the roles' main branch wrote into every listen-config.php: an address
 ## of one institution, not each site's own.
 function roles_former_default_admin_email() {
@@ -3500,11 +3506,14 @@ if ( $apache === null ) {
 
 step( "8. Verify" );
 
-## These checks describe the upgraded host, so on a dry run they would all fail
-## by construction. Their outcome is only meaningful once the changes are in.
-if ( !$apply ) {
-    report( 'skip', "verification runs with --apply (a dry run has not changed anything yet)" );
-} else {
+## These checks describe the upgraded host. A dry run with nothing to change is that host, so
+## it runs them all; with changes pending it runs those no change here affects, so --check
+## reports what --apply would fail on.
+$verify_all = verify_scope( $apply, $pending ) === 'all';
+if ( !$verify_all ) {
+    report( 'note', "the configuration checks run once the changes above are made (--apply)" );
+}
+if ( $verify_all ) {
     $new_listen = config_vars( $listen_config, $why );
     $version    = $new_listen[ 'listen_config_version' ] ?? 0;
     if ( !lint_ok( $listen_config, $lint_why ) ) {
@@ -3553,6 +3562,7 @@ if ( !$apply ) {
     } else {
         report( 'ok', "$web_user can write the breaker directory" );
     }
+}
 
     ## Where the web account is not us3, submit_slurm.php launches the jobmonitor
     ## through 'sudo -u us3 /usr/bin/php', so the submission succeeds and the job
@@ -3597,7 +3607,8 @@ if ( !$apply ) {
     } else {
         $final_clusters = is_array( $final[ 'cluster_details' ] ?? null )
                         ? $final[ 'cluster_details' ] : [];
-        $sizing  = sizing_gate_refusals( $final_clusters );
+        ## The sizing gate reads values step 3 may still change.
+        $sizing  = $verify_all ? sizing_gate_refusals( $final_clusters ) : [ 'refused' => [], 'checked' => 0 ];
         $refused = $sizing[ 'refused' ];
         $checked = $sizing[ 'checked' ];
         ## An active cluster with no active probe writes no cluster_status row, and the
@@ -3635,13 +3646,14 @@ if ( !$apply ) {
 
         if ( $refused ) {
             report( 'FAIL', "cluster(s) would refuse every job: " . implode( '; ', $refused ) );
-        } elseif ( $checked === 0 ) {
+        } elseif ( $checked === 0 && $verify_all ) {
             report( 'note', "no active cluster to check against the submission sizing gate" );
+        } elseif ( !$verify_all ) {
+            report( 'ok', "no active cluster's sbatch_directives are refused" );
         } else {
             report( 'ok', "all $checked active cluster(s) pass the submission sizing gate" );
         }
     }
-}
 
 step( "9. Per-instance catch-up (\$common_dir, people_audit UTC migration, dispatch tables)" );
 
