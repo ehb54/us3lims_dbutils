@@ -13,6 +13,9 @@ return [
         global $changes;
 
         $label = $context[ 'label' ];
+        if ( in_array( 'us3_procedures.sql', $context[ 'sql_missing' ] ?? [], true ) ) {
+            return;
+        }
         $want  = release_procedures_checksum( $context[ 'sql_dir' ] );
         if ( $want === null ) {
             report( 'FAIL', "$label: {$context['sql_dir']}/us3_procedures.sql (or a file it loads) cannot be read;"

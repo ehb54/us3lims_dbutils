@@ -258,8 +258,8 @@ foreach ( $dbnames_used as $db => $val ) {
     $cdumped[] = $cdumpfile;
 }
 
-## gfac's dispatch tables (controller claims, rotation state, turn events,
-## decisions). The rest of gfac is transient job data and is not backed up.
+## gfac's dispatch tables (controller claims, rotation state, decisions,
+## alerts, heartbeats). The rest of gfac is transient job data and is not backed up.
 $dispatch_tables = [];
 $res = mysqli_query( $db_handle, "SHOW TABLES IN gfac LIKE 'dispatch\\_%'" );
 while ( $res && ( $row = mysqli_fetch_row( $res ) ) ) {

@@ -138,7 +138,7 @@ To roll back, with the services stopped:
      (Debian: "a2disconf lims-common-alias" first), and reload Apache -- also
      new, not rewritten, and also not backed up.
 
-Nothing else to undo in the database, with these exceptions. Step 9's dispatch tables (the 7
+Nothing else to undo in the database, with these exceptions. Step 9's dispatch tables (the 6
 gfac.dispatch_* tables, and dispatch_request, dispatch_attempt and dispatch_event in each
 dbinstance) and gfac.analysis.HPCAnalysisRequestID are additive: the release before this one
 ignores them, so they stay. Step 9 also reloads each dbinstance's stored procedures; going back
@@ -804,18 +804,23 @@ function other_root_start_risks( array $service_units, array $cron_lines, $rc_lo
     $pattern = gridctl_daemon_script_pattern();
     $risks   = [];
     $quoted  = preg_quote( $service_user, '#' );
-    ## Starts a daemon: not a services.php status call, and not handed to the service account first.
-    $starts  = function ( $command ) use ( $pattern, $quoted ) {
-        return preg_match( $pattern, $command )
-            && !preg_match( '#\bservices\.php\s+status\b#', $command )
-            && !preg_match( "#\b(runuser\s+(-u|-l|--user=?)\s*$quoted|su\s+(-\s+|-l\s+)?$quoted|sudo\s+(-u|--user=?)\s*$quoted)\b#", $command );
+    ## Handed to the service account first (runuser, su, sudo).
+    $handoff = function ( $command ) use ( $quoted ) {
+        return (bool) preg_match( "#\b(runuser\s+(-u|-l|--user=?)\s*$quoted|su\s+(-\s+|-l\s+)?$quoted|sudo\s+(-u|--user=?)\s*$quoted)\b#", $command );
+    };
+    ## Starts a daemon: names a daemon script, or calls services.php for anything but status, and
+    ## is not handed to the service account first.
+    $starts  = function ( $command ) use ( $pattern, $handoff ) {
+        return preg_match( $pattern, $command ) && !$handoff( $command )
+            && ( preg_match( '#\b(listen|manage-us3-pipe|submitctl|esign)\.php\b#', $command )
+                 || preg_match( '#\bservices\.php(?!\s+status\b)#', $command ) );
     };
 
     ## Any Exec line (start, reload, stop) running services.php or a daemon script, as any account but
     ## the service account: every one of them runs gridctl code.
     foreach ( $service_units as $unit => $props ) {
         $exec = implode( "\n", array_intersect_key( $props, array_flip( preg_grep( '/^Exec/', array_keys( $props ) ) ) ) );
-        if ( !preg_match( $pattern, $exec ) ) {
+        if ( !preg_match( $pattern, $exec ) || $handoff( $exec ) ) {
             continue;
         }
         $user = $props[ 'User' ] ?? '';
@@ -855,8 +860,11 @@ function other_root_start_risks( array $service_units, array $cron_lines, $rc_lo
         }
     }
 
-    if ( $rc_local !== '' && preg_match( $pattern, $rc_local ) ) {
-        $risks[] = "/etc/rc.local starts a gridctl daemon, and rc.local always runs as root";
+    foreach ( explode( "\n", (string) $rc_local ) as $line ) {
+        if ( !preg_match( '/^\s*#/', $line ) && $starts( $line ) ) {
+            $risks[] = "/etc/rc.local starts a gridctl daemon, and rc.local always runs as root";
+            break;
+        }
     }
 
     return $risks;
@@ -3711,9 +3719,11 @@ if ( !$instance_configs ) {
     report( 'note', "no $wwwpath/uslims3 config.php found; nothing to migrate" );
 } else {
     ## The release's instance SQL is checked once: missing, it is the host's failure, not each instance's.
+    $sql_missing = [];
     foreach ( [ 'us3_dispatch.sql', 'us3_procedures.sql' ] as $instance_sql ) {
         if ( !is_readable( "$sql_dir/$instance_sql" ) ) {
             report( 'FAIL', "$sql_dir/$instance_sql cannot be read; update the us3_sql checkout first" );
+            $sql_missing[] = $instance_sql;
         }
     }
     $failures_before_instances = $failures;
@@ -3736,6 +3746,8 @@ if ( !$instance_configs ) {
             'wwwpath'       => $wwwpath,
             'gfac_server'   => $dispatch_gfac_server,
             'sql_dir'       => $sql_dir,
+            ## Reported once above, not again for each instance.
+            'sql_missing'   => $sql_missing,
         ];
 
         ## common_dir_backfill (migrations/4.3.0_common_dir_backfill.php)

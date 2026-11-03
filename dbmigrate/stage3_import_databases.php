@@ -305,6 +305,10 @@ if ( get_yn_answer( "create dbinstances" ) ) {
                 echo "command returns: $res\n";
             }
         }
+        ## So the next uslims_upgrade.php --apply does not load them again.
+        if ( !record_instance_procedures_marker( $db_handle, $db, $limsdbpath ) ) {
+            echo "note: could not record $db's stored procedures as this release's; the next uslims_upgrade.php --apply reloads them\n";
+        }
         $querys = [
     "delete from $db.abstractCenterpiece"
     ,"delete from $db.abstractRotor"

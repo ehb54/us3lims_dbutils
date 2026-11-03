@@ -267,11 +267,17 @@ file_perms_must_be( $use_config_file );
 require $use_config_file;
 
 if ( $busy_check ) {
-    open_db();
+    ## A login that fails is unreadable state (exit 2), as a failed query is.
+    $db_handle = @mysqli_connect( $dbhost, $user, $passwd );
+    if ( !$db_handle ) {
+        echo "gfac.analysis could not be read: could not connect to $dbhost as $user\n";
+        exit( 2 );
+    }
     list( $busy_lines, $busy_notes ) = jobs_busy_report(
         analysis_row_counts( $db_handle ),
         active_jobmonitors(),
-        dispatch_work_in_flight( $db_handle ) );
+        dispatch_work_in_flight( $db_handle ),
+        count( active_dispatchers() ) );
     foreach ( $busy_notes as $note ) {
         echo "note: $note\n";
     }
@@ -704,8 +710,11 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
 
 ## --busy's answer: [ busy lines, notes ]. A finished row without a monitor is not work in
 ## flight (uslims_upgrade.php's idle check accepts it); it is named with its remedy instead.
-function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines ) {
+function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines, $dispatchers = 0 ) {
     $busy  = [];
+    if ( $dispatchers ) {
+        $busy[] = "$dispatchers dispatchone.php running";
+    }
     $notes = [];
     if ( $analysis === null ) {
         $busy[] = "gfac.analysis could not be read";
@@ -740,6 +749,19 @@ function active_jobmonitors() {
         $parsed = jobmonitor_ps_entry( $line );
         if ( $parsed !== null ) {
             $active[ $parsed[ 'key' ] ] = $parsed[ 'pid' ];
+        }
+    }
+    return $active;
+}
+
+## Running dispatch attempts (dispatchone.php), as the upgrade's idle check counts them: [ pid => line ].
+function active_dispatchers() {
+    $lines = [];
+    exec( 'ps -eo pid=,args=', $lines );
+    $active = [];
+    foreach ( $lines as $line ) {
+        if ( preg_match( '#^\s*(\d+)\s+\S*php[0-9.]*\s+(?:\S*/)?dispatchone\.php(\s|$)#', $line, $m ) ) {
+            $active[ $m[ 1 ] ] = trim( $line );
         }
     }
     return $active;

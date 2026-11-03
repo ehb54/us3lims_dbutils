@@ -1047,6 +1047,20 @@ function instance_procedures_marker( $release_checksum, array $routines ) {
     return $release_checksum . ':' . hash( 'sha256', json_encode( $routines ) );
 }
 
+## Record in $db that its routines are the release's in $sql_dir, as load_instance_procedures()
+## does, for an import that loaded us3_procedures.sql itself; false when it could not.
+function record_instance_procedures_marker( $conn, $db, $sql_dir ) {
+    sql_identifier_or_die( $db );
+    $release = release_procedures_checksum( $sql_dir );
+    if ( $release === null ) {
+        return false;
+    }
+    $marker = instance_procedures_marker( $release, instance_routines( $conn, $db ) );
+    return mysqli_query( $conn, "DROP FUNCTION IF EXISTS `$db`._dbutils_procedures_checksum" ) // NOSONAR $db is validated above
+        && mysqli_query( $conn, "CREATE FUNCTION `$db`._dbutils_procedures_checksum() RETURNS VARCHAR(160)"
+                              . " DETERMINISTIC RETURN '" . mysqli_real_escape_string( $conn, $marker ) . "'" );
+}
+
 ## Why loading procedures with functions would fail on this server, or '': with binary logging on
 ## and log_bin_trust_function_creators off, CREATE FUNCTION needs SUPER, and the file drops each
 ## routine before creating it.
@@ -1535,9 +1549,9 @@ function migrate_people_audit_created_at_to_utc( $db_handle, $db, $writer_tz = n
         # system_timezone() only ever hands this function a value from
         # timezone_identifiers_list(), the same list DateTimeZone itself
         # uses), so this needs no MariaDB zone tables at all. DST is
-        # handled correctly per row (each row's own local instant resolves
-        # its own offset), with the same accepted fall-back-hour ambiguity
-        # as the CONVERT_TZ path below (README).
+        # handled per row (each row's own local instant resolves its own
+        # offset); the repeated fall-back hour stays ambiguous, and which
+        # occurrence it resolves to can differ from CONVERT_TZ's (README).
         #
         # new DateTimeZone() is caught non-fatally: an unrecognized zone in
         # a stage2 import package would otherwise abort after stage2 has

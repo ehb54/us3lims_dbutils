@@ -1,6 +1,6 @@
 <?php
 ## Creates the dispatch scheduler's shared gfac tables (controller claims,
-## rotation state, turn events, decisions) from us3_sql's gfac/gfac_dispatch.sql,
+## rotation state, decisions, alerts, heartbeats) from us3_sql's gfac/gfac_dispatch.sql,
 ## their one definition, with common's dispatch_schema.php loader. Required before the dispatcher is
 ## activated, so a missing privilege is a FAIL with the exact remedy.
 return [

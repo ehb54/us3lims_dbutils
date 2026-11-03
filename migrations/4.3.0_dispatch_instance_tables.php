@@ -18,6 +18,9 @@ return [
             return;
         }
         require_once $schema;
+        if ( in_array( 'us3_dispatch.sql', $context[ 'sql_missing' ] ?? [], true ) ) {
+            return;
+        }
         $sql_file = $context[ 'sql_dir' ] . '/us3_dispatch.sql';
         if ( !is_file( $sql_file ) ) {
             report( 'FAIL', "$label: $sql_file not found; update the us3_sql checkout first" );
