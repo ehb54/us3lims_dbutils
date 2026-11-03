@@ -1,7 +1,6 @@
 <?php
 ## Fills in the request of each row written before the column: the instance's one
-## HPCAnalysisResult with that job number that no other row claims, narrowed by
-## cluster when the number was reused. A row with no single match is reported and left.
+## HPCAnalysisResult with that job number that no other row claims, on the row's own cluster. A row with no single match is reported and left.
 if ( !function_exists( 'gfac_analysis_request_backfill' ) ) {
     function gfac_analysis_request_backfill( $gdb, $db, $apply ) {
         global $changes;
@@ -27,8 +26,9 @@ if ( !function_exists( 'gfac_analysis_request_backfill' ) ) {
             $res = $stmt && mysqli_stmt_bind_param( $stmt, 'ss', $r[ 'gfacID' ], $inst ) && mysqli_stmt_execute( $stmt )
                  ? mysqli_stmt_get_result( $stmt ) : false;
             $cands = $res ? mysqli_fetch_all( $res, MYSQLI_ASSOC ) : [];
-            if ( count( $cands ) > 1 ) {
-                $at = array_filter( [ $r[ 'cluster' ], $r[ 'metaschedulerClusterExecuting' ] ] );
+            $at = array_filter( [ $r[ 'cluster' ], $r[ 'metaschedulerClusterExecuting' ] ] );
+            ## A row that names its cluster takes only a request for that cluster, even a sole candidate.
+            if ( $at ) {
                 $cands = array_values( array_filter( $cands, function ( $c ) use ( $at ) {
                     return in_array( $c[ 'clusterName' ], $at, true );
                 } ) );
