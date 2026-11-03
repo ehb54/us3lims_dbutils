@@ -1015,7 +1015,7 @@ function release_procedures_checksum( $sql_dir ) {
     return $text === null ? null : hash( 'sha256', $text );
 }
 
-## The checksum recorded in $db when its procedures were last loaded by dbutils; '' when never.
+## The marker recorded in $db when its procedures were last loaded by dbutils; '' when never.
 function instance_procedures_checksum( $conn, $db ) {
     sql_identifier_or_die( $db );
     $res = schema_query( $conn, "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ?"
@@ -1029,8 +1029,38 @@ function instance_procedures_checksum( $conn, $db ) {
     return $row ? (string) $row[ 0 ] : '';
 }
 
+## The routines in $db as they stand (type, name, body), the marker excluded: [ "TYPE name" => body ].
+function instance_routines( $conn, $db ) {
+    $res = schema_query( $conn, "SELECT ROUTINE_TYPE, ROUTINE_NAME, ROUTINE_DEFINITION FROM information_schema.ROUTINES"
+                         . " WHERE ROUTINE_SCHEMA = ? AND ROUTINE_NAME <> '_dbutils_procedures_checksum'", $db );
+    $out = [];
+    while ( $res && ( $row = mysqli_fetch_row( $res ) ) ) {
+        $out[ "{$row[0]} {$row[1]}" ] = (string) $row[ 2 ];
+    }
+    ksort( $out );
+    return $out;
+}
+
+## The marker for $db's procedures: the release's checksum and a fingerprint of the routines as
+## loaded, so a later change to them (a rollback to older procedures) is seen as not this release's.
+function instance_procedures_marker( $release_checksum, array $routines ) {
+    return $release_checksum . ':' . hash( 'sha256', json_encode( $routines ) );
+}
+
+## Why loading procedures with functions would fail on this server, or '': with binary logging on
+## and log_bin_trust_function_creators off, CREATE FUNCTION needs SUPER, and the file drops each
+## routine before creating it.
+function procedure_load_blocker( $log_bin, $trust_creators, $has_super ) {
+    if ( !(int) $log_bin || (int) $trust_creators || $has_super ) {
+        return '';
+    }
+    return "binary logging is on and log_bin_trust_function_creators is 0, so the instance account cannot"
+         . " create functions; set log_bin_trust_function_creators=1 (SET GLOBAL and my.cnf), then rerun";
+}
+
 ## Loads us3_procedures.sql into $db with the instance's own account (it holds ALL on its
-## database), then records $checksum. $client_options: extra mysql options. [ ok, error text ].
+## database), then records $checksum (or what the callable $checksum returns once loaded).
+## $client_options: extra mysql options. [ ok, error text ].
 function load_instance_procedures( array $cfg, $sql_dir, $checksum, $client_options = '' ) {
     $db = $cfg[ 'dbname' ];
     sql_identifier_or_die( $db );
@@ -1047,9 +1077,12 @@ function load_instance_procedures( array $cfg, $sql_dir, $checksum, $client_opti
     $mysql = 'mysql --defaults-extra-file=' . escapeshellarg( $opts ) . ( $client_options !== '' ? " $client_options" : '' )
            . ' ' . escapeshellarg( $db );
     list( $out, $err, $rc ) = capture( 'cd ' . escapeshellarg( $sql_dir ) . " && $mysql < us3_procedures.sql" );
+    if ( $rc === 0 && is_callable( $checksum ) ) {
+        $checksum = $checksum();
+    }
     if ( $rc === 0 ) {
         $mark = "DROP FUNCTION IF EXISTS _dbutils_procedures_checksum;\n"
-              . "CREATE FUNCTION _dbutils_procedures_checksum() RETURNS CHAR(64) DETERMINISTIC RETURN '$checksum';\n";
+              . "CREATE FUNCTION _dbutils_procedures_checksum() RETURNS VARCHAR(160) DETERMINISTIC RETURN '$checksum';\n";
         list( $out, $err, $rc ) = capture( "echo " . escapeshellarg( $mark ) . " | $mysql" );
     }
     unlink( $opts );
