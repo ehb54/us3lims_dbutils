@@ -3000,7 +3000,7 @@ function runtime_prediction_alter_outcome( $alter_sql, $alter_ok, $alter_errno, 
                         . " left after stripping comments" ];
     }
     if ( $alter_ok ) {
-        return [ 'done', "gfac.runtime_prediction.prediction_cluster[_source] columns added" ];
+        return [ 'done', "gfac.runtime_prediction.prediction_cluster[_source] and maxwall_reference_seconds columns added" ];
     }
     if ( in_array( (int) $alter_errno, [ 1142, 1044 ], true ) ) {
         return [ 'note', "gfac account lacks privilege to add the optional runtime advisory"
@@ -3112,21 +3112,18 @@ if ( !is_file( $runtime_table_sql ) ) {
         ## The table existing says nothing about whether it has these two
         ## columns: a table created from an older runtime_pilot_table.sql
         ## lacks them, and every insert into it then fails.
-        ## 'prediction_cluster%', not the exact name: the bare LIKE only ever
-        ## matched prediction_cluster itself, so a table with that column but
-        ## not prediction_cluster_source (a half-migrated state -- the same
-        ## kind of state this whole ALTER exists to repair) still reported
-        ## 'ok' and skipped it. >= 2, not > 0, for the same reason: one
-        ## column matching is exactly the half-migrated case, not "done".
+        ## All three by name, and all three required: one or two matching is the half-migrated
+        ## state this ALTER exists to repair, not "done".
         $has_columns = is_file( $runtime_table_alter_sql )
-            ? mysqli_query( $gdb, "SHOW COLUMNS FROM gfac.runtime_prediction LIKE 'prediction_cluster%'" )
+            ? mysqli_query( $gdb, "SHOW COLUMNS FROM gfac.runtime_prediction WHERE Field IN"
+                                . " ( 'prediction_cluster', 'prediction_cluster_source', 'maxwall_reference_seconds' )" )
             : null;
 
         if ( $has_columns === null ) {
             report( 'ok', "gfac.runtime_prediction already exists"
                   . " ($runtime_table_alter_sql not present; skipping the column check)" );
-        } elseif ( $has_columns && mysqli_num_rows( $has_columns ) >= 2 ) {
-            report( 'ok', "gfac.runtime_prediction already exists, with prediction_cluster columns" );
+        } elseif ( $has_columns && mysqli_num_rows( $has_columns ) >= 3 ) {
+            report( 'ok', "gfac.runtime_prediction already exists, with prediction_cluster and maxwall_reference_seconds columns" );
         } elseif ( ! $apply && ! gfac_runtime_table_alter_privileged( mysqli_grant_rows( $gdb ) ) ) {
             ## Same --check/--apply privilege-probe reasoning as the CREATE
             ## case below, for ALTER instead: a roles-built gfac account has
@@ -3136,7 +3133,7 @@ if ( !is_file( $runtime_table_sql ) ) {
                   . " pilot table's prediction_cluster columns; an account with ALTER"
                   . " on gfac can run it by hand: mysql gfac < $runtime_table_alter_sql" );
         } else {
-            report( 'todo', "add gfac.runtime_prediction.prediction_cluster[_source] columns"
+            report( 'todo', "add gfac.runtime_prediction.prediction_cluster[_source] and maxwall_reference_seconds columns"
                   . " (runtime advisory pilot): $runtime_table_alter_sql" );
             if ( $apply ) {
                 $lines = explode( "\n", (string) file_get_contents( $runtime_table_alter_sql ) );
