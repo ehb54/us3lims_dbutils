@@ -726,7 +726,8 @@ function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines, $d
         $parked = $analysis[ 'timed_out' ] + $analysis[ 'finished' ];
         if ( $parked && !$monitors ) {
             $notes[] = "$parked finished or timed-out job(s) in gfac.analysis have no monitor;"
-                     . " they do not make the host busy. Run php uslims_jobs.php --restart as us3 to close them out";
+                     . " they do not make the host busy. Run php uslims_jobs.php --restart as us3 to close out those with"
+                     . " a recorded request; uslims_upgrade.php --check lists any without one, with what to do";
         }
     }
     if ( $monitors ) {
@@ -1086,8 +1087,11 @@ if ( $running || $restart || $restart_only ) {
             ## restarted for a row with no HPCAnalysisResult to read a
             ## request id from, so it is skipped here instead, with a
             ## message, rather than queued to fail the whole pass.
-            $jm_pid = "skipped (orphan row, no HPCAnalysisResult)";
-            $jm_orphan_skips[] = "skipped $db gfacID=$gfacid: orphan row, no HPCAnalysisResult";
+            $jm_skip_why = array_key_exists( 'HPCAnalysisRequestID', $row )
+                         ? "no request recorded; uslims_upgrade.php --check says what to do"
+                         : "orphan row, no HPCAnalysisResult";
+            $jm_pid = "skipped ($jm_skip_why)";
+            $jm_orphan_skips[] = "skipped $db gfacID=$gfacid: $jm_skip_why";
         } else {
             $jm_pid                = "not running";
             $jm_restart_db      [] = $db;

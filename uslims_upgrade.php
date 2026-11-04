@@ -191,7 +191,7 @@ Options
 --local-cluster name         : cluster used for GUI requests naming 'localhost'; sets or changes it
 --site-admin-email address   : who receives the site's submission-failure and outage notices
                                (\$global_site_admin_email); sets or changes it. Needed when listen-config.php
-                               still has the roles' former default address.
+                               still has the roles' former default address, which it then also replaces there.
 --single-tenant yes|no       : yes on an appliance (one institution), no on a shared host; sets or changes it.
                                'no' also downgrades a busy sinfo node from this run's own FAIL to a note,
                                since someone else's work on a shared cluster is not this upgrade's business
@@ -1696,9 +1696,10 @@ if ( $row === null ) {
     ## ever stranded a job. They are reported instead, to be picked up afterwards.
     if ( (int) $row[ 'timed_out' ] ) {
         report( 'note', $row[ 'timed_out' ] . " job(s) are parked at SUBMIT_TIMEOUT, RUN_TIMEOUT or"
-                        . " DATA_TIMEOUT with no monitor. They do not block the upgrade; once it is"
-                        . " done, restart their monitors with uslims_jobs.php --restart as us3 so the"
-                        . " new code can finish or fail them" );
+                        . " DATA_TIMEOUT with no monitor. They do not block the upgrade, which records"
+                        . " each one's request. Once it is done, uslims_jobs.php --restart as us3 starts"
+                        . " their monitors so the new code can finish or fail them; the upgrade lists any"
+                        . " row it could not match, with what to do" );
     }
     if ( $unfinished ) {
         report( 'FAIL', "$unfinished job(s) in gfac.analysis are not in a terminal status;"
@@ -3763,7 +3764,7 @@ run_host_migrations( null, $required_version, $apply,
 
 ## us3_sql's checkout: the dispatch tables' definitions.
 $sql_dir = "$us3_home/lims/database/sql";
-run_host_migrations( $gdb, $required_version, $apply, [ 'wwwpath' => $wwwpath, 'sql_dir' => $sql_dir ],
+run_host_migrations( $gdb, $required_version, $apply, [ 'wwwpath' => $wwwpath, 'sql_dir' => $sql_dir, 'cluster_details' => $clusters ],
                      [ 'dispatch_gfac_tables', 'gfac_analysis_request_id' ] );
 $dispatch_gfac_server = function_exists( 'dispatch_server_identity' ) ? dispatch_server_identity( $gdb ) : '';
 
