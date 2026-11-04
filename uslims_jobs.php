@@ -751,9 +751,10 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
     }
     $inst = (string) $row[ 'us3_db' ];
     $job  = (string) $row[ 'gfacID' ];
-    foreach ( array_keys( $monitors ) as $key ) {
+    foreach ( $monitors as $key => $pid ) {
         if ( $key === "$inst:$job" || strpos( $key, "$inst:$job@" ) === 0 ) {
-            return [ false, [ "a jobmonitor is running for job $job in $inst; let it finish" ] ];
+            return [ false, [ "jobmonitor $pid is running for job $job in $inst; let it finish. If the job's results are gone"
+                              . " it can wait for hours: kill $pid, then rerun this" ] ];
         }
     }
     $delete = function () use ( $link, $gdb, $id ) {
