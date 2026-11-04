@@ -3004,12 +3004,12 @@ function runtime_prediction_alter_outcome( $alter_sql, $alter_ok, $alter_errno, 
     }
     if ( in_array( (int) $alter_errno, [ 1142, 1044 ], true ) ) {
         return [ 'note', "gfac account lacks privilege to add the optional runtime advisory"
-                        . " pilot table's prediction_cluster columns: "
+                        . " pilot table's prediction_cluster and maxwall_reference_seconds columns, so every record will fail until they exist: "
                         . reason( (string) $alter_error )
                         . "; an account with ALTER on gfac can run it by hand:"
                         . " mysql gfac < $runtime_table_alter_sql" ];
     }
-    return [ 'FAIL', "could not add gfac.runtime_prediction's prediction_cluster columns: "
+    return [ 'FAIL', "could not add gfac.runtime_prediction's prediction_cluster and maxwall_reference_seconds columns: "
                     . reason( (string) $alter_error ) ];
 }
 
@@ -3130,7 +3130,7 @@ if ( !is_file( $runtime_table_sql ) ) {
             ## neither, so without this, --check would report this as a
             ## pending change forever that --apply could never actually make.
             report( 'note', "gfac account lacks privilege to add the optional runtime advisory"
-                  . " pilot table's prediction_cluster columns; an account with ALTER"
+                  . " pilot table's prediction_cluster and maxwall_reference_seconds columns, so every record will fail until they exist; an account with ALTER"
                   . " on gfac can run it by hand: mysql gfac < $runtime_table_alter_sql" );
         } else {
             report( 'todo', "add gfac.runtime_prediction.prediction_cluster[_source] and maxwall_reference_seconds columns"
