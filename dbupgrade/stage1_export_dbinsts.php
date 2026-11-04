@@ -103,6 +103,17 @@ if ( !file_exists( $myconf ) ) {
 }
 file_perms_must_be( $myconf );
 
+## A job in gfac.analysis would stay behind, with its result open, once its instance moves.
+open_db();
+$analysis = analysis_row_counts( $db_handle );
+if ( $analysis === null ) {
+    error_exit( "could not read gfac.analysis: " . mysqli_error( $db_handle ) );
+}
+if ( $analysis[ 'unfinished' ] ) {
+    error_exit( "{$analysis['unfinished']} job(s) in gfac.analysis are not closed out; the export needs an idle host. "
+                . analysis_stranded_remedy() . ", or let running jobs finish. Nothing was exported" );
+}
+
 $pkgname = "export-full-$use_dbhost.tar";
 if ( file_exists( $pkgname ) ) {
     error_exit( "You must move or remove '$pkgname'. Terminating\n" );

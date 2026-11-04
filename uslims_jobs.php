@@ -70,6 +70,11 @@ Options
                              as uslims_upgrade.php's idle check counts them
 --restart                  : restart jobmonitors if needed (e.g. after a system reboot)
 --restart-only       n     : restart n jobmonitors if needed (typically for debugging purposes)
+--close-job          id    : close the gfac.analysis row with this id, for a job no monitor can finish: marks its
+                             result failed, fails its autoflow stage, removes the row, then tells its submitter. Its
+                             results are not imported, and a job still at the cluster is not cancelled. A row with
+                             no recorded request lists the open results with its number: --reqid names the row's
+                             own, or --reqid 0 removes only the row when none of them is
 --check-log                : checks the log (requires --gfacid & exclusive of --monitor)
 --getrundir                : print the remote job directory for a request (requires --reqid)
 --getrun                   : collect a request's job files from the cluster into $getrunbdir/db/HPCAnalysisRequestID (requires --reqid)
@@ -102,6 +107,7 @@ $running        = false;
 $busy_check     = false;
 $restart        = false;
 $restart_only   = false;
+$close_job      = false;
 $checklog       = false;
 $getrundir      = false;
 $getrun         = false;
@@ -181,6 +187,14 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--busy": {
             array_shift( $u_argv );
             $busy_check = true;
+            break;
+        }
+        case "--close-job": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
+            }
+            $close_job = array_shift( $u_argv );
             break;
         }
         case "--restart": {
@@ -283,6 +297,19 @@ if ( $busy_check ) {
     }
     echo $busy_lines ? implode( "\n", $busy_lines ) . "\n" : "idle\n";
     exit( !$busy_lines ? 0 : ( preg_grep( '/could not be read/', $busy_lines ) ? 2 : 1 ) );
+}
+
+if ( $close_job !== false ) {
+    $db_handle = @mysqli_connect( $dbhost, $user, $passwd );
+    if ( !$db_handle ) {
+        error_exit( "could not connect to $dbhost as $user" );
+    }
+    list( $closed, $lines ) = jobs_close_row( $db_handle, 'gfac', (int) $close_job, $reqid === false ? null : (int) $reqid, active_jobmonitors(),
+        function ( $to, $subject, $body ) {
+            return mail( $to, $subject, $body );
+        } );
+    echo implode( "\n", $lines ) . "\n";
+    exit( $closed ? 0 : 1 );
 }
 
 if ( !$db && !$running && !$restart && !$restart_only && !$getpriorids ) {
@@ -708,8 +735,121 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
     @unlink( $marker );
 }
 
-## --busy's answer: [ busy lines, notes ]. A finished row without a monitor is not work in
-## flight (uslims_upgrade.php's idle check accepts it); it is named with its remedy instead.
+## --close-job: closes one gfac.analysis row no monitor can finish, with its submitter told. [ closed, lines ].
+## $reqid: null when not given; 0 removes only the row. A result is never chosen from a job number alone: a row
+## without a recorded request needs the operator to name its own, since the number may have been reused.
+function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $mailer ) {
+    sql_identifier_or_die( $gdb );
+    $found = mysqli_query( $link, "SELECT * FROM $gdb.analysis WHERE id = " . (int) $id ); // NOSONAR $gdb is validated above
+    $row = $found ? mysqli_fetch_assoc( $found ) : null;
+    if ( !$row ) {
+        return [ false, [ $found ? "no row $id in $gdb.analysis" : "could not read $gdb.analysis: " . mysqli_error( $link ) ] ];
+    }
+    $status = strtoupper( (string) $row[ 'status' ] );
+    if ( !in_array( $status, [ 'COMPLETE', 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA', 'ERROR' ], true ) ) {
+        return [ false, [ "row $id is $status, so a monitor is still responsible for it; let it finish or cancel the job" ] ];
+    }
+    $inst = (string) $row[ 'us3_db' ];
+    $job  = (string) $row[ 'gfacID' ];
+    foreach ( array_keys( $monitors ) as $key ) {
+        if ( $key === "$inst:$job" || strpos( $key, "$inst:$job@" ) === 0 ) {
+            return [ false, [ "a jobmonitor is running for job $job in $inst; let it finish" ] ];
+        }
+    }
+    $delete = function () use ( $link, $gdb, $id ) {
+        return mysqli_query( $link, "DELETE FROM $gdb.analysis WHERE id = " . (int) $id ); // NOSONAR $gdb is validated above
+    };
+    if ( $reqid === 0 ) {
+        return $delete() ? [ true, [ "removed row $id only; no result changed and nobody was told" ] ]
+                         : [ false, [ "could not remove row $id: " . mysqli_error( $link ) ] ];
+    }
+    if ( !preg_match( '/^[\w-]+$/', $inst ) ) {
+        return [ false, [ "row $id names instance '$inst', which is not a database name; rerun with --reqid 0 to remove only the row" ] ];
+    }
+    $stmt = mysqli_prepare( $link, "SELECT r.HPCAnalysisRequestID, q.email, q.clusterName, q.submitTime FROM `$inst`.HPCAnalysisResult r"
+        . " JOIN `$inst`.HPCAnalysisRequest q ON q.HPCAnalysisRequestID = r.HPCAnalysisRequestID"
+        . " WHERE r.gfacID = ? AND r.queueStatus NOT IN ( 'completed', 'failed', 'aborted' )" );
+    $res = $stmt && mysqli_stmt_bind_param( $stmt, 's', $job ) && mysqli_stmt_execute( $stmt ) ? mysqli_stmt_get_result( $stmt ) : false;
+    if ( !$res ) {
+        $errno = $stmt ? mysqli_stmt_errno( $stmt ) : mysqli_errno( $link );
+        $error = $stmt ? mysqli_stmt_error( $stmt ) : mysqli_error( $link );
+        ## Unknown database or table: the instance is gone, so there is nobody to tell.
+        if ( in_array( $errno, [ 1049, 1146 ], true ) ) {
+            return $delete() ? [ true, [ "removed row $id; instance '$inst' no longer exists, so nobody was told" ] ]
+                             : [ false, [ "could not remove row $id: " . mysqli_error( $link ) ] ];
+        }
+        return [ false, [ "could not read $inst's results for job $job: $error."
+                          . " Give db_config.php's account SELECT and UPDATE on $inst, then rerun" ] ];
+    }
+    $open = mysqli_fetch_all( $res, MYSQLI_ASSOC );
+    $own = (int) ( $row[ 'HPCAnalysisRequestID' ] ?? 0 );
+    $want = $reqid ?: $own;
+    if ( !$want ) {
+        if ( !$open ) {
+            return $delete() ? [ true, [ "removed row $id; job $job has no open result in $inst, so nothing else changed and nobody was told" ] ]
+                             : [ false, [ "could not remove row $id: " . mysqli_error( $link ) ] ];
+        }
+        $lines = [ "row $id on {$row['cluster']} records no request. Rerun with --reqid and the one it ran, or --reqid 0 to remove only the row if none of these is its job:" ];
+        foreach ( $open as $o ) {
+            $lines[] = "  request {$o['HPCAnalysisRequestID']}, {$o['clusterName']}, submitted {$o['submitTime']}";
+        }
+        return [ false, $lines ];
+    }
+    $open = array_values( array_filter( $open, function ( $o ) use ( $want ) {
+        return (int) $o[ 'HPCAnalysisRequestID' ] === (int) $want;
+    } ) );
+    if ( !$open ) {
+        if ( $reqid ) {
+            return [ false, [ "request $reqid holds no open result for job $job in $inst" ] ];
+        }
+        return $delete() ? [ true, [ "removed row $id; request $want's result for job $job is already closed, so nothing else changed and nobody was told" ] ]
+                         : [ false, [ "could not remove row $id: " . mysqli_error( $link ) ] ];
+    }
+    $msg = "Closed by an administrator: the job's results could not be collected ($status).";
+    ## One transaction, so a failure part way leaves everything as it was and a rerun does the whole job.
+    $fail = function ( $what ) use ( $link, $want, $inst ) {
+        $error = mysqli_error( $link );
+        mysqli_rollback( $link );
+        return [ false, [ "could not close request $want in $inst, so nothing changed: $what: $error" ] ];
+    };
+    mysqli_begin_transaction( $link );
+    $up = mysqli_prepare( $link, "UPDATE `$inst`.HPCAnalysisResult SET queueStatus = 'failed', lastMessage = ? WHERE gfacID = ? AND HPCAnalysisRequestID = ?" );
+    if ( !$up || !mysqli_stmt_bind_param( $up, 'ssi', $msg, $job, $want ) || !mysqli_stmt_execute( $up ) ) {
+        return $fail( 'the result' );
+    }
+    ## A GMP stage must stop waiting, or its run never reaches its report. An instance without the table has none.
+    $staged = 0;
+    $flow = mysqli_prepare( $link, "UPDATE `$inst`.autoflowAnalysis SET status = 'failed', statusMsg = ?"
+        . " WHERE currentHPCARID = ? AND currentGfacID = ? AND LOWER(status) NOT IN ( 'failed', 'error', 'canceled', 'complete', 'done', 'finished' )" );
+    if ( $flow ) {
+        if ( !mysqli_stmt_bind_param( $flow, 'sis', $msg, $want, $job ) || !mysqli_stmt_execute( $flow ) ) {
+            return $fail( 'its autoflow stage' );
+        }
+        $staged = mysqli_stmt_affected_rows( $flow );
+    } elseif ( mysqli_errno( $link ) !== 1146 ) {
+        return $fail( 'its autoflow stage' );
+    }
+    if ( !$delete() ) {
+        return $fail( 'the row' );
+    }
+    if ( !mysqli_commit( $link ) ) {
+        return $fail( 'the commit' );
+    }
+    $lines = [ "marked request $want in $inst failed" ];
+    if ( $staged > 0 ) {
+        $lines[] = "failed its autoflow stage";
+    }
+    $lines[] = "removed row $id";
+    $to = (string) $open[ 0 ][ 'email' ];
+    $told = $to !== '' && $mailer( $to, "US3 analysis failed: results could not be collected",
+        "Your analysis (HPC request $want, job $job) in $inst was closed by an administrator. Its results could not be"
+        . " collected, so they were not imported. Please resubmit it if you still need it.\n" );
+    $lines[] = $told ? "told $to" : "could not tell the submitter" . ( $to !== '' ? " ($to); the mail was refused" : ", who has no address on the request" );
+    return [ true, $lines ];
+}
+
+## --busy's answer: [ busy lines, notes ], with every gfac.analysis row counted, as
+## uslims_upgrade.php's idle check counts them.
 function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines, $dispatchers = 0 ) {
     $busy  = [];
     if ( $dispatchers ) {
@@ -719,15 +859,15 @@ function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines, $d
     if ( $analysis === null ) {
         $busy[] = "gfac.analysis could not be read";
     } else {
-        if ( $analysis[ 'unfinished' ] ) {
-            $busy[] = "{$analysis['unfinished']} unfinished job(s) in gfac.analysis"
+        $stranded = $analysis[ 'stranded' ];
+        $unfinished = $analysis[ 'unfinished' ] - $stranded;
+        if ( $unfinished ) {
+            $busy[] = "$unfinished unfinished job(s) in gfac.analysis"
                     . ( $monitors ? '' : " and no jobmonitor; run php uslims_jobs.php --restart as us3 to resume them" );
         }
-        $parked = $analysis[ 'timed_out' ] + $analysis[ 'finished' ];
-        if ( $parked && !$monitors ) {
-            $notes[] = "$parked finished or timed-out job(s) in gfac.analysis have no monitor;"
-                     . " they do not make the host busy. Run php uslims_jobs.php --restart as us3 to close out those with"
-                     . " a recorded request; uslims_upgrade.php --check lists any without one, with what to do";
+        if ( $stranded ) {
+            $busy[] = "$stranded job(s) in gfac.analysis ended without being closed out or are parked at a timeout"
+                    . ( $monitors ? '' : ". " . analysis_stranded_remedy() );
         }
     }
     if ( $monitors ) {
@@ -1054,9 +1194,8 @@ if ( $running || $restart || $restart_only ) {
         ## services.php's own start() runs --restart at every boot; exiting
         ## here on the first such row (the old emptyok=false) would skip
         ## restarting the monitor for every row after it, not just this one.
-        ## Where gfac.analysis records the request, a row without one is never guessed at:
-        ## the upgrade fills in those with a single match and reports the rest. Before
-        ## that column exists the job number alone is all there is.
+        ## Where gfac.analysis records the request, a row without one is never guessed at.
+        ## Before that column exists the job number alone is all there is.
         $reqid = "unknown";
         if ( !array_key_exists( 'HPCAnalysisRequestID', $row ) ) {
             $reshpc =
@@ -1088,7 +1227,7 @@ if ( $running || $restart || $restart_only ) {
             ## request id from, so it is skipped here instead, with a
             ## message, rather than queued to fail the whole pass.
             $jm_skip_why = array_key_exists( 'HPCAnalysisRequestID', $row )
-                         ? "no request recorded; uslims_upgrade.php --check says what to do"
+                         ? "no request recorded; php uslims_jobs.php --close-job {$row['id']} says what to do"
                          : "orphan row, no HPCAnalysisResult";
             $jm_pid = "skipped ($jm_skip_why)";
             $jm_orphan_skips[] = "skipped $db gfacID=$gfacid: $jm_skip_why";
@@ -1149,8 +1288,10 @@ if ( $running || $restart || $restart_only ) {
         ## job lock so a later --restart as us3 cannot replace it either.
         ## runuser_wrap_if_root() picks the right one instead of assuming
         ## root unconditionally.
-        $inner_cmd = "php $us3bin/jobmonitor/jobmonitor.php $db $gfacid $hpcreqid "
-                   . escapeshellarg( $jm_restart_cluster[ $index ] );
+        ## 4.2.0's monitor takes exactly three arguments, and still runs where an upgrade found work to finish first.
+        $jm_takes_cluster = strpos( (string) @file_get_contents( "$us3bin/jobmonitor/jobmonitor.php" ), '[cluster]' ) !== false;
+        $inner_cmd = "php $us3bin/jobmonitor/jobmonitor.php $db $gfacid $hpcreqid"
+                   . ( $jm_takes_cluster ? ' ' . escapeshellarg( $jm_restart_cluster[ $index ] ) : '' );
         $cmd       = runuser_wrap_if_root( $inner_cmd );
         echo "restarting: $cmd\n";
         run_cmd( $cmd );

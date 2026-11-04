@@ -107,7 +107,7 @@ Steps
 8 : verifies the result, including that every active cluster passes the submission
     sizing gate rather than refusing every job
 9 : creates the gfac dispatch tables (us3_sql's gfac/gfac_dispatch.sql) and adds
-    gfac.analysis.HPCAnalysisRequestID; then, in each dbinstance, using the running
+    gfac.analysis.HPCAnalysisRequestID, listing any row from before it; then, in each dbinstance, using the running
     config.php (or overlay) it already connects with: migrates people_audit.created_at to
     UTC if not already done (idempotent, so a host dbupgrade/stage1+stage2 already migrated
     is reported 'ok' here), creates the dispatch tables (us3_dispatch.sql) and loads the
@@ -1679,33 +1679,30 @@ if ( $webservers === null ) {
     report( 'ok', "no web server or php-fpm (httpd, apache2, nginx) is running" );
 }
 
-## -- gfac.analysis. A finished cleanup deletes the row, so any row outside the
-## -- terminal statuses is a job still in play. Terminal statuses are listed
-## -- rather than active ones, so a status this script does not know about counts
-## -- as busy and errs toward refusing.
+## -- gfac.analysis. A finished cleanup deletes the row, so any row at all is a job still in
+## -- play, including one that ended on the cluster with its results not imported, one parked at
+## -- a timeout and one marked failed that no cleanup closed out.
 $row = analysis_row_counts( $gdb, $old_listen[ 'gDB' ] ?? 'gfac' );
 if ( $row === null ) {
     report( 'FAIL', "could not query gfac.analysis: " . mysqli_error( $gdb ) );
     $busy[] = 'gfac.analysis unreadable';
 } else {
-    $unfinished = $row[ 'unfinished' ];
-    ## A *_TIMEOUT row is counted terminal here on purpose, but it is not a
-    ## finished job: its monitor is meant to re-enter the second window and
-    ## escalate it. On an idle host no monitor is running, and the old code could
-    ## not progress one anyway, so blocking on these would stop any host that has
-    ## ever stranded a job. They are reported instead, to be picked up afterwards.
-    if ( (int) $row[ 'timed_out' ] ) {
-        report( 'note', $row[ 'timed_out' ] . " job(s) are parked at SUBMIT_TIMEOUT, RUN_TIMEOUT or"
-                        . " DATA_TIMEOUT with no monitor. They do not block the upgrade, which records"
-                        . " each one's request. Once it is done, uslims_jobs.php --restart as us3 starts"
-                        . " their monitors so the new code can finish or fail them; the upgrade lists any"
-                        . " row it could not match, with what to do" );
+    $stranded = $row[ 'stranded' ];
+    $unfinished = $row[ 'unfinished' ] - $stranded;
+    if ( $stranded ) {
+        $listed = array_map( function ( $r ) {
+            return "id {$r['id']}: job {$r['gfacID']} in {$r['us3_db']} on {$r['cluster']}, {$r['status']}";
+        }, (array) analysis_stranded_rows( $gdb, $old_listen[ 'gDB' ] ?? 'gfac' ) );
+        report( 'FAIL', "$stranded job(s) in gfac.analysis ended without being closed out, or are parked at a"
+                        . " timeout: " . implode( '; ', $listed ) . ( $stranded > count( $listed ) ? ' and ' . ( $stranded - count( $listed ) ) . ' more' : '' )
+                        . ". " . analysis_stranded_remedy() );
+        $busy[] = "$stranded job(s) not finished";
     }
     if ( $unfinished ) {
         report( 'FAIL', "$unfinished job(s) in gfac.analysis are not in a terminal status;"
                         . " let them finish or cancel them, then rerun" );
         $busy[] = "$unfinished unfinished job(s)";
-    } else {
+    } elseif ( !$stranded ) {
         report( 'ok', "no unfinished job in gfac.analysis" );
     }
 }
@@ -1718,7 +1715,8 @@ if ( $dispatch_link ) {
 }
 if ( $dispatch_busy ) {
     foreach ( $dispatch_busy as $line ) {
-        report( 'FAIL', "$line; let the dispatch worker settle them or cancel them on the dispatch dashboard, then rerun" );
+        report( 'FAIL', "$line; let the dispatch worker settle them or cancel them on the dispatch dashboard, then rerun."
+                        . " A submission held as uncertain only settles by Resolve or Close on the dashboard, with the services running" );
     }
     $busy[] = 'dispatch work in flight';
 } else {
@@ -3764,7 +3762,7 @@ run_host_migrations( null, $required_version, $apply,
 
 ## us3_sql's checkout: the dispatch tables' definitions.
 $sql_dir = "$us3_home/lims/database/sql";
-run_host_migrations( $gdb, $required_version, $apply, [ 'wwwpath' => $wwwpath, 'sql_dir' => $sql_dir, 'cluster_details' => $clusters ],
+run_host_migrations( $gdb, $required_version, $apply, [ 'wwwpath' => $wwwpath, 'sql_dir' => $sql_dir ],
                      [ 'dispatch_gfac_tables', 'gfac_analysis_request_id' ] );
 $dispatch_gfac_server = function_exists( 'dispatch_server_identity' ) ? dispatch_server_identity( $gdb ) : '';
 

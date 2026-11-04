@@ -928,24 +928,39 @@ function dbmigrate_extra_tables_note( $db, $schema_rev, array $extras ) {
          . " stage3 checks them against the new host's us3.sql: " . implode( ' ', $extras ) . "\n";
 }
 
-## gfac.analysis rows by phase: unfinished (any status outside the terminal ones, an
-## unknown status included), timed_out (parked *_TIMEOUT, no monitor needed to wait for)
-## and finished (terminal; a row a cleanup has not removed yet). null when unreadable.
+## gfac.analysis rows: unfinished (every row, since a finished cleanup deletes its row, whatever the status
+## says), of which stranded (ended on the cluster, or at a status no live job holds; a monitor still has to close
+## it out). null when unreadable.
 function analysis_row_counts( $gdb, $schema = 'gfac' ) {
     sql_identifier_or_die( $schema );
-    $res = mysqli_query( $gdb, "SELECT COUNT(*) AS total," // NOSONAR $schema is validated above
-        . " SUM( status IS NULL OR status NOT IN ( 'COMPLETE', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA',"
-        . " 'ERROR', 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ) ) AS unfinished,"
-        . " SUM( status IN ( 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT' ) ) AS timed_out"
-        . " FROM $schema.analysis" );
+    $res = mysqli_query( $gdb, "SELECT COUNT(*) AS unfinished," // NOSONAR $schema is validated above
+        . " SUM( " . analysis_stranded_condition() . " ) AS stranded FROM $schema.analysis" );
     $row = $res ? mysqli_fetch_assoc( $res ) : null;
     if ( !$row ) {
         return null;
     }
-    $unfinished = (int) $row[ 'unfinished' ];
-    $timed_out  = (int) $row[ 'timed_out' ];
-    return [ 'unfinished' => $unfinished, 'timed_out' => $timed_out,
-             'finished' => (int) $row[ 'total' ] - $unfinished - $timed_out ];
+    return [ 'unfinished' => (int) $row[ 'unfinished' ], 'stranded' => (int) $row[ 'stranded' ] ];
+}
+
+function analysis_stranded_condition() {
+    return "status IN ( 'COMPLETE', 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT',"
+         . " 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA', 'ERROR' )";
+}
+
+## The stranded rows, for a refusal to name; null when unreadable.
+function analysis_stranded_rows( $gdb, $schema = 'gfac', $limit = 20 ) {
+    sql_identifier_or_die( $schema );
+    $res = mysqli_query( $gdb, "SELECT id, gfacID, us3_db, cluster, status FROM $schema.analysis" // NOSONAR $schema is validated above
+        . " WHERE " . analysis_stranded_condition() . " ORDER BY id LIMIT " . (int) $limit );
+    return $res ? mysqli_fetch_all( $res, MYSQLI_ASSOC ) : null;
+}
+
+## What to do about stranded rows, as a refusal prints it.
+function analysis_stranded_remedy() {
+    return "Run php uslims_jobs.php --restart as us3 and let the monitors finish, about 10 minutes for a completed job."
+         . " A monitor can stop after moving a timed-out job on, so repeat until the job's status stops changing."
+         . " For a row still listed after that, php uslims_jobs.php --close-job <id> as us3 marks its result failed,"
+         . " tells its submitter and removes the row; its results are not imported. Then rerun";
 }
 
 ## Dispatch requests in $db that are work in flight for an idle check: queued, waiting, in
