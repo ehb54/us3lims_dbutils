@@ -71,9 +71,10 @@ Options
 --restart                  : restart jobmonitors if needed (e.g. after a system reboot)
 --restart-only       n     : restart n jobmonitors if needed (typically for debugging purposes)
 --close-job          id    : close the gfac.analysis row with this id, for a job no monitor can finish: marks its
-                             result failed, fails its autoflow stage, removes the row, then tells its submitter. A
-                             job still at the cluster is not cancelled. A completed job is refused, since --restart
-                             imports it, unless --reqid 0. A row with
+                             result failed, fails its autoflow stage, removes the row, then tells its submitter, or
+                             the site admin. Exits 3 if nobody was told. A job still at the cluster is not cancelled.
+                             A completed job is refused, since --restart imports it, unless --reqid 0, which removes
+                             only the row and tells nobody. A row with
                              no recorded request lists the open results with its number: --reqid names the row's
                              own, or --reqid 0 removes only the row when none of them is
 --check-log                : checks the log (requires --gfacid & exclusive of --monitor)
@@ -309,12 +310,12 @@ if ( $close_job !== false ) {
     if ( !$db_handle ) {
         error_exit( "could not connect to $dbhost as $user" );
     }
-    list( $closed, $lines ) = jobs_close_row( $db_handle, 'gfac', (int) $close_job, $reqid === false ? null : (int) $reqid, active_jobmonitors(),
+    $close = jobs_close_row( $db_handle, 'gfac', (int) $close_job, $reqid === false ? null : (int) $reqid, active_jobmonitors(),
         function ( $to, $subject, $body ) {
             return mail( $to, $subject, $body );
-        } );
-    echo implode( "\n", $lines ) . "\n";
-    exit( $closed ? 0 : 1 );
+        }, (string) ( ( $global_site_admin_email ?? '' ) ?: ( $admin_email ?? '' ) ) );
+    echo implode( "\n", $close[ 1 ] ) . "\n";
+    exit( !$close[ 0 ] ? 1 : ( ( $close[ 2 ] ?? true ) ? 0 : 3 ) );
 }
 
 if ( !$db && !$running && !$restart && !$restart_only && !$getpriorids ) {
@@ -740,10 +741,22 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
     @unlink( $marker );
 }
 
-## --close-job: closes one gfac.analysis row no monitor can finish, with its submitter told. [ closed, lines ].
+## Whether jobmonitor.php takes this instance name.
+function jobs_monitor_accepts_instance( $inst ) {
+    return (bool) preg_match( '/^uslims3_[A-Za-z0-9_]*$/', $inst );
+}
+
+## No monitor is sure to import this row's results: an instance name jobmonitor.php refuses, or an Airavata
+## job, whose monitor only imports while its service answers. --restart comes first for those, as --busy says.
+function jobs_monitor_cannot_import( $inst, $job ) {
+    return (bool) preg_match( '/US3-A/i', $job ) || !jobs_monitor_accepts_instance( $inst );
+}
+
+## --close-job: closes one gfac.analysis row no monitor can finish, with its submitter told, or else $admin.
+## [ closed, lines, told ]; told is false only when a closed job reached nobody.
 ## $reqid: null when not given; 0 removes only the row. A result is never chosen from a job number alone: a row
 ## without a recorded request needs the operator to name its own, since the number may have been reused.
-function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $mailer ) {
+function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $mailer, $admin = '' ) {
     sql_identifier_or_die( $gdb );
     $found = mysqli_query( $link, "SELECT * FROM $gdb.analysis WHERE id = " . (int) $id ); // NOSONAR $gdb is validated above
     $row = $found ? mysqli_fetch_assoc( $found ) : null;
@@ -753,9 +766,10 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
     $status = strtoupper( (string) $row[ 'status' ] );
     $inst = (string) $row[ 'us3_db' ];
     $job  = (string) $row[ 'gfacID' ];
+    $unimportable = jobs_monitor_cannot_import( $inst, $job );
     foreach ( $monitors as $key => $pid ) {
         if ( $key === "$inst:$job" || strpos( $key, "$inst:$job@" ) === 0 ) {
-            return [ false, [ $status === 'COMPLETE'
+            return [ false, [ $status === 'COMPLETE' && !$unimportable
                 ? "jobmonitor $pid is importing job $job in $inst; let it finish, at most 6 hours"
                 : "jobmonitor $pid is running for job $job in $inst; let it finish. If it never ends, kill $pid, then rerun this" ] ];
         }
@@ -789,7 +803,7 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
     $own = (int) ( $row[ 'HPCAnalysisRequestID' ] ?? 0 );
     $want = $reqid ?: $own;
     ## A result is marked completed before its import, so with its row still here the import has not run.
-    foreach ( $results as $r ) {
+    foreach ( $unimportable ? [] : $results as $r ) {
         if ( ( !$want || (int) $r[ 'HPCAnalysisRequestID' ] === (int) $want )
              && ( $r[ 'queueStatus' ] === 'completed'
                   || ( $status === 'COMPLETE' && !in_array( $r[ 'queueStatus' ], [ 'failed', 'aborted' ], true ) ) ) ) {
@@ -799,8 +813,8 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
                               . " --reqid 0 removes only the row, importing nothing and telling nobody" ] ];
         }
     }
-    $open = array_values( array_filter( $results, function ( $r ) {
-        return !in_array( $r[ 'queueStatus' ], [ 'completed', 'failed', 'aborted' ], true );
+    $open = array_values( array_filter( $results, function ( $r ) use ( $unimportable ) {
+        return !in_array( $r[ 'queueStatus' ], $unimportable ? [ 'failed', 'aborted' ] : [ 'completed', 'failed', 'aborted' ], true );
     } ) );
     if ( !$want ) {
         if ( !$open ) {
@@ -865,8 +879,17 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
     $told = $to !== '' && $mailer( $to, "US3 analysis failed: results could not be collected",
         "Your analysis (HPC request $want, job $job) in $inst was closed by an administrator. Its results could not be"
         . " collected, so they were not imported. Please resubmit it if you still need it.\n" );
-    $lines[] = $told ? "told $to" : "could not tell the submitter" . ( $to !== '' ? " ($to); the mail was refused" : ", who has no address on the request" );
-    return [ true, $lines ];
+    if ( $told ) {
+        $lines[] = "told $to";
+        return [ true, $lines, true ];
+    }
+    $why = $to !== '' ? "($to): the mail was refused" : "who has no address on the request";
+    $lines[] = "could not tell the submitter $why";
+    $told = $admin !== '' && $mailer( $admin, "US3 analysis closed: its submitter could not be told",
+        "HPC request $want, job $job in $inst was closed by an administrator, and its results were not imported."
+        . " Its submitter could not be told $why. Please tell them to resubmit it if they still need it.\n" );
+    $lines[] = $told ? "told the site admin, $admin" : "nobody was told; tell the submitter of request $want yourself";
+    return [ true, $lines, $told ];
 }
 
 ## --busy's answer: [ busy lines, notes ], with every gfac.analysis row counted, as
@@ -892,9 +915,11 @@ function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines, $d
         }
         foreach ( $analysis[ 'rows' ] ?? [] as $r ) {
             $busy[] = "  id {$r['id']}: job {$r['gfacID']} in {$r['us3_db']} on {$r['cluster']}, {$r['status']}: "
-                    . ( strtoupper( (string) $r[ 'status' ] ) === 'COMPLETE'
+                    . ( !jobs_monitor_accepts_instance( (string) $r[ 'us3_db' ] )
+                        ? "no monitor accepts this instance name; --close-job {$r['id']}"
+                        : ( strtoupper( (string) $r[ 'status' ] ) === 'COMPLETE' && !jobs_monitor_cannot_import( (string) $r[ 'us3_db' ], (string) $r[ 'gfacID' ] )
                         ? "--restart imports it"
-                        : "--restart resumes it; if no monitor can finish it, --close-job {$r['id']}" );
+                        : "--restart resumes it; if no monitor can finish it, --close-job {$r['id']}" ) );
         }
         $more = $analysis[ 'unfinished' ] - count( $analysis[ 'rows' ] ?? [] );
         if ( isset( $analysis[ 'rows' ] ) && $more > 0 ) {
@@ -1257,7 +1282,7 @@ if ( $running || $restart || $restart_only ) {
             ## restarted for a row with no HPCAnalysisResult to read a
             ## request id from, so it is skipped here instead, with a
             ## message, rather than queued to fail the whole pass.
-            $jm_skip_why = array_key_exists( 'HPCAnalysisRequestID', $row )
+            $jm_skip_why = array_key_exists( 'HPCAnalysisRequestID', $row ) || !jobs_monitor_accepts_instance( $db )
                          ? "no request recorded; php uslims_jobs.php --close-job {$row['id']} says what to do"
                          : "orphan row {$row['id']}, no HPCAnalysisResult";
             $jm_pid = "skipped ($jm_skip_why)";

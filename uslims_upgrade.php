@@ -45,28 +45,26 @@ unedited CHANGE-ME placeholder, a missing overlay) as a note; it changes nothing
 
 This script changes this host's configuration, plus one schema fix step 9 runs inside
 each dbinstance (see below). Otherwise, the stack code and the database schema are
-upgraded separately, and the code must be upgraded first: pull common,
-every instance, gridctl and dbutils to $required_version or newer, then run this as root.
-Step 0 refuses to go further while any checkout is older.
+upgraded separately, and the code must be upgraded first. README.md's "Upgrading a host"
+gives the whole procedure, in this order:
 
-Pull the code in two steps, not per use and not with "all" (which also pulls the
-UltraScan gui and mpi checkouts, neither of which this upgrade touches):
+    1. Let any dispatch request settle, then stop the web server and the gridctl services ("php services.php stop", while the
+       host's own 4.2.0 copy can still read its own listen-config.php), and comment out
+       the LIMS cron entries.
+    2. Move dbutils only to $required_version or newer.
+    3. Finish every job: "php uslims_jobs.php --busy" lists each one and what to do. This
+       comes before gridctl moves, since this release's monitors do not run until --apply.
+    4. Take a full sql dump.
+    5. Move common, every instance, gridctl, webinfo, newinst and us3_sql. On a checkout
+       already on its release branch, "php uslims_git_info.php --update-pull lims" does it;
+       'all' also pulls the UltraScan gui and mpi checkouts, which this upgrade doesn't touch.
+    6. Run this as root. Step 0 refuses while any checkout is older.
 
-    php uslims_git_info.php --update-pull util
-    php uslims_git_info.php --update-pull lims
+Once the new code is in place services.php refuses a pre-upgrade config, and the listener has
+to be stopped with "systemctl stop us3-listen" instead. Step 1 checks that the host is idle
+and refuses rather than work around a running system.
 
-"--update-pull util" alone upgrades dbutils and leaves gridctl and common behind, which
-is the state step 0 exists to refuse: this script would otherwise rewrite an old-code
-host from its old template. Run both, then rerun this script.
-
-The host must also be idle, and the order matters: stop the services with
-"php services.php stop" BEFORE pulling the new code, while the host's own 4.2.0 copy can
-still read its own listen-config.php. Once the new code is in place services.php refuses a
-pre-upgrade config, and the listener has to be stopped with "systemctl stop us3-listen"
-instead. Then let the queues drain and comment out the LIMS cron entries. Step 1 checks all
-of this and refuses rather than work around a running system.
-
-Also stop the web server (or otherwise block access) before pulling the new code, so
+The web server has to stay stopped until this has run, so
 nothing can write to any LIMS database while this runs -- README.md's "Upgrading a host"
 documents why that is what makes step 9's UTC migration and every config rewrite below
 safe. Step 1 cannot tell this host's first --apply after a pull apart from a routine
@@ -233,6 +231,9 @@ function opt_value( &$argv, $opt ) {
 
 $apply         = false;
 $assume_yes    = false;
+## Set by the roles' play, which idles /etc/crontab only: a LIMS job line in us3's crontab or /etc/cron.d doesn't stop this
+## run, and one starting gridctl still does. In the environment, so a play can pass it to a script from before it.
+$cron_jobs_elsewhere_ok = getenv( 'LIMS_CRON_JOBS_ELSEWHERE_OK' ) === '1';
 $accept_keys   = false;
 $web_user      = '';
 $env_values    = [];
@@ -1338,6 +1339,24 @@ function live_lims_crontabs() {
     return $live;
 }
 
+## The live lines that stop an upgrade. The roles' play idles /etc/crontab only ($job_lines_elsewhere_ok), so
+## a job line elsewhere may run on; a line that restarts the listener or a controller never may.
+function lims_cron_blocking( array $live, $job_lines_elsewhere_ok ) {
+    if ( !$job_lines_elsewhere_ok ) {
+        return $live;
+    }
+    $daemons = '#(gridctl(_pro|_dev)?\.php|listen\.php|jobmonitor\.php)#';
+    foreach ( $live as $where => $lines ) {
+        if ( $where !== '/etc/crontab' ) {
+            $live[ $where ] = array_values( preg_grep( $daemons, $lines ) );
+            if ( !$live[ $where ] ) {
+                unset( $live[ $where ] );
+            }
+        }
+    }
+    return $live;
+}
+
 ## One line of a command's complaint, for a report() message.
 function reason( $text ) {
     $text = trim( preg_replace( '/\s+/', ' ', (string) $text ) );
@@ -1969,7 +1988,7 @@ if ( $who_rc !== 0 ) {
 
 ## -- the LIMS cron entries. Left live, cron restarts the very things above
 ## -- partway through the upgrade.
-$live_crons = live_lims_crontabs();
+$live_crons = lims_cron_blocking( live_lims_crontabs(), $cron_jobs_elsewhere_ok );
 if ( $live_crons ) {
     foreach ( $live_crons as $where => $lines ) {
         report( 'FAIL', "$where still has " . count( $lines ) . " active LIMS cron entr"

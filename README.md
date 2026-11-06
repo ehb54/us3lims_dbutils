@@ -5,22 +5,27 @@
 This procedure doesn't change from release to release -- what `uslims_upgrade.php` itself
 checks and fixes does, and is documented under its own entry below, not here.
 
-1. Stop the web server (or otherwise block access), so nothing can write to any LIMS
-   database while the upgrade runs.
+1. Let any dispatch request settle first, with Resolve or Close on the dispatch dashboard for
+   a held one: that needs the web server and services running. Then stop the web server (or
+   otherwise block access), so nothing can write to any LIMS database while the upgrade runs. Take the gridctl services out of service too, so
+   nothing is submitted while the code moves: `php services.php stop` in `~us3/lims/bin`,
+   then comment out the LIMS cron lines, wherever they are (`/etc/crontab`, us3's crontab
+   or `/etc/cron.d`).
 2. Move this repo only to the new release (`git fetch`, then `git checkout <release>`).
 3. Finish every job. `php uslims_jobs.php --busy` lists each one and what to do; repeat
    until it says idle. This has to come before gridctl and common move: this release's
    monitors don't run until `--apply` has converted `listen-config.php`, so the code that
    started the jobs has to finish them. If gridctl and common were already moved, check
    out the release that started the jobs in both, finish the jobs, and move them again.
-4. Take a full sql dump (`uslims_binary_db_backup.php`, or your own backup process), now
+4. Take a full sql dump (`uslims_db_binary_backup.php`, or your own backup process), now
    that the finished jobs are imported.
-5. Move the rest to the new release: common, every instance's dbinst, gridctl and us3_sql.
+5. Move the rest to the new release: common, every instance's dbinst, gridctl, webinfo,
+   newinst and us3_sql.
    Host configuration and code/schema are upgraded separately, and the code has to be in
    place first.
 6. `php uslims_upgrade.php --check` to see what it would do, then `--apply` to make the
    changes.
-7. Uncomment the LIMS cron lines you commented out for the idle check. `--apply` retires
+7. Uncomment the LIMS cron lines you commented out in step 1. `--apply` retires
    the gridctl lines; the others, such as `cluster_status.php` and the nightly backup,
    stay off until you do, and a later run of the roles' play leaves them off too.
 8. Restart the web server, confirm the host is actually serving again, and test (log
@@ -50,7 +55,7 @@ than assuming a specific starting point. A host several releases behind just see
      - returns a list of record counts
 
 ## UltraScan LIMS specific
- - uslims_binary_db_backup.php
+ - uslims_db_binary_backup.php
    - creates a binary backup of the mysql database in a unique directory
  - uslims_certs.php
    - reports on https cert and scigap expiration dates
@@ -77,7 +82,7 @@ than assuming a specific starting point. A host several releases behind just see
        - old_domain_name is required for metadata & httpd config changes.
    - optionally sets up redirects
  - uslims_upgrade.php
-   - moves an existing host to the Slurm submission contract; run as root after pulling common, every instance, gridctl, dbutils and us3_sql (```uslims_git_info.php --update-pull util``` and ```--update-pull lims```)
+   - moves an existing host to the Slurm submission contract; run as root at step 6 of "Upgrading a host" above, once the jobs are finished and every repo has moved
    - host configuration only: the stack code and the database schema are upgraded separately, and the code must be in place first
      0. checks that every stack checkout (us3_sql included) is at 4.3.0 or newer, read from each repository's VERSION, and refuses to go further while one is older (each instance docroot is its own dbinst clone, so each is checked on its own)
      1. refuses to run unless the host is idle: none of listen, manage-us3-pipe, submitctl, dispatchone or esign running (however they were started, not only via the us3-listen unit), no jobmonitor and no unfinished gfac.analysis row, no unsettled dispatch request, no cleanup claim, an empty local Slurm queue, no node allocated, no other client on MariaDB, nobody else logged in, and the LIMS cron entries commented out; every failing check is reported before it stops

@@ -957,7 +957,8 @@ function analysis_stranded_rows( $gdb, $schema = 'gfac', $limit = 20, $stranded_
 
 ## What to do about stranded rows, as a refusal prints it.
 function analysis_stranded_remedy() {
-    return "With gridctl still on the release that started the jobs, run php uslims_jobs.php --restart as us3 and let the"
+    return "If gridctl and common already moved, first check out the release that started the jobs in both."
+         . " Then run php uslims_jobs.php --restart as us3 and let the"
          . " monitors finish, about 10 minutes for a completed job. A monitor can stop after moving a timed-out job on,"
          . " so repeat until the job's status stops changing. php uslims_jobs.php --busy lists each job. For a job no"
          . " monitor can finish, php uslims_jobs.php --close-job <id> as us3 marks its result failed, tells its submitter"

@@ -31,7 +31,7 @@ return [
 
         ## Checked in --check too, so --check reports what --apply would fail on.
         if ( !gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) ) ) {
-            report( 'FAIL', 'the gfac account cannot create tables; as an account with CREATE on gfac run:'
+            report( 'FAIL', 'the gfac account cannot create tables; as root, with DBPW set to the password of MariaDB root, run:'
                           . " php -r 'require \"$schema\"; \$l = mysqli_connect(\"localhost\", \"root\", getenv(\"DBPW\"));"
                           . " print_r(dispatch_schema_ensure(\$l, \"gfac\", \"$sql_file\"));'" );
             return;
