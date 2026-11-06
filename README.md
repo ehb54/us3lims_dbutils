@@ -1,5 +1,50 @@
 # us3lims_dbutils
 
+## Upgrading a host
+
+This procedure doesn't change from release to release -- what `uslims_upgrade.php` itself
+checks and fixes does, and is documented under its own entry below, not here.
+
+1. Let any dispatch request settle first, with Resolve or Close on the dispatch dashboard for
+   a held one: that needs the web server and services running. Then stop the web server (or
+   otherwise block access), so nothing can write to any LIMS database while the upgrade runs. Take the gridctl services out of service too, so
+   nothing is submitted while the code moves: `php services.php stop` in `~us3/lims/bin`,
+   then comment out the LIMS cron lines, wherever they are (`/etc/crontab`, us3's crontab
+   or `/etc/cron.d`).
+2. Move this repo only to the new release (`git fetch`, then `git checkout <release>`).
+3. Finish every job. `php uslims_jobs.php --busy` lists each one and what to do; repeat
+   until it says idle. This has to come before gridctl and common move: this release's
+   monitors don't run until `--apply` has converted `listen-config.php`, so the code that
+   started the jobs has to finish them. If gridctl and common were already moved, check
+   out the release that started the jobs in both, finish the jobs, and move them again.
+4. Take a full sql dump (`uslims_db_binary_backup.php`, or your own backup process), now
+   that the finished jobs are imported.
+5. Move the rest to the new release: common, every instance's dbinst, gridctl, webinfo,
+   newinst and us3_sql.
+   Host configuration and code/schema are upgraded separately, and the code has to be in
+   place first.
+6. `php uslims_upgrade.php --check` to see what it would do, then `--apply` to make the
+   changes.
+7. Uncomment the LIMS cron lines you commented out in step 1. `--apply` retires
+   the gridctl lines; the others, such as `cluster_status.php` and the nightly backup,
+   stay off until you do, and a later run of the roles' play leaves them off too.
+8. Restart the web server, confirm the host is actually serving again, and test (log
+   in, submit a job, check queue_viewer.php) before considering the host upgraded.
+
+Steps 1-5 happen before `--apply` ever runs, with nothing serving requests in between --
+that's what makes step 9 of `--apply` (the UTC migration) and every config rewrite in
+between safe: there is no window where new code could write a row, or read a config
+file, before the migration has run. `uslims_upgrade.php` doesn't defend against that
+window itself; its own preflight (step 1) checks that the host is idle -- no jobs, no
+other DB client, cron entries commented out -- the same way, without also needing to
+account for live web traffic, because this procedure already guarantees that.
+
+No separate script is needed for a host starting from an older release than the
+previous one, or several releases behind at once: every step in `uslims_upgrade.php`
+checks the host's own current state and decides whether it has anything to do, rather
+than assuming a specific starting point. A host several releases behind just sees more
+`todo`s in one `--apply`, not a different tool.
+
 ## Various utilities for managing the database
 
  - general tools, can be used with any mysql database
@@ -10,7 +55,7 @@
      - returns a list of record counts
 
 ## UltraScan LIMS specific
- - uslims_binary_db_backup.php
+ - uslims_db_binary_backup.php
    - creates a binary backup of the mysql database in a unique directory
  - uslims_certs.php
    - reports on https cert and scigap expiration dates
@@ -37,18 +82,22 @@
        - old_domain_name is required for metadata & httpd config changes.
    - optionally sets up redirects
  - uslims_upgrade.php
-   - moves an existing host to the Slurm submission contract; run as root after pulling common, every instance, gridctl and dbutils
+   - moves an existing host to the Slurm submission contract; run as root at step 6 of "Upgrading a host" above, once the jobs are finished and every repo has moved
    - host configuration only: the stack code and the database schema are upgraded separately, and the code must be in place first
-     0. checks that every stack checkout is at 4.3.0 or newer, read from each repository's VERSION, and refuses to go further while one is older (each instance docroot is its own dbinst clone, so each is checked on its own)
-     1. refuses to run unless the host is idle: none of listen, manage-us3-pipe, submitctl or esign running (however they were started, not only via the us3-listen unit), no jobmonitor and no unfinished gfac.analysis row, no cleanup claim, an empty local Slurm queue, no node allocated, no other client on MariaDB, nobody else logged in, and the LIMS cron entries commented out; every failing check is reported before it stops
+     0. checks that every stack checkout (us3_sql included) is at 4.3.0 or newer, read from each repository's VERSION, and refuses to go further while one is older (each instance docroot is its own dbinst clone, so each is checked on its own)
+     1. refuses to run unless the host is idle: none of listen, manage-us3-pipe, submitctl, dispatchone or esign running (however they were started, not only via the us3-listen unit), no jobmonitor and no unfinished gfac.analysis row, no unsettled dispatch request, no cleanup claim, an empty local Slurm queue, no node allocated, no other client on MariaDB, nobody else logged in, and the LIMS cron entries commented out; every failing check is reported before it stops
      2. rewrites listen-config.php from the gridctl template, carrying the site's values
      3. deactivates cluster entries the Slurm code cannot submit to (metascheduler entries, and anything whose submittype is not slurm), or with --convert-http converts the national HPC entries left over from Airavata (active or not) to the template's SSH shape -- conversion never activates an entry or its status probe, deliberately -- then sets the global_config.php settings the new code requires (both stall timers 0, tenant scope, local cluster, env_script_lines per cluster, and single_node with maxproc <= ppn <= CPUs on one-node appliances)
      4. records the host key for each active cluster and any cluster named with --activate that isn't active yet, and checks ssh for us3 and the web account (the PHP-FPM pool user); authorizes an account's own key too, but only for the host's own local cluster -- a remote cluster still needs that account's key created if missing and authorized for login by hand, which --activate's own message says when it applies
-     5. creates the shared circuit-breaker directory, the shared ssh-control directory (common#24), elog.txt and its HMAC key (dbinst#75, shared from the start so a split web/us3 account host does not depend on whichever account touches them first), and the gfac.runtime_prediction table the runtime-advisory pilot uses if it is ever turned on -- including, for a pilot table created before common#31 added prediction_cluster/prediction_cluster_source, the additive column migration (runtime_pilot_table_add_prediction_cluster.sql) those two columns need
+     5. creates the shared circuit-breaker directory, the shared ssh-control directory, elog.txt and its HMAC key (shared from the start so a split web/us3 account host does not depend on whichever account touches them first), the gfac.runtime_prediction table the runtime-advisory pilot uses if it is ever turned on -- including, for a pilot table created without prediction_cluster/prediction_cluster_source, the additive column migration (runtime_pilot_table_add_prediction_cluster.sql) those two columns need ; it no longer creates the retired job-count selector's tables (metascheduler_decision, cluster_status_nudge), and an existing decision table is kept as history
      6. removes the gridctl cron entries from the crontabs (us3's, /etc/crontab, /etc/cron.d), under gridctl.php and the gridctl_pro/dev names before it, since each job's jobmonitor now carries it to a terminal state
-     7. verifies the result
+     7. installs the util/csp policy as Report-Only in Apache (lims-csp.conf) unless a policy is already configured; enforcing it is a later step
+     8. verifies the result, including that every active cluster passes the submission sizing gate rather than refusing every job
+     9. per instance: migrates people_audit.created_at to UTC if not already done, using the running config.php (or overlay) each instance already connects with -- idempotent, so a host dbupgrade/stage1+stage2 already migrated is reported 'ok' here, not migrated again; creates the dispatch tables; loads the release's stored procedures. Host-level: the gfac dispatch tables and gfac.analysis.HPCAnalysisRequestID. The idle check refuses a host with any row in gfac.analysis, since a finished cleanup deletes its row; a row without a request that reaches this step is listed and kept, and no monitor acts on it
+     10. runs dbinst's read-only installation check (tools/check_installation.php) and reports what needs the operator
    - ```--activate cluster[,cluster]``` brings a converted entry live: sets active=true in global_config.php and turns on its cluster_config.php probe, together, once its env_script_lines are real and ssh to it succeeds (as us3, and as the web account if different). --activate checks ssh before step 4, which records the host key (and, for the host's own cluster, authorizes the key). So the first --apply --activate for a cluster records its host key, and the next one activates it -- not only for a cluster converted in this very run, but any cluster whose host key is not recorded yet. For a remote cluster, authorize the account's own key on the cluster by hand first; step 4 only ever records that cluster's host key, never authorizes this account's key on the far end
-   - dry run by default; ```php uslims_upgrade.php --apply``` makes the changes, backing up each file first; safe to rerun
+   - ```--site-admin-email address``` sets who receives the site's submission-failure and outage notices. Without it the address comes from listen-config.php's ```$admin_email```, except on a host built from the roles' main branch, whose listen-config.php still has their former default (us3-admin@biophysics.uleth.ca): that is reported as input to supply, and the given address replaces it in listen-config.php too. The idle check treats a host that global_config.php records as shared as shared, without ```--single-tenant no```
+   - dry run by default; ```php uslims_upgrade.php --apply``` makes the changes, backing up each file first; safe to rerun. See "Upgrading a host" below for the actual procedure this fits into
  - uslims_git_info.php
    - for all expected and discovered repos, reports path, url, branch, use, rev#, rev date, local changes, and deltas
    - also allows updating to expected branches, git pull, and build (for gui & mpi)
@@ -94,6 +143,8 @@
      - the -d mysqli is needed for importing metadata from the xml
    - ```php uslims_people.php --update```
      - to set the newus3.people and pws in the newly created databases
+   - ```php uslims_permissions.php --grant-integrity dbname --grant-integrity-fix```
+     - restores each moved dbinstance's grants, including PAM user accounts, on this host (repeat --grant-integrity per dbname)
  - todo/notes
    - admin people are not updated with new system specific data nor are people adjusted to our current admins
    - add validation of table_record_counts in package for comparison after import
@@ -106,4 +157,11 @@
     - exports all dbinstances and record counts
   - stage2_import_dbinsts.php
     - drops dbinstance databases, creates new from latest us3_sql, imports stage1 exported data, compares record counts
+    - before the drop, checks every dump's tables (empty ones included) and columns against the latest us3_sql schema and stops, dropping nothing, if any is missing (stage3_import_databases.php does the same before creating any dbinstance)
+    - the dispatch tables (dispatch_request, dispatch_attempt, dispatch_event) are defined once in us3_sql's us3_dispatch.sql, which us3.sql loads and uslims_upgrade.php applies in place, and dbmigrate exports them even when its schema rev predates them
+    - converts each dbinstance's people_audit.created_at to UTC from the zone the original exporting host actually wrote those rows in, captured by stage1 into a per-dbinstance timezone file and carried across the export/import round trip -- falls back to the stage2 connection's own session time zone for a package made before this file existed, once per dbinstance -- each row's created_at_utc flag travels with the data, so a later re-import does not shift already-correct rows again; a named zone always converts row-by-row in PHP (DateTimeZone), since CONVERT_TZ() returns NULL without the server's time zone tables -- no zone tables and no privilege on mysql.time_zone_name required
+    - a row actually written during the repeated local hour when clocks fall back (e.g. 1:30am occurring twice) is ambiguous by nature; accepted, since the original data carries no way to tell the two occurrences apart. Which occurrence a conversion resolves it to depends on the path, and is not uniform across zones: confirmed directly (MariaDB, named zone 'America/Chicago', west of UTC) CONVERT_TZ() resolves it to daylight time (the first occurrence), not standard, so a row genuinely written during the standard-time occurrence converts up to 60 minutes off. The default zone, 'SYSTEM', resolves the same ambiguous hour the other way on that same host (confirmed directly: a server with its OS zone set to 'America/Chicago' reads @@system_time_zone as 'CDT' but CONVERT_TZ(..., 'SYSTEM', '+00:00') against the repeated 01:30 applies the -6h CST offset, not -5h CDT) -- so for SYSTEM there, it is the daylight-time occurrence that converts up to 60 minutes off instead. A named zone east of UTC does not necessarily follow 'America/Chicago''s pattern either: PHP's own DateTime (the path a named zone actually takes -- see above) resolves 'Europe/Berlin''s repeated hour (its clocks fall back in October) to standard time (the second occurrence), confirmed directly, the opposite of 'America/Chicago''s CONVERT_TZ result. It is a real, accepted gap either way, just not a single, predictable direction
+  - uslims_upgrade.php's step 9 runs this same people_audit UTC migration in place, against every LIMS instance already running on the host, using each instance's own config.php -- no new credentials
+  - step 9 also loads the release's stored procedures (us3_procedures.sql) into each instance whose procedures are not this release's, with the instance's own account; _dbutils_procedures_checksum() in the instance records the release's checksum and a fingerprint of the routines as loaded, so a later change to them (a rollback) is reloaded
+  - migrate_people_audit_utc.php runs the migration by itself, with none of uslims_upgrade.php's or stage2's other machinery: for a host already upgraded in-place before step 9 existed, or to fix one dbinstance by hand
  

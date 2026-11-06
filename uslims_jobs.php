@@ -19,8 +19,9 @@ if ( !isset( $class_dir ) || !strlen( $class_dir ) ) {
     exit( -1 );
 }
 
-## $class_dir may or may not carry a trailing slash
-$global_config_file = rtrim( $class_dir, '/' ) . "/../global_config.php";
+require "utility.php";
+
+$global_config_file = global_config_for_class_dir( $class_dir );
 
 if ( !is_file( $global_config_file ) ) {
     fwrite( STDERR, "no global_config.php at $global_config_file (from \$class_dir '$class_dir')\n" );
@@ -64,8 +65,18 @@ Options
 --queue-messages           : include queue message detail
 --monitor                  : monitor the output (requires --gfacid)
 --running                  : report on all running jobs (gfac.analysis & active jobmonitor.php)
+--busy                     : print "idle" and exit 0, or the work in flight and exit 1 (2 when it cannot be read):
+                             unfinished gfac.analysis rows, listed by id with what to do, live jobmonitors and
+                             unsettled dispatch requests, as uslims_upgrade.php's idle check counts them
 --restart                  : restart jobmonitors if needed (e.g. after a system reboot)
 --restart-only       n     : restart n jobmonitors if needed (typically for debugging purposes)
+--close-job          id    : close the gfac.analysis row with this id, for a job no monitor can finish: marks its
+                             result failed, fails its autoflow stage, removes the row, then tells its submitter, or
+                             the site admin. Exits 3 if nobody was told. A job still at the cluster is not cancelled.
+                             A completed job is refused, since --restart imports it, unless --reqid 0, which removes
+                             only the row and tells nobody. A row with
+                             no recorded request lists the open results with its number: --reqid names the row's
+                             own, or --reqid 0 removes only the row when none of them is
 --check-log                : checks the log (requires --gfacid & exclusive of --monitor)
 --getrundir                : print the remote job directory for a request (requires --reqid)
 --getrun                   : collect a request's job files from the cluster into $getrunbdir/db/HPCAnalysisRequestID (requires --reqid)
@@ -76,8 +87,6 @@ Options
 
 
 __EOD;
-
-require "utility.php";
 
 ## Report failed connections and queries as values, not exceptions (PHP 8.1+),
 ## matching uslims_upgrade.php and gridctl_bootstrap.php. Without this, --restart
@@ -97,8 +106,10 @@ $fullrpt        = false;
 $qmesgs         = false;
 $monitor        = false;
 $running        = false;
+$busy_check     = false;
 $restart        = false;
 $restart_only   = false;
+$close_job      = false;
 $checklog       = false;
 $getrundir      = false;
 $getrun         = false;
@@ -173,6 +184,19 @@ while( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--running": {
             array_shift( $u_argv );
             $running = true;
+            break;
+        }
+        case "--busy": {
+            array_shift( $u_argv );
+            $busy_check = true;
+            break;
+        }
+        case "--close-job": {
+            array_shift( $u_argv );
+            if ( !count( $u_argv ) ) {
+                error_exit( "ERROR: option '$arg' requires an argument\n$notes" );
+            }
+            $close_job = array_shift( $u_argv );
             break;
         }
         case "--restart": {
@@ -258,6 +282,42 @@ and edit with appropriate values
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
+if ( $busy_check ) {
+    ## A login that fails is unreadable state (exit 2), as a failed query is.
+    $db_handle = @mysqli_connect( $dbhost, $user, $passwd );
+    if ( !$db_handle ) {
+        echo "gfac.analysis could not be read: could not connect to $dbhost as $user\n";
+        exit( 2 );
+    }
+    $analysis = analysis_row_counts( $db_handle );
+    if ( $analysis !== null ) {
+        $analysis[ 'rows' ] = (array) analysis_stranded_rows( $db_handle, 'gfac', 20, false );
+    }
+    list( $busy_lines, $busy_notes ) = jobs_busy_report(
+        $analysis,
+        active_jobmonitors(),
+        dispatch_work_in_flight( $db_handle ),
+        count( active_dispatchers() ) );
+    foreach ( $busy_notes as $note ) {
+        echo "note: $note\n";
+    }
+    echo $busy_lines ? implode( "\n", $busy_lines ) . "\n" : "idle\n";
+    exit( !$busy_lines ? 0 : ( preg_grep( '/could not be read/', $busy_lines ) ? 2 : 1 ) );
+}
+
+if ( $close_job !== false ) {
+    $db_handle = @mysqli_connect( $dbhost, $user, $passwd );
+    if ( !$db_handle ) {
+        error_exit( "could not connect to $dbhost as $user" );
+    }
+    $close = jobs_close_row( $db_handle, 'gfac', (int) $close_job, $reqid === false ? null : (int) $reqid, active_jobmonitors(),
+        function ( $to, $subject, $body ) {
+            return mail( $to, $subject, $body );
+        }, (string) ( ( $global_site_admin_email ?? '' ) ?: ( $admin_email ?? '' ) ) );
+    echo implode( "\n", $close[ 1 ] ) . "\n";
+    exit( !$close[ 0 ] ? 1 : ( ( $close[ 2 ] ?? true ) ? 0 : 3 ) );
+}
+
 if ( !$db && !$running && !$restart && !$restart_only && !$getpriorids ) {
     error_exit( "ERROR: no database specified" );
 }
@@ -318,6 +378,21 @@ function finalizing_markers() {
             : ( exec( "ls -d ~us3/lims" ) . "/etc/joblog" );
 
     return glob( "$base/*/*/finalizing" ) ?: [];
+}
+
+## Every status-pending marker (jobmonitor/cleanup.php's
+## cleanup_status_pending_begin()): results already imported, only the final
+## update_autoflow_status() write failed. Distinct from finalizing_markers()
+## above -- this is not evidence of a dead worker, so its close-out below
+## must not assume FAILED.
+function status_pending_markers() {
+    global $ll_base_dir;
+
+    $base = ( isset( $ll_base_dir ) && $ll_base_dir != "" )
+            ? $ll_base_dir
+            : ( exec( "ls -d ~us3/lims" ) . "/etc/joblog" );
+
+    return glob( "$base/*/*/status-pending" ) ?: [];
 }
 
 ## The real wall-clock time $pid started, or null when it cannot be
@@ -441,6 +516,24 @@ function marker_process_alive( $pid, $marker_started = 0 ) {
     return true;
 }
 
+## How long a marker can sit unresolved (its own row genuinely never comes
+## back -- not just a timing race with the worker that is about to finish
+## writing it) before --restart calls it out distinctly, instead of
+## printing the exact same "leaving it for the next --restart" line forever
+## with nothing to tell an operator this one is different.
+## A function, not a top-level const: this script's functions are pulled
+## out for unit testing by a tokenizer-based extractor (see tests/support/
+## dbutils/load-uslims-jobs.php) that does not also pull out const
+## declarations.
+function orphan_marker_age_seconds() {
+    return 86400;
+}
+
+function marker_is_orphaned( $marker ) {
+    $mtime = @filemtime( $marker );
+    return $mtime !== false && ( time() - $mtime ) > orphan_marker_age_seconds();
+}
+
 ## Closes out one finalizing marker whose worker is confirmed gone (--restart's
 ## caller already checked marker_process_alive() and the gfac.analysis row).
 ## $info is the marker's decoded JSON: 'gfacID', 'us3_db', and 'autoflowAnalysisID'
@@ -455,7 +548,20 @@ function close_out_finalizing_marker( $db_handle, $marker, array $info ) {
     ## row must not touch today's row for that gfacID.
     $requestid = (int) ( $info[ 'requestID' ] ?? 0 );
 
-    $us3_db_esc  = mysqli_real_escape_string( $db_handle, $info[ 'us3_db' ] );
+    ## us3_db goes into the queries below unquoted, as a database-name
+    ## prefix -- mysqli_real_escape_string()
+    ## protects a value placed INSIDE quotes, which an identifier position
+    ## never is, so it offered no actual protection here. Validated the
+    ## same way every other identifier interpolated into SQL in this
+    ## codebase is (is_sql_identifier(), utility.php); report-and-leave-the-
+    ## marker, not die, matching this loop's own handling of an unreadable
+    ## marker just above its caller.
+    if ( !is_sql_identifier( $info[ 'us3_db' ] ) ) {
+        echo "marker $marker names an invalid us3_db (" . var_export( $info[ 'us3_db' ], true )
+           . "); leaving it for the next --restart\n";
+        return;
+    }
+    $us3_db_esc  = $info[ 'us3_db' ];
     $gfacid_esc  = mysqli_real_escape_string( $db_handle, $gfacid );
     $message     = "Results handling did not finish: the worker stopped after the job"
                   . " record was removed. Check the job log for $gfacid and resubmit if"
@@ -514,6 +620,10 @@ function close_out_finalizing_marker( $db_handle, $marker, array $info ) {
             echo "autoflowAnalysisID $autoflow_id for $gfacid is already"
                . " '{$found->status}'; removing its marker\n";
             @unlink( $marker );
+        } elseif ( marker_is_orphaned( $marker ) ) {
+            echo "no autoflowAnalysis row for autoflowAnalysisID $autoflow_id / $gfacid after more"
+               . " than " . (int) ( orphan_marker_age_seconds() / 3600 ) . "h; this marker looks"
+               . " orphaned, not merely early -- review it by hand: $marker\n";
         } else {
             echo "no autoflowAnalysis row yet for autoflowAnalysisID $autoflow_id / $gfacid;"
                . " leaving its marker for the next --restart\n";
@@ -540,6 +650,288 @@ function close_out_finalizing_marker( $db_handle, $marker, array $info ) {
     @unlink( $marker );
 }
 
+## Closes out one status-pending marker (results already imported, only the
+## final status write failed -- see jobmonitor/cleanup.php's
+## cleanup_status_pending_begin()). Unlike close_out_finalizing_marker() above,
+## this never assumes FAILED: 'stage'/'queue_status' are the real, already-
+## resolved outcome gridctl decided before the write failed, carried in the
+## marker since dbutils has no access to gridctl's status vocabulary maps.
+## No marker_process_alive() check -- the marker is evidence of a DB outage at
+## write time, not of a dead worker, so liveness is irrelevant here.
+function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
+    $gfacid      = $info[ 'gfacID' ];
+    $requestid   = (int) ( $info[ 'requestID' ] ?? 0 );
+    ## us3_db goes into the queries below unquoted, as a database-name
+    ## prefix -- see close_out_finalizing_
+    ## marker()'s own identical fix for why mysqli_real_escape_string()
+    ## offered no real protection in this position.
+    if ( !is_sql_identifier( $info[ 'us3_db' ] ) ) {
+        echo "marker $marker names an invalid us3_db (" . var_export( $info[ 'us3_db' ], true )
+           . "); leaving it for the next --restart\n";
+        return;
+    }
+    $us3_db_esc  = $info[ 'us3_db' ];
+    $gfacid_esc  = mysqli_real_escape_string( $db_handle, $gfacid );
+    $stage       = $info[ 'stage' ] ?? null;
+    $queue_status = $info[ 'queue_status' ] ?? null;
+    ## $stage/$queue_status come from the marker file's own recorded
+    ## content: the marker is written by this
+    ## same codebase, not an external input, but it still has to pass
+    ## through the SQL layer like any other value headed into a query --
+    ## escaped here rather than trusted as already-safe because of where
+    ## it came from.
+    $stage_esc        = $stage !== null ? mysqli_real_escape_string( $db_handle, $stage ) : null;
+    $queue_status_esc = $queue_status !== null ? mysqli_real_escape_string( $db_handle, $queue_status ) : null;
+    $message_esc = mysqli_real_escape_string( $db_handle, (string) ( $info[ 'message' ] ?? '' ) );
+    $autoflow_id = (int) ( $info[ 'autoflowAnalysisID' ] ?? 0 );
+
+    if ( $autoflow_id > 0 && $stage !== null ) {
+        ## Same keys as close_out_finalizing_marker()'s autoflow branch
+        ## (requestID is the HPCAnalysisRequestID, not autoflowAnalysisID --
+        ## see that function's own comment). No terminal-status guard: the
+        ## stage gridctl's own job_cleanup() resolves at this call site is
+        ## always terminal (complete/failed/canceled/error), matching
+        ## update_autoflow_status()'s own no-guard case for a terminal stage.
+        $query = "UPDATE $us3_db_esc.autoflowAnalysis SET status='$stage_esc', statusMsg='$message_esc'"
+               . " WHERE requestID=$autoflow_id AND currentGfacID='$gfacid_esc'";
+        if ( mysqli_query( $db_handle, $query ) === false ) {
+            echo "could not close out status-pending autoflowAnalysisID $autoflow_id for $gfacid: "
+               . mysqli_error( $db_handle ) . "\n";
+            return;
+        }
+        if ( mysqli_affected_rows( $db_handle ) === 0 ) {
+            ## 0 affected is ambiguous: the row may not exist (leave the
+            ## marker, something is genuinely wrong), or it may already carry
+            ## this exact stage (a prior --restart's write landed but its
+            ## marker cleanup did not; nothing left to do, safe to drop it).
+            ## Same disambiguation close_out_finalizing_marker() does above.
+            $found = db_obj_result( $db_handle,
+                "select status from $us3_db_esc.autoflowAnalysis where requestID=$autoflow_id"
+              . " and currentGfacID='$gfacid_esc'", false, true );
+            if ( $found === false ) {
+                if ( marker_is_orphaned( $marker ) ) {
+                    echo "no autoflowAnalysis row for autoflowAnalysisID $autoflow_id / $gfacid after"
+                       . " more than " . (int) ( orphan_marker_age_seconds() / 3600 ) . "h; this"
+                       . " status-pending marker looks orphaned, not merely early -- review it by"
+                       . " hand: $marker\n";
+                } else {
+                    echo "no autoflowAnalysis row for autoflowAnalysisID $autoflow_id / $gfacid;"
+                       . " leaving its status-pending marker for the next --restart\n";
+                }
+                return;
+            }
+            echo "autoflowAnalysisID $autoflow_id for $gfacid is already '$stage';"
+               . " its status-pending write already landed\n";
+        }
+    }
+
+    if ( $queue_status !== null && $requestid > 0 ) {
+        $hpc_query = "UPDATE $us3_db_esc.HPCAnalysisResult SET queueStatus='$queue_status_esc',"
+                   . " lastMessage='$message_esc' WHERE HPCAnalysisRequestID=$requestid"
+                   . " AND gfacID='$gfacid_esc'";
+        if ( mysqli_query( $db_handle, $hpc_query ) === false ) {
+            echo "could not close out status-pending HPCAnalysisResult for $gfacid: "
+               . mysqli_error( $db_handle ) . "\n";
+            return;
+        }
+    }
+
+    echo "closed out status-pending write for $gfacid (stage="
+       . ( $stage ?? 'n/a' ) . ", queueStatus=" . ( $queue_status ?? 'n/a' ) . ")\n";
+    @unlink( $marker );
+}
+
+## Whether jobmonitor.php takes this instance name.
+function jobs_monitor_accepts_instance( $inst ) {
+    return (bool) preg_match( '/^uslims3_[A-Za-z0-9_]*$/', $inst );
+}
+
+## No monitor is sure to import this row's results: an instance name jobmonitor.php refuses, or an Airavata
+## job, whose monitor only imports while its service answers. --restart comes first for those, as --busy says.
+function jobs_monitor_cannot_import( $inst, $job ) {
+    return (bool) preg_match( '/US3-A/i', $job ) || !jobs_monitor_accepts_instance( $inst );
+}
+
+## --close-job: closes one gfac.analysis row no monitor can finish, with its submitter told, or else $admin.
+## [ closed, lines, told ]; told is false only when a closed job reached nobody.
+## $reqid: null when not given; 0 removes only the row. A result is never chosen from a job number alone: a row
+## without a recorded request needs the operator to name its own, since the number may have been reused.
+function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $mailer, $admin = '' ) {
+    sql_identifier_or_die( $gdb );
+    $found = mysqli_query( $link, "SELECT * FROM $gdb.analysis WHERE id = " . (int) $id ); // NOSONAR $gdb is validated above
+    $row = $found ? mysqli_fetch_assoc( $found ) : null;
+    if ( !$row ) {
+        return [ false, [ $found ? "no row $id in $gdb.analysis" : "could not read $gdb.analysis: " . mysqli_error( $link ) ] ];
+    }
+    $status = strtoupper( (string) $row[ 'status' ] );
+    $inst = (string) $row[ 'us3_db' ];
+    $job  = (string) $row[ 'gfacID' ];
+    $unimportable = jobs_monitor_cannot_import( $inst, $job );
+    foreach ( $monitors as $key => $pid ) {
+        if ( $key === "$inst:$job" || strpos( $key, "$inst:$job@" ) === 0 ) {
+            return [ false, [ $status === 'COMPLETE' && !$unimportable
+                ? "jobmonitor $pid is importing job $job in $inst; let it finish, at most 6 hours"
+                : "jobmonitor $pid is running for job $job in $inst; let it finish. If it never ends, kill $pid, then rerun this" ] ];
+        }
+    }
+    $delete = function () use ( $link, $gdb, $id ) {
+        return mysqli_query( $link, "DELETE FROM $gdb.analysis WHERE id = " . (int) $id ); // NOSONAR $gdb is validated above
+    };
+    if ( $reqid === 0 ) {
+        return $delete() ? [ true, [ "removed row $id only; no result changed and nobody was told" ] ]
+                         : [ false, [ "could not remove row $id: " . mysqli_error( $link ) ] ];
+    }
+    if ( !preg_match( '/^[\w-]+$/', $inst ) ) {
+        return [ false, [ "row $id names instance '$inst', which is not a database name; rerun with --reqid 0 to remove only the row" ] ];
+    }
+    $stmt = mysqli_prepare( $link, "SELECT r.HPCAnalysisRequestID, r.queueStatus, q.email, q.clusterName, q.submitTime FROM `$inst`.HPCAnalysisResult r"
+        . " JOIN `$inst`.HPCAnalysisRequest q ON q.HPCAnalysisRequestID = r.HPCAnalysisRequestID"
+        . " WHERE r.gfacID = ?" );
+    $res = $stmt && mysqli_stmt_bind_param( $stmt, 's', $job ) && mysqli_stmt_execute( $stmt ) ? mysqli_stmt_get_result( $stmt ) : false;
+    if ( !$res ) {
+        $errno = $stmt ? mysqli_stmt_errno( $stmt ) : mysqli_errno( $link );
+        $error = $stmt ? mysqli_stmt_error( $stmt ) : mysqli_error( $link );
+        ## Unknown database or table: the instance is gone, so there is nobody to tell.
+        if ( in_array( $errno, [ 1049, 1146 ], true ) ) {
+            return $delete() ? [ true, [ "removed row $id; instance '$inst' no longer exists, so nobody was told" ] ]
+                             : [ false, [ "could not remove row $id: " . mysqli_error( $link ) ] ];
+        }
+        return [ false, [ "could not read $inst's results for job $job: $error."
+                          . " Give db_config.php's account SELECT and UPDATE on $inst, then rerun" ] ];
+    }
+    $results = mysqli_fetch_all( $res, MYSQLI_ASSOC );
+    $own = (int) ( $row[ 'HPCAnalysisRequestID' ] ?? 0 );
+    $want = $reqid ?: $own;
+    ## A result is marked completed before its import, so with its row still here the import has not run.
+    foreach ( $unimportable ? [] : $results as $r ) {
+        if ( ( !$want || (int) $r[ 'HPCAnalysisRequestID' ] === (int) $want )
+             && ( $r[ 'queueStatus' ] === 'completed'
+                  || ( $status === 'COMPLETE' && !in_array( $r[ 'queueStatus' ], [ 'failed', 'aborted' ], true ) ) ) ) {
+            return [ false, [ "job $job in $inst completed and its results are not imported, so it is not closed here."
+                              . " Run php uslims_jobs.php --restart as us3: its monitor imports them about 10 minutes"
+                              . " after it sees the job complete, at most 6 hours."
+                              . " --reqid 0 removes only the row, importing nothing and telling nobody" ] ];
+        }
+    }
+    $open = array_values( array_filter( $results, function ( $r ) use ( $unimportable ) {
+        return !in_array( $r[ 'queueStatus' ], $unimportable ? [ 'failed', 'aborted' ] : [ 'completed', 'failed', 'aborted' ], true );
+    } ) );
+    if ( !$want ) {
+        if ( !$open ) {
+            return $delete() ? [ true, [ "removed row $id; job $job has no open result in $inst, so nothing else changed and nobody was told" ] ]
+                             : [ false, [ "could not remove row $id: " . mysqli_error( $link ) ] ];
+        }
+        $lines = [ "row $id on {$row['cluster']} records no request. Rerun with --reqid and the one it ran, or --reqid 0 to remove only the row if none of these is its job:" ];
+        foreach ( $open as $o ) {
+            $lines[] = "  request {$o['HPCAnalysisRequestID']}, {$o['clusterName']}, submitted {$o['submitTime']}";
+        }
+        return [ false, $lines ];
+    }
+    $open = array_values( array_filter( $open, function ( $o ) use ( $want ) {
+        return (int) $o[ 'HPCAnalysisRequestID' ] === (int) $want;
+    } ) );
+    if ( !$open ) {
+        if ( $reqid ) {
+            return [ false, [ "request $reqid holds no open result for job $job in $inst" ] ];
+        }
+        return $delete() ? [ true, [ "removed row $id; request $want's result for job $job is already closed, so nothing else changed and nobody was told" ] ]
+                         : [ false, [ "could not remove row $id: " . mysqli_error( $link ) ] ];
+    }
+    $msg = "Closed by an administrator: the job's results could not be collected ($status).";
+    ## One transaction, so a failure part way leaves everything as it was and a rerun does the whole job.
+    $fail = function ( $what ) use ( $link, $want, $inst ) {
+        $error = mysqli_error( $link );
+        mysqli_rollback( $link );
+        return [ false, [ "could not close request $want in $inst, so nothing changed: $what: $error" ] ];
+    };
+    mysqli_begin_transaction( $link );
+    $up = mysqli_prepare( $link, "UPDATE `$inst`.HPCAnalysisResult SET queueStatus = 'failed', lastMessage = ? WHERE gfacID = ? AND HPCAnalysisRequestID = ?" );
+    if ( !$up || !mysqli_stmt_bind_param( $up, 'ssi', $msg, $job, $want ) || !mysqli_stmt_execute( $up ) ) {
+        return $fail( 'the result' );
+    }
+    ## A GMP stage must stop waiting, or its run never reaches its report. An instance without the table has none.
+    $staged = 0;
+    $flow = mysqli_prepare( $link, "UPDATE `$inst`.autoflowAnalysis SET status = 'failed', statusMsg = ?"
+        . " WHERE currentHPCARID = ? AND currentGfacID = ? AND LOWER(status) NOT IN ( 'failed', 'error', 'canceled', 'complete', 'done', 'finished' )" );
+    if ( $flow ) {
+        if ( !mysqli_stmt_bind_param( $flow, 'sis', $msg, $want, $job ) || !mysqli_stmt_execute( $flow ) ) {
+            return $fail( 'its autoflow stage' );
+        }
+        $staged = mysqli_stmt_affected_rows( $flow );
+    } elseif ( mysqli_errno( $link ) !== 1146 ) {
+        return $fail( 'its autoflow stage' );
+    }
+    if ( !$delete() ) {
+        return $fail( 'the row' );
+    }
+    if ( !mysqli_commit( $link ) ) {
+        return $fail( 'the commit' );
+    }
+    $lines = [ "marked request $want in $inst failed" ];
+    if ( in_array( $status, [ 'SUBMITTED', 'RUNNING', 'DATA' ], true ) ) {
+        $lines[] = "job $job was $status with no monitor; cancel it at {$row['cluster']} if it is still running";
+    }
+    if ( $staged > 0 ) {
+        $lines[] = "failed its autoflow stage";
+    }
+    $lines[] = "removed row $id";
+    $to = (string) $open[ 0 ][ 'email' ];
+    $told = $to !== '' && $mailer( $to, "US3 analysis failed: results could not be collected",
+        "Your analysis (HPC request $want, job $job) in $inst was closed by an administrator. Its results could not be"
+        . " collected, so they were not imported. Please resubmit it if you still need it.\n" );
+    if ( $told ) {
+        $lines[] = "told $to";
+        return [ true, $lines, true ];
+    }
+    $why = $to !== '' ? "($to): the mail was refused" : "who has no address on the request";
+    $lines[] = "could not tell the submitter $why";
+    $told = $admin !== '' && $mailer( $admin, "US3 analysis closed: its submitter could not be told",
+        "HPC request $want, job $job in $inst was closed by an administrator, and its results were not imported."
+        . " Its submitter could not be told $why. Please tell them to resubmit it if they still need it.\n" );
+    $lines[] = $told ? "told the site admin, $admin" : "nobody was told; tell the submitter of request $want yourself";
+    return [ true, $lines, $told ];
+}
+
+## --busy's answer: [ busy lines, notes ], with every gfac.analysis row counted, as
+## uslims_upgrade.php's idle check counts them.
+function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines, $dispatchers = 0 ) {
+    $busy  = [];
+    if ( $dispatchers ) {
+        $busy[] = "$dispatchers dispatchone.php running";
+    }
+    $notes = [];
+    if ( $analysis === null ) {
+        $busy[] = "gfac.analysis could not be read";
+    } else {
+        $stranded = $analysis[ 'stranded' ];
+        $unfinished = $analysis[ 'unfinished' ] - $stranded;
+        if ( $unfinished ) {
+            $busy[] = "$unfinished unfinished job(s) in gfac.analysis"
+                    . ( $monitors ? '' : " and no jobmonitor; run php uslims_jobs.php --restart as us3 to resume them" );
+        }
+        if ( $stranded ) {
+            $busy[] = "$stranded job(s) in gfac.analysis ended without being closed out or are parked at a timeout"
+                    . ( $monitors ? '' : ". " . analysis_stranded_remedy() );
+        }
+        foreach ( $analysis[ 'rows' ] ?? [] as $r ) {
+            $busy[] = "  id {$r['id']}: job {$r['gfacID']} in {$r['us3_db']} on {$r['cluster']}, {$r['status']}: "
+                    . ( !jobs_monitor_accepts_instance( (string) $r[ 'us3_db' ] )
+                        ? "no monitor accepts this instance name; --close-job {$r['id']}"
+                        : ( strtoupper( (string) $r[ 'status' ] ) === 'COMPLETE' && !jobs_monitor_cannot_import( (string) $r[ 'us3_db' ], (string) $r[ 'gfacID' ] )
+                        ? "--restart imports it"
+                        : "--restart resumes it; if no monitor can finish it, --close-job {$r['id']}" ) );
+        }
+        $more = $analysis[ 'unfinished' ] - count( $analysis[ 'rows' ] ?? [] );
+        if ( isset( $analysis[ 'rows' ] ) && $more > 0 ) {
+            $busy[] = "  and $more more; rerun this once these are clear";
+        }
+    }
+    if ( $monitors ) {
+        $busy[] = count( $monitors ) . " jobmonitor(s) running";
+    }
+    return [ array_merge( $busy, $dispatch_lines ), $notes ];
+}
+
 ## "php:<path>", matched no row, and the job read as unmonitored: --restart then
 ## started a second monitor for a job that already had one, and two monitors
 ## import the same results twice.
@@ -551,13 +943,37 @@ function active_jobmonitors() {
     exec( 'ps -eo pid=,args=', $lines );
     $active = [];
     foreach ( $lines as $line ) {
-        if ( !preg_match( '#^\s*(\d+)\s+(?:\S*nice\s+-?\d+\s+)?\S*php[0-9.]*\s+'
-                          . '\S*jobmonitor/jobmonitor\.php\s+(\S+)\s+(\S+)#', $line, $m ) ) {
-            continue;
+        $parsed = jobmonitor_ps_entry( $line );
+        if ( $parsed !== null ) {
+            $active[ $parsed[ 'key' ] ] = $parsed[ 'pid' ];
         }
-        $active[ $m[ 2 ] . ':' . $m[ 3 ] ] = $m[ 1 ];
     }
     return $active;
+}
+
+## Running dispatch attempts (dispatchone.php), as the upgrade's idle check counts them: [ pid => line ].
+function active_dispatchers() {
+    $lines = [];
+    exec( 'ps -eo pid=,args=', $lines );
+    $active = [];
+    foreach ( $lines as $line ) {
+        if ( preg_match( '#^\s*(\d+)\s+\S*php[0-9.]*\s+(?:\S*/)?dispatchone\.php(\s|$)#', $line, $m ) ) {
+            $active[ $m[ 1 ] ] = trim( $line );
+        }
+    }
+    return $active;
+}
+
+## One `ps -eo pid=,args=` line as array( pid, key ), or null when it is not a
+## launched jobmonitor.php. A monitor started with its cluster is keyed
+## "db:gfacID@cluster", matching its job directory; otherwise "db:gfacID".
+function jobmonitor_ps_entry( $line ) {
+    if ( !preg_match( '#^\s*(\d+)\s+(?:\S*nice\s+-?\d+\s+)?\S*php[0-9.]*\s+'
+                      . '\S*jobmonitor/jobmonitor\.php\s+(\S+)\s+(\S+)(?:\s+\S+\s+(\S+))?#', $line, $m ) ) {
+        return null;
+    }
+    $cluster = isset( $m[ 4 ] ) ? trim( $m[ 4 ], "'" ) : '';
+    return [ 'pid' => $m[ 1 ], 'key' => $m[ 2 ] . ':' . $m[ 3 ] . ( $cluster !== '' ? '@' . $cluster : '' ) ];
 }
 
 function jm_only_report( $jm_active ) {
@@ -707,14 +1123,50 @@ if ( $running || $restart || $restart_only ) {
         ## monitor for it and the stage sits at 'running'. cleanup leaves a marker
         ## across that span; a marker with no row means the worker died in it.
         ##
+        ## THE BUG this answers: a job that
+        ## crashed during results handling and a job whose results already
+        ## landed but whose own final status write then failed can both
+        ## leave markers for the SAME job at once -- cleanup.php never clears
+        ## the original finalizing marker until the whole span, including the
+        ## final write, completes. Running this loop first used to mark such
+        ## a job FAILED (its gfac.analysis row is already gone by this point
+        ## either way, so the guard below never catches it), with the
+        ## status-pending loop below only correcting it to the real outcome
+        ## a moment later in the same run -- a real, if momentary, wrong
+        ## state, and a misleading "results handling was interrupted"
+        ## message for a job that was not actually a failure.
+        ##
+        ## Status-pending runs first now (below is reordered): it already
+        ## carries the real, already-resolved terminal outcome, so letting
+        ## it land first means a job with both markers is never marked
+        ## FAILED at all -- this loop's own guard (status NOT IN (...,
+        ## 'COMPLETE', ...)) then correctly finds 0 rows to affect for it,
+        ## and falls through to "already 'COMPLETE'; removing its marker"
+        ## instead of writing anything.
+        ##
         ## Run before the gfac.analysis select below, not after: that select
         ## returns false, not an empty result, when the table has no rows (the
         ## usual state on a quiet host after a crash), and the code that used to
         ## follow it there exited on that before ever reaching this loop.
+        foreach ( status_pending_markers() as $marker ) {
+            $info = json_decode( (string) @file_get_contents( $marker ), true );
+            if ( !is_array( $info ) || empty( $info[ 'us3_db' ] ) || empty( $info[ 'gfacID' ] ) ) {
+                echo "ignoring and removing unreadable status-pending marker $marker\n";
+                @unlink( $marker );
+                continue;
+            }
+            close_out_status_pending_marker( $db_handle, $marker, $info );
+        }
+
         foreach ( finalizing_markers() as $marker ) {
             $info = json_decode( (string) @file_get_contents( $marker ), true );
             if ( !is_array( $info ) || empty( $info[ 'us3_db' ] ) || empty( $info[ 'gfacID' ] ) ) {
-                echo "ignoring unreadable finalizing marker $marker\n";
+                ## Removed, not just logged: nothing
+                ## about a marker this unreadable ever becomes parseable on a
+                ## later run, so leaving it in place meant every --restart
+                ## reported the exact same one forever, with no way to clear it.
+                echo "ignoring and removing unreadable finalizing marker $marker\n";
+                @unlink( $marker );
                 continue;
             }
             $gfacid = $info[ 'gfacID' ];
@@ -729,7 +1181,9 @@ if ( $running || $restart || $restart_only ) {
             }
             $res = db_obj_result( $db_handle,
                 "select count(*) as n from gfac.analysis where gfacID='"
-                . mysqli_real_escape_string( $db_handle, $gfacid ) . "'", false, true );
+                . mysqli_real_escape_string( $db_handle, $gfacid ) . "'"
+                . ( empty( $info[ 'cluster' ] ) ? '' : " and COALESCE(NULLIF(metaschedulerClusterExecuting, ''), cluster)='"
+                    . mysqli_real_escape_string( $db_handle, $info[ 'cluster' ] ) . "'" ), false, true );
             if ( $res !== false && (int) $res->{"n"} > 0 ) {
                 ## The row is back, or was never deleted: the monitor restart below
                 ## owns this job, so leave the marker to that run.
@@ -772,6 +1226,7 @@ if ( $running || $restart || $restart_only ) {
     $jm_restart_db       = [];
     $jm_restart_gfacid   = [];
     $jm_restart_hpcreqid = [];
+    $jm_restart_cluster  = [];
     ## Shown under plain --restart too, not only --running:
     ## $out's full table is gated on $running below, so an orphan row was
     ## skipped with no sign of it anywhere a boot-time --restart run (which
@@ -781,25 +1236,38 @@ if ( $running || $restart || $restart_only ) {
     while( $row = mysqli_fetch_array($res) ) {
         $db     = $row[ 'us3_db' ];
         $gfacid = $row[ 'gfacID' ];
-        $jm_key = "$db:$gfacid";
+        ## The execution cluster and the row's own request fix this job when two
+        ## clusters reuse a job number; a monitor started before that is keyed
+        ## by the job number alone.
+        $exec_cluster = !empty( $row[ 'metaschedulerClusterExecuting' ] ) ? $row[ 'metaschedulerClusterExecuting' ] : $row[ 'cluster' ];
+        $jm_key = "$db:$gfacid@$exec_cluster";
+        if ( !array_key_exists( $jm_key, $jm_active ) && array_key_exists( "$db:$gfacid", $jm_active ) ) {
+            $jm_key = "$db:$gfacid";
+        }
 
         ## emptyok=true: gridctl can leave a gfac.analysis row with no
         ## HPCAnalysisResult behind (a deleted request or database).
         ## services.php's own start() runs --restart at every boot; exiting
         ## here on the first such row (the old emptyok=false) would skip
         ## restarting the monitor for every row after it, not just this one.
-        $reshpc =
-            db_obj_result(
-                $db_handle
-                ,"select HPCAnalysisRequestID from $db.HPCAnalysisResult where gfacID=\"$gfacid\" limit 1"
-                , false
-                , true
-            );
-
-        if ( $reshpc ) {
-            $reqid = $reshpc->{ "HPCAnalysisRequestID" };
-        } else {
-            $reqid = "unknown";
+        ## Where gfac.analysis records the request, a row without one is never guessed at.
+        ## Before that column exists the job number alone is all there is.
+        $reqid = "unknown";
+        if ( !array_key_exists( 'HPCAnalysisRequestID', $row ) ) {
+            $reshpc =
+                db_obj_result(
+                    $db_handle
+                    ,"select HPCAnalysisRequestID from $db.HPCAnalysisResult where gfacID=\"$gfacid\""
+                     . " order by HPCAnalysisResultID limit 1"
+                    , false
+                    , true
+                );
+            if ( $reshpc ) {
+                $reqid = $reshpc->{ "HPCAnalysisRequestID" };
+            }
+        }
+        if ( !empty( $row[ 'HPCAnalysisRequestID' ] ) ) {
+            $reqid = $row[ 'HPCAnalysisRequestID' ];
         }
 
         if ( array_key_exists( $jm_key, $jm_active ) ) {
@@ -814,13 +1282,17 @@ if ( $running || $restart || $restart_only ) {
             ## restarted for a row with no HPCAnalysisResult to read a
             ## request id from, so it is skipped here instead, with a
             ## message, rather than queued to fail the whole pass.
-            $jm_pid = "skipped (orphan row, no HPCAnalysisResult)";
-            $jm_orphan_skips[] = "skipped $db gfacID=$gfacid: orphan row, no HPCAnalysisResult";
+            $jm_skip_why = array_key_exists( 'HPCAnalysisRequestID', $row ) || !jobs_monitor_accepts_instance( $db )
+                         ? "no request recorded; php uslims_jobs.php --close-job {$row['id']} says what to do"
+                         : "orphan row {$row['id']}, no HPCAnalysisResult";
+            $jm_pid = "skipped ($jm_skip_why)";
+            $jm_orphan_skips[] = "skipped $db gfacID=$gfacid: $jm_skip_why";
         } else {
             $jm_pid                = "not running";
             $jm_restart_db      [] = $db;
             $jm_restart_gfacid  [] = $gfacid;
             $jm_restart_hpcreqid[] = $reqid;
+            $jm_restart_cluster [] = $exec_cluster;
         }
 
         $out .=
@@ -862,7 +1334,7 @@ if ( $running || $restart || $restart_only ) {
         $hpcreqid = $jm_restart_hpcreqid[ $index ];
         ## This script itself can run as either root (an operator's manual
         ## --restart) or us3 (us3lims-roles' boot-time us3-listen.service,
-        ## the only account gridctl#33's refuse-root-start even permits to
+        ## the only account gridctl's refuse-root-start even permits to
         ## reach this code path). A monitor launched as root instead of us3
         ## breaks it the same way a bare unconditional wrap once did when
         ## this ran as us3: common's account-match gate
@@ -872,7 +1344,10 @@ if ( $running || $restart || $restart_only ) {
         ## job lock so a later --restart as us3 cannot replace it either.
         ## runuser_wrap_if_root() picks the right one instead of assuming
         ## root unconditionally.
-        $inner_cmd = "php $us3bin/jobmonitor/jobmonitor.php $db $gfacid $hpcreqid";
+        ## 4.2.0's monitor takes exactly three arguments, and still runs where an upgrade found work to finish first.
+        $jm_takes_cluster = strpos( (string) @file_get_contents( "$us3bin/jobmonitor/jobmonitor.php" ), '[cluster]' ) !== false;
+        $inner_cmd = "php $us3bin/jobmonitor/jobmonitor.php $db $gfacid $hpcreqid"
+                   . ( $jm_takes_cluster ? ' ' . escapeshellarg( $jm_restart_cluster[ $index ] ) : '' );
         $cmd       = runuser_wrap_if_root( $inner_cmd );
         echo "restarting: $cmd\n";
         run_cmd( $cmd );
@@ -1157,7 +1632,7 @@ function runuser_bin() {
 ## -- confirmed for real: us3lims-roles' us3-listen.service runs
 ## services.php start as us3, which runs uslims_jobs.php --restart, so
 ## after every reboot zero monitors came back for jobs that were running
-## when the host went down. gridctl#33 now refuses to even start the
+## when the host went down. gridctl refuses to even start the
 ## daemons as root, so running this script as root to sidestep the bug
 ## is no longer an option either -- us3 is the only account that can ever
 ## reach this code path.
@@ -1173,7 +1648,7 @@ function runuser_wrap_if_root( $innerCmd ) {
 ## before attempting either rsync fetch. Pure (string building only, no
 ## exec), so the escaping is testable without a real connection.
 ##
-## THE BUG this answers (round-13 should-fix, dbutils#45): this used to
+## THE BUG this answers: this used to
 ## wrap unconditionally, on the stated reasoning that --getrun's own rsync
 ## fetches just below were unconditionally wrapped too, so this matched
 ## their existing behavior. That stopped being true once those fetches
@@ -1187,9 +1662,21 @@ function runuser_wrap_if_root( $innerCmd ) {
 ## exist on $login -- this job was never staged there" for a directory
 ## that was never actually checked at all, root or not, reachable host or
 ## not.
-function remote_dir_check_command( $login, $rundir ) {
-    return runuser_wrap_if_root(
-        "ssh " . escapeshellarg( $login ) . " test -d " . escapeshellarg( $rundir ) );
+function remote_dir_check_command( $login, $rundir, $local = false ) {
+    $inner_cmd = $local
+               ? "test -d " . escapeshellarg( $rundir )
+               : "ssh " . escapeshellarg( $login ) . " test -d " . escapeshellarg( $rundir );
+    return runuser_wrap_if_root( $inner_cmd );
+}
+
+## An rsync remote-spec prefix ("user@host:") for $login, or '' for the
+## local entry -- rsync treats a bare path as local on its own, so this is
+## the whole difference between going over ssh and not. Shared by --getrun
+## and --copyrun's own spec-building below: both always went over ssh, even for 'localhost' => true,
+## failing with "Host key verification failed" on a host built without
+## ssh to itself, the same entry remote_exec already skips ssh for.
+function rsync_remote_prefix( $login, $local ) {
+    return $local ? '' : escapeshellarg( $login ) . ':';
 }
 
 function hpcresbyreqout( $reqid, $reqisgfac = false ) {
@@ -1295,6 +1782,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     $queue   = false;
     $login   = false;
     $workdir = false;
+    $local   = false;
 
     foreach ( $cluster_details as $k => $v ) {
         if (
@@ -1306,6 +1794,15 @@ if ( $getrundir || $getrun || $copyrun ) {
             ## 'login' still has an ssh identity, just the default one.
             $login   = $v['login'] ?? ( 'us3@' . $v['name'] );
             $workdir = $v['workdir'];
+            ## 'localhost' => true means
+            ## this cluster is reached without ssh everywhere else in this
+            ## stack (remote_exec, uslims_upgrade.php
+            ## step 4) -- --getrun/--copyrun never read it at all, so they
+            ## always went over ssh even for the local entry, failing with
+            ## "Host key verification failed" on a host built without ssh
+            ## to itself. cluster_entry_is_local(), not !empty() --
+            ## !empty() reads the string 'false' as local.
+            $local   = cluster_entry_is_local( $v[ 'localhost' ] ?? false );
             break;
         }
     }
@@ -1380,12 +1877,12 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## missing $rundir itself still has rsync print its own "change_dir ...
     ## failed" once per brace-expanded file above (five lines), at rc 0,
     ## which reads as noise instead of the one simple fact it stands for.
-    exec( remote_dir_check_command( $login, $rundir ) . " 2>&1", $remoteDirCheckOutput, $remoteDirCheckStatus );
+    exec( remote_dir_check_command( $login, $rundir, $local ) . " 2>&1", $remoteDirCheckOutput, $remoteDirCheckStatus );
 
     ## 255 is ssh's own transport-failure exit code, not test -d's: a host
     ## that could not be reached at all reads very differently from one
     ## that answered and genuinely has no such directory, but both used to
-    ## print the same "never staged" line -- round-11 nit (dbutils#45).
+    ## print the same "never staged" line.
     if ( $remoteDirCheckStatus === 255 ) {
         echo "could not reach $login to check $rundir: " . implode( "\n", $remoteDirCheckOutput ) . "\n";
         echoline();
@@ -1400,7 +1897,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## instance-derived) ever contained one. The curly-brace file list stays
     ## bare: it is bash's own brace expansion, not something escapeshellarg()
     ## can be applied to without disabling it.
-    $remote_spec = escapeshellarg( $login ) . ':' . escapeshellarg( $rundir )
+    $remote_spec = rsync_remote_prefix( $login, $local ) . escapeshellarg( $rundir )
                  . '/{' . implode( ",", $getfiles ) . '}';
     ## --ignore-missing-args: the top-level analysis-results.tar is the one
     ## that is never actually there (see above) -- without this, rsync
@@ -1427,7 +1924,7 @@ if ( $getrundir || $getrun || $copyrun ) {
     ## call so that expected, routine noise for an unfinished job never
     ## reaches the output above; a real transfer problem for a job that has
     ## reached this stage would still show up as a missing file below.
-    $output_spec = escapeshellarg( $login ) . ':'
+    $output_spec = rsync_remote_prefix( $login, $local )
                  . escapeshellarg( "$rundir/output/analysis-results.tar" );
     $output_cmd  = "rsync -avz --ignore-missing-args $output_spec " . escapeshellarg( $tdir );
     run_cmd( runuser_wrap_if_root( $output_cmd ), false );
@@ -1478,12 +1975,16 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     $dworkdir = $cluster_details[ $copyrun ]['workdir'] . "/test/$db/$reqid";
     $dlogin   = $cluster_details[ $copyrun ]['login'];
+    ## Same reasoning as $local above,
+    ## for the --copyrun destination cluster.
+    $dlocal   = cluster_entry_is_local( $cluster_details[ $copyrun ][ 'localhost' ] ?? false );
 
     ## mkdir workdir/../test/db/reqid
     ## $dlogin/$dworkdir quoted: both are config-derived
     ## (cluster_details' login/workdir), the same risk category $login/
     ## $rundir already were above.
-    $inner_cmd = "ssh " . escapeshellarg( $dlogin ) . " mkdir -p " . escapeshellarg( $dworkdir );
+    $inner_cmd = ( $dlocal ? '' : "ssh " . escapeshellarg( $dlogin ) . " " )
+               . "mkdir -p " . escapeshellarg( $dworkdir );
     $cmd = runuser_wrap_if_root( $inner_cmd );
     echoline();
     echo "$cmd\n";
@@ -1492,7 +1993,7 @@ if ( $getrundir || $getrun || $copyrun ) {
 
     ## rsync to workdir/../test/db/reqid
     $inner_cmd = "rsync -avz " . escapeshellarg( "$tdir/" ) . "* "
-               . escapeshellarg( $dlogin ) . ':' . escapeshellarg( $dworkdir );
+               . rsync_remote_prefix( $dlogin, $dlocal ) . escapeshellarg( $dworkdir );
     $cmd = runuser_wrap_if_root( $inner_cmd );
     echoline();
     echo "$cmd\n";

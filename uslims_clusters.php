@@ -384,7 +384,7 @@ function check_db_config( $use_db ) {
 
     ## global configs
 
-    $global_config_file = "$class_dir/../global_config.php";
+    $global_config_file = global_config_for_class_dir( $class_dir );
 
     if ( !file_exists( $global_config_file ) ) {
         $error_msg("\$global_config_file_dir [$global_config_file] does not exist");
