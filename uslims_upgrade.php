@@ -1402,7 +1402,8 @@ foreach ( $stack as $label => $dir ) {
     }
 }
 if ( $stale ) {
-    error_exit( "pull " . implode( ', ', $stale ) . " to $required_version or newer, then rerun:"
+    error_exit( "php uslims_jobs.php --busy must say idle before gridctl moves, since this release's monitors"
+                . " do not run until --apply. Then pull " . implode( ', ', $stale ) . " to $required_version or newer, and rerun:"
                 . "\n    cd " . __DIR__ . " && php uslims_git_info.php --update-pull util"
                 . "\n    cd " . __DIR__ . " && php uslims_git_info.php --update-pull lims"
                 . "\nRun both: pulling util alone leaves gridctl and common behind, which is the"
@@ -1700,7 +1701,7 @@ if ( $row === null ) {
     }
     if ( $unfinished ) {
         report( 'FAIL', "$unfinished job(s) in gfac.analysis are not in a terminal status;"
-                        . " let them finish or cancel them, then rerun" );
+                        . " php uslims_jobs.php --busy lists each and what to do, then rerun" );
         $busy[] = "$unfinished unfinished job(s)";
     } elseif ( !$stranded ) {
         report( 'ok', "no unfinished job in gfac.analysis" );
@@ -1981,7 +1982,8 @@ if ( $live_crons ) {
 
 if ( $busy ) {
     error_exit( "the host is not idle (" . implode( '; ', $busy ) . ").\n"
-                . "Quiet it down and rerun. Nothing was changed" );
+                . "php uslims_jobs.php --busy lists each job and what to do."
+                . " Quiet it down and rerun. Nothing was changed" );
 }
 
 ## ------------------------------------------------------------- 2. listen-config.php
@@ -3290,10 +3292,11 @@ function csp_header_line_installs_policy( $line ) {
     ## Policy" ...') wasn't recognised either. The caller joins a backslash-
     ## continued directive onto one line first, so that case needs no change
     ## here.
-    return (bool) preg_match(
+    ## A value of frame-ancestors alone only stops framing, so it is the web hardening's, not a policy.
+    return preg_match(
         '/^\s*Header\s+(always\s+|onsuccess\s+)?(set|add|append|merge|setifempty)\s+["\']?Content-Security-Policy\b/i',
         $line
-    );
+    ) && !preg_match( '/Content-Security-Policy["\']?\s+"\s*frame-ancestors\b[^;"]*;?\s*"\s*$/i', $line );
 }
 
 ## Does this one Apache config FILE's contents (already joined across any

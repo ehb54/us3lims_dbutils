@@ -66,13 +66,14 @@ Options
 --monitor                  : monitor the output (requires --gfacid)
 --running                  : report on all running jobs (gfac.analysis & active jobmonitor.php)
 --busy                     : print "idle" and exit 0, or the work in flight and exit 1 (2 when it cannot be read):
-                             unfinished gfac.analysis rows, live jobmonitors and unsettled dispatch requests,
-                             as uslims_upgrade.php's idle check counts them
+                             unfinished gfac.analysis rows, listed by id with what to do, live jobmonitors and
+                             unsettled dispatch requests, as uslims_upgrade.php's idle check counts them
 --restart                  : restart jobmonitors if needed (e.g. after a system reboot)
 --restart-only       n     : restart n jobmonitors if needed (typically for debugging purposes)
 --close-job          id    : close the gfac.analysis row with this id, for a job no monitor can finish: marks its
-                             result failed, fails its autoflow stage, removes the row, then tells its submitter. Its
-                             results are not imported, and a job still at the cluster is not cancelled. A row with
+                             result failed, fails its autoflow stage, removes the row, then tells its submitter. A
+                             job still at the cluster is not cancelled. A completed job is refused, since --restart
+                             imports it, unless --reqid 0. A row with
                              no recorded request lists the open results with its number: --reqid names the row's
                              own, or --reqid 0 removes only the row when none of them is
 --check-log                : checks the log (requires --gfacid & exclusive of --monitor)
@@ -287,8 +288,12 @@ if ( $busy_check ) {
         echo "gfac.analysis could not be read: could not connect to $dbhost as $user\n";
         exit( 2 );
     }
+    $analysis = analysis_row_counts( $db_handle );
+    if ( $analysis !== null ) {
+        $analysis[ 'rows' ] = (array) analysis_stranded_rows( $db_handle, 'gfac', 20, false );
+    }
     list( $busy_lines, $busy_notes ) = jobs_busy_report(
-        analysis_row_counts( $db_handle ),
+        $analysis,
         active_jobmonitors(),
         dispatch_work_in_flight( $db_handle ),
         count( active_dispatchers() ) );
@@ -746,15 +751,13 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
         return [ false, [ $found ? "no row $id in $gdb.analysis" : "could not read $gdb.analysis: " . mysqli_error( $link ) ] ];
     }
     $status = strtoupper( (string) $row[ 'status' ] );
-    if ( !in_array( $status, [ 'COMPLETE', 'SUBMIT_TIMEOUT', 'RUN_TIMEOUT', 'DATA_TIMEOUT', 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA', 'ERROR' ], true ) ) {
-        return [ false, [ "row $id is $status, so a monitor is still responsible for it; let it finish or cancel the job" ] ];
-    }
     $inst = (string) $row[ 'us3_db' ];
     $job  = (string) $row[ 'gfacID' ];
     foreach ( $monitors as $key => $pid ) {
         if ( $key === "$inst:$job" || strpos( $key, "$inst:$job@" ) === 0 ) {
-            return [ false, [ "jobmonitor $pid is running for job $job in $inst; let it finish. If the job's results are gone"
-                              . " it can wait for hours: kill $pid, then rerun this" ] ];
+            return [ false, [ $status === 'COMPLETE'
+                ? "jobmonitor $pid is importing job $job in $inst; let it finish, at most 6 hours"
+                : "jobmonitor $pid is running for job $job in $inst; let it finish. If it never ends, kill $pid, then rerun this" ] ];
         }
     }
     $delete = function () use ( $link, $gdb, $id ) {
@@ -767,9 +770,9 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
     if ( !preg_match( '/^[\w-]+$/', $inst ) ) {
         return [ false, [ "row $id names instance '$inst', which is not a database name; rerun with --reqid 0 to remove only the row" ] ];
     }
-    $stmt = mysqli_prepare( $link, "SELECT r.HPCAnalysisRequestID, q.email, q.clusterName, q.submitTime FROM `$inst`.HPCAnalysisResult r"
+    $stmt = mysqli_prepare( $link, "SELECT r.HPCAnalysisRequestID, r.queueStatus, q.email, q.clusterName, q.submitTime FROM `$inst`.HPCAnalysisResult r"
         . " JOIN `$inst`.HPCAnalysisRequest q ON q.HPCAnalysisRequestID = r.HPCAnalysisRequestID"
-        . " WHERE r.gfacID = ? AND r.queueStatus NOT IN ( 'completed', 'failed', 'aborted' )" );
+        . " WHERE r.gfacID = ?" );
     $res = $stmt && mysqli_stmt_bind_param( $stmt, 's', $job ) && mysqli_stmt_execute( $stmt ) ? mysqli_stmt_get_result( $stmt ) : false;
     if ( !$res ) {
         $errno = $stmt ? mysqli_stmt_errno( $stmt ) : mysqli_errno( $link );
@@ -782,9 +785,23 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
         return [ false, [ "could not read $inst's results for job $job: $error."
                           . " Give db_config.php's account SELECT and UPDATE on $inst, then rerun" ] ];
     }
-    $open = mysqli_fetch_all( $res, MYSQLI_ASSOC );
+    $results = mysqli_fetch_all( $res, MYSQLI_ASSOC );
     $own = (int) ( $row[ 'HPCAnalysisRequestID' ] ?? 0 );
     $want = $reqid ?: $own;
+    ## A result is marked completed before its import, so with its row still here the import has not run.
+    foreach ( $results as $r ) {
+        if ( ( !$want || (int) $r[ 'HPCAnalysisRequestID' ] === (int) $want )
+             && ( $r[ 'queueStatus' ] === 'completed'
+                  || ( $status === 'COMPLETE' && !in_array( $r[ 'queueStatus' ], [ 'failed', 'aborted' ], true ) ) ) ) {
+            return [ false, [ "job $job in $inst completed and its results are not imported, so it is not closed here."
+                              . " Run php uslims_jobs.php --restart as us3: its monitor imports them about 10 minutes"
+                              . " after it sees the job complete, at most 6 hours."
+                              . " --reqid 0 removes only the row, importing nothing and telling nobody" ] ];
+        }
+    }
+    $open = array_values( array_filter( $results, function ( $r ) {
+        return !in_array( $r[ 'queueStatus' ], [ 'completed', 'failed', 'aborted' ], true );
+    } ) );
     if ( !$want ) {
         if ( !$open ) {
             return $delete() ? [ true, [ "removed row $id; job $job has no open result in $inst, so nothing else changed and nobody was told" ] ]
@@ -837,6 +854,9 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
         return $fail( 'the commit' );
     }
     $lines = [ "marked request $want in $inst failed" ];
+    if ( in_array( $status, [ 'SUBMITTED', 'RUNNING', 'DATA' ], true ) ) {
+        $lines[] = "job $job was $status with no monitor; cancel it at {$row['cluster']} if it is still running";
+    }
     if ( $staged > 0 ) {
         $lines[] = "failed its autoflow stage";
     }
@@ -869,6 +889,16 @@ function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines, $d
         if ( $stranded ) {
             $busy[] = "$stranded job(s) in gfac.analysis ended without being closed out or are parked at a timeout"
                     . ( $monitors ? '' : ". " . analysis_stranded_remedy() );
+        }
+        foreach ( $analysis[ 'rows' ] ?? [] as $r ) {
+            $busy[] = "  id {$r['id']}: job {$r['gfacID']} in {$r['us3_db']} on {$r['cluster']}, {$r['status']}: "
+                    . ( strtoupper( (string) $r[ 'status' ] ) === 'COMPLETE'
+                        ? "--restart imports it"
+                        : "--restart resumes it; if no monitor can finish it, --close-job {$r['id']}" );
+        }
+        $more = $analysis[ 'unfinished' ] - count( $analysis[ 'rows' ] ?? [] );
+        if ( isset( $analysis[ 'rows' ] ) && $more > 0 ) {
+            $busy[] = "  and $more more; rerun this once these are clear";
         }
     }
     if ( $monitors ) {
@@ -1229,7 +1259,7 @@ if ( $running || $restart || $restart_only ) {
             ## message, rather than queued to fail the whole pass.
             $jm_skip_why = array_key_exists( 'HPCAnalysisRequestID', $row )
                          ? "no request recorded; php uslims_jobs.php --close-job {$row['id']} says what to do"
-                         : "orphan row, no HPCAnalysisResult";
+                         : "orphan row {$row['id']}, no HPCAnalysisResult";
             $jm_pid = "skipped ($jm_skip_why)";
             $jm_orphan_skips[] = "skipped $db gfacID=$gfacid: $jm_skip_why";
         } else {

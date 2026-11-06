@@ -111,7 +111,7 @@ if ( $analysis === null ) {
 }
 if ( $analysis[ 'unfinished' ] ) {
     error_exit( "{$analysis['unfinished']} job(s) in gfac.analysis are not closed out; the export needs an idle host. "
-                . analysis_stranded_remedy() . ", or let running jobs finish. Nothing was exported" );
+                . analysis_stranded_remedy() . ". Nothing was exported" );
 }
 
 $pkgname = "export-full-$use_dbhost.tar";

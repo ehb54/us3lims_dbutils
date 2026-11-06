@@ -7,16 +7,26 @@ checks and fixes does, and is documented under its own entry below, not here.
 
 1. Stop the web server (or otherwise block access), so nothing can write to any LIMS
    database while the upgrade runs.
-2. Take a full sql dump (`uslims_binary_db_backup.php`, or your own backup process).
-3. Pull the new code for common, every instance's dbinst, gridctl and this repo
-   (dbutils). Host configuration and code/schema are upgraded separately, and the code
-   has to be in place first.
-4. `php uslims_upgrade.php --check` to see what it would do, then `--apply` to make the
+2. Move this repo only to the new release (`git fetch`, then `git checkout <release>`).
+3. Finish every job. `php uslims_jobs.php --busy` lists each one and what to do; repeat
+   until it says idle. This has to come before gridctl and common move: this release's
+   monitors don't run until `--apply` has converted `listen-config.php`, so the code that
+   started the jobs has to finish them. If gridctl and common were already moved, check
+   out the release that started the jobs in both, finish the jobs, and move them again.
+4. Take a full sql dump (`uslims_binary_db_backup.php`, or your own backup process), now
+   that the finished jobs are imported.
+5. Move the rest to the new release: common, every instance's dbinst, gridctl and us3_sql.
+   Host configuration and code/schema are upgraded separately, and the code has to be in
+   place first.
+6. `php uslims_upgrade.php --check` to see what it would do, then `--apply` to make the
    changes.
-5. Restart the web server, confirm the host is actually serving again, and test (log
+7. Uncomment the LIMS cron lines you commented out for the idle check. `--apply` retires
+   the gridctl lines; the others, such as `cluster_status.php` and the nightly backup,
+   stay off until you do, and a later run of the roles' play leaves them off too.
+8. Restart the web server, confirm the host is actually serving again, and test (log
    in, submit a job, check queue_viewer.php) before considering the host upgraded.
 
-Steps 1-3 happen before `--apply` ever runs, with nothing serving requests in between --
+Steps 1-5 happen before `--apply` ever runs, with nothing serving requests in between --
 that's what makes step 9 of `--apply` (the UTC migration) and every config rewrite in
 between safe: there is no window where new code could write a row, or read a config
 file, before the migration has run. `uslims_upgrade.php` doesn't defend against that

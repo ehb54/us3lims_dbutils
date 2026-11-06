@@ -947,20 +947,21 @@ function analysis_stranded_condition() {
          . " 'CANCELLED', 'CANCELED', 'FAILED', 'FAILED_DATA', 'ERROR' )";
 }
 
-## The stranded rows, for a refusal to name; null when unreadable.
-function analysis_stranded_rows( $gdb, $schema = 'gfac', $limit = 20 ) {
+## The stranded rows, or all rows, for a refusal to name; null when unreadable.
+function analysis_stranded_rows( $gdb, $schema = 'gfac', $limit = 20, $stranded_only = true ) {
     sql_identifier_or_die( $schema );
     $res = mysqli_query( $gdb, "SELECT id, gfacID, us3_db, cluster, status FROM $schema.analysis" // NOSONAR $schema is validated above
-        . " WHERE " . analysis_stranded_condition() . " ORDER BY id LIMIT " . (int) $limit );
+        . ( $stranded_only ? " WHERE " . analysis_stranded_condition() : '' ) . " ORDER BY id LIMIT " . (int) $limit );
     return $res ? mysqli_fetch_all( $res, MYSQLI_ASSOC ) : null;
 }
 
 ## What to do about stranded rows, as a refusal prints it.
 function analysis_stranded_remedy() {
-    return "Run php uslims_jobs.php --restart as us3 and let the monitors finish, about 10 minutes for a completed job."
-         . " A monitor can stop after moving a timed-out job on, so repeat until the job's status stops changing."
-         . " For a row still listed after that, php uslims_jobs.php --close-job <id> as us3 marks its result failed,"
-         . " tells its submitter and removes the row; its results are not imported. Then rerun";
+    return "With gridctl still on the release that started the jobs, run php uslims_jobs.php --restart as us3 and let the"
+         . " monitors finish, about 10 minutes for a completed job. A monitor can stop after moving a timed-out job on,"
+         . " so repeat until the job's status stops changing. php uslims_jobs.php --busy lists each job. For a job no"
+         . " monitor can finish, php uslims_jobs.php --close-job <id> as us3 marks its result failed, tells its submitter"
+         . " and removes the row. Then rerun";
 }
 
 ## Dispatch requests in $db that are work in flight for an idle check: queued, waiting, in
