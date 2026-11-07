@@ -688,12 +688,12 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
     if ( $autoflow_id > 0 && $stage !== null ) {
         ## Same keys as close_out_finalizing_marker()'s autoflow branch
         ## (requestID is the HPCAnalysisRequestID, not autoflowAnalysisID --
-        ## see that function's own comment). No terminal-status guard: the
-        ## stage gridctl's own job_cleanup() resolves at this call site is
-        ## always terminal (complete/failed/canceled/error), matching
-        ## update_autoflow_status()'s own no-guard case for a terminal stage.
+        ## see that function's own comment). The stage is always terminal, so
+        ## it may replace another terminal stage, but like
+        ## update_autoflow_status() it never replaces a cancel.
         $query = "UPDATE $us3_db_esc.autoflowAnalysis SET status='$stage_esc', statusMsg='$message_esc'"
-               . " WHERE requestID=$autoflow_id AND currentGfacID='$gfacid_esc'";
+               . " WHERE requestID=$autoflow_id AND currentGfacID='$gfacid_esc'"
+               . " AND LOWER( COALESCE( status, '' ) ) <> 'canceled'";
         if ( mysqli_query( $db_handle, $query ) === false ) {
             echo "could not close out status-pending autoflowAnalysisID $autoflow_id for $gfacid: "
                . mysqli_error( $db_handle ) . "\n";
@@ -720,8 +720,8 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
                 }
                 return;
             }
-            echo "autoflowAnalysisID $autoflow_id for $gfacid is already '$stage';"
-               . " its status-pending write already landed\n";
+            echo "autoflowAnalysisID $autoflow_id for $gfacid is already '{$found->status}';"
+               . " leaving it\n";
         }
     }
 
