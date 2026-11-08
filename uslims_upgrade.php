@@ -193,6 +193,12 @@ Options
 --single-tenant yes|no       : yes on an appliance (one institution), no on a shared host; sets or changes it.
                                'no' also downgrades a busy sinfo node from this run's own FAIL to a note,
                                since someone else's work on a shared cluster is not this upgrade's business
+--runtime-advisory dir|off   : turn the runtime advisory pilot on, installing each runtime_advisory_<family>.json
+                               in dir (2DSA, GA, PCSA; checked by common's own loader) to ~us3/lims/etc as
+                               0640 us3:<web group>, or turn it off ('off' leaves the installed files). The
+                               switch stays as it is while any artifact fails its check.
+--prediction-cluster c=name  : score cluster c as the model's cluster name (prediction_cluster_name), for a
+                               cluster whose own name the model does not know; repeatable
 --activate cluster[,cluster] : bring a converted entry live: sets active=true in global_config.php and
                                turns on its cluster_config.php probe, together, once its env_script_lines
                                are real and ssh to it succeeds. Still 'http', already active, no usable
@@ -242,6 +248,9 @@ $single_tenant = null;
 $site_admin_email = null;
 $convert_http  = false;
 $activate_want = [];
+$advisory_source     = null;
+$advisory_off        = false;
+$prediction_clusters = [];
 
 while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     $opt = array_shift( $u_argv );
@@ -305,6 +314,25 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                     $activate_want[] = $one;
                 }
             }
+            break;
+        case "--runtime-advisory":
+            $value = rtrim( (string) opt_value( $u_argv, $opt ), '/' );
+            if ( $value === '' ) {
+                error_exit( "--runtime-advisory needs a directory or 'off'" );
+            }
+            $advisory_off    = $value === 'off';
+            $advisory_source = $advisory_off ? null : $value;
+            break;
+        case "--prediction-cluster":
+            $pair = opt_value( $u_argv, $opt );
+            if ( strpos( $pair, '=' ) === false ) {
+                error_exit( "--prediction-cluster needs cluster=name" );
+            }
+            list( $k, $v ) = explode( '=', $pair, 2 );
+            if ( trim( $k ) === '' || trim( $v ) === '' ) {
+                error_exit( "--prediction-cluster needs a cluster and a name, as cluster=name" );
+            }
+            $prediction_clusters[ trim( $k ) ] = trim( $v );
             break;
         case "--site-admin-email":
             $site_admin_email = trim( (string) opt_value( $u_argv, $opt ) );
@@ -2546,6 +2574,77 @@ foreach ( $activate_want as $name ) {
     $activated[] = $name;
 }
 
+## The runtime advisory pilot: its artifacts, its switch and each cluster's scoring name.
+## The table itself is step 5's.
+$advisory_classes = "$wwwpath/common/class/prediction";
+$advisory_asked   = $advisory_source !== null || $advisory_off || $prediction_clusters;
+if ( !is_file( "$advisory_classes/runtime_model.php" ) || !is_file( "$advisory_classes/runtime_cluster_map.php" ) ) {
+    if ( $advisory_asked ) {
+        report( 'FAIL', "--runtime-advisory/--prediction-cluster: $advisory_classes has no runtime advisory;"
+                        . " move common to a release that has it" );
+    }
+} else {
+    require_once "$advisory_classes/runtime_model.php";
+    require_once "$advisory_classes/runtime_cluster_map.php";
+    $advisory_enable = $advisory_off ? false : ( $advisory_source !== null ? true : null );
+    if ( $advisory_source !== null ) {
+        $advisory_etc  = "$us3_home/lims/etc";
+        $advisory_gid  = posix_getgrnam( $web_group )[ 'gid' ];
+        $artifacts_ok  = true;
+        $advisory_plan = runtime_advisory_artifact_plan( $advisory_source, $advisory_etc,
+            function ( $path ) { return runtime_model::load( $path ); }, $us3_entry[ 'uid' ], $advisory_gid );
+        $advisory_installs = [];
+        foreach ( $advisory_plan as $entry ) {
+            list( , $status, $message, $src ) = $entry;
+            report( $status, $message );
+            if ( $status === 'FAIL' ) {
+                $artifacts_ok = false;
+            }
+            if ( $src !== null ) {
+                $advisory_installs[] = $src;
+            }
+        }
+        if ( $advisory_installs && !( $apply && confirm( "Install the runtime advisory artifacts in $advisory_etc?" ) ) ) {
+            $advisory_installs = [];
+            if ( $apply ) {
+                $artifacts_ok = false;
+            }
+        }
+        foreach ( $advisory_installs as $src ) {
+            $dest = "$advisory_etc/" . basename( $src );
+            $tmp  = "$dest.uslims_upgrade-" . getmypid();
+            if ( is_link( $dest ) ) {
+                report( 'FAIL', "$dest is a symlink; remove it by hand and rerun" );
+                $artifacts_ok = false;
+                continue;
+            }
+            if ( is_file( $dest ) ) {
+                ensure_backup_dir();
+                backup_file( $dest );
+            }
+            if ( !copy( $src, $tmp ) || !chown( $tmp, $us3_entry[ 'uid' ] ) || !chgrp( $tmp, $advisory_gid )
+                 || !chmod( $tmp, 0640 ) || !rename( $tmp, $dest ) ) {
+                @unlink( $tmp );
+                report( 'FAIL', "could not install $dest" );
+                $artifacts_ok = false;
+                continue;
+            }
+            $changes++;
+            report( 'done', "$dest installed" );
+        }
+        if ( !$artifacts_ok ) {
+            report( 'note', 'the runtime advisory switch is left as it is until every artifact above passes' );
+            $advisory_enable = null;
+        }
+    }
+    list( $advisory_lines, $advisory_reports ) = runtime_advisory_settings( $gc, $advisory_enable, $prediction_clusters,
+        function ( $identity ) { return runtime_cluster_map::code( $identity ); } );
+    foreach ( $advisory_reports as $r ) {
+        report( $r[ 0 ], $r[ 1 ] );
+    }
+    $managed = array_merge( $managed, $advisory_lines );
+}
+
 if ( $managed && $apply && confirm( "Write these settings to $global_config?" ) ) {
     $begin = "## BEGIN uslims_upgrade.php settings (rerun the script rather than editing by hand)";
     $end   = "## END uslims_upgrade.php settings";
@@ -2965,6 +3064,101 @@ foreach ( $elog_targets as $path => $spec ) {
     report( $set ? 'done' : 'FAIL',
             $set ? "$path is now $want_mode_str us3:$web_group"
                  : "$path exists but its owner, group or mode could not be set" );
+}
+
+## The families common's runtime advisory serves, one artifact file each.
+function runtime_advisory_families() {
+    return [ '2DSA', 'GA', 'PCSA' ];
+}
+
+## What installing $source_dir's artifacts into $dest_dir means, per family:
+## [ family, status, message, source path to install or null ]. $load reads a
+## file the way the advisory will, throwing for one it could not use. An
+## installed file is ok only with the same sha256 and mode 0640 $uid:$gid.
+function runtime_advisory_artifact_plan( $source_dir, $dest_dir, callable $load, $uid, $gid ) {
+    if ( !is_dir( $source_dir ) ) {
+        return [ [ null, 'FAIL', "--runtime-advisory: $source_dir is not a directory", null ] ];
+    }
+    $plan  = [];
+    $found = false;
+    foreach ( runtime_advisory_families() as $family ) {
+        $name = "runtime_advisory_$family.json";
+        $src  = "$source_dir/$name";
+        $dest = "$dest_dir/$name";
+        if ( !is_file( $src ) ) {
+            if ( is_file( $dest ) ) {
+                $plan[] = [ $family, 'note', "$dest is installed but $source_dir has no $name;"
+                                           . " $family is served from the installed file until it is removed", null ];
+            }
+            continue;
+        }
+        $found = true;
+        try {
+            $declared = (string) $load( $src )->family();
+        } catch ( Throwable $e ) {
+            $plan[] = [ $family, 'FAIL', "$src is not a usable artifact: " . reason( $e->getMessage() ), null ];
+            continue;
+        }
+        if ( $declared !== $family ) {
+            $plan[] = [ $family, 'FAIL', "$src declares family $declared, not $family", null ];
+            continue;
+        }
+        $sha = hash_file( 'sha256', $src );
+        if ( is_file( $dest ) && !is_link( $dest ) && hash_file( 'sha256', $dest ) === $sha
+             && fileowner( $dest ) === $uid && filegroup( $dest ) === $gid && ( fileperms( $dest ) & 07777 ) === 0640 ) {
+            $plan[] = [ $family, 'ok', "$dest is installed (sha256 $sha)", null ];
+        } else {
+            $plan[] = [ $family, 'todo', "install $src as $dest, 0640 (sha256 $sha)", $src ];
+        }
+    }
+    if ( !$found ) {
+        return [ [ null, 'FAIL', "--runtime-advisory: $source_dir has no runtime_advisory_<family>.json for any of "
+                                 . implode( ', ', runtime_advisory_families() ), null ] ];
+    }
+    return $plan;
+}
+
+## The managed global_config.php lines for the runtime advisory, and the reports:
+## [ lines, [ [ status, message ], ... ] ]. $enable is true for --runtime-advisory DIR,
+## false for --runtime-advisory off and null when neither was given. $mappings is
+## cluster => identity from --prediction-cluster; $code gives an identity's cluster
+## code in common's runtime_cluster_map, or null.
+function runtime_advisory_settings( array $gc, $enable, array $mappings, callable $code ) {
+    $lines   = [];
+    $reports = [];
+    $on      = !empty( $gc[ 'global_runtime_advisory_enabled' ] );
+
+    if ( $enable === true && isset( $gc[ 'global_runtime_advisory_artifact' ] ) ) {
+        $reports[] = [ 'FAIL', 'global_config.php sets $global_runtime_advisory_artifact, so the advisory would not'
+                             . ' read the artifacts --runtime-advisory installs; remove that setting and rerun' ];
+    } elseif ( $enable === true && !$on ) {
+        $lines[]   = '$global_runtime_advisory_enabled = true;';
+        $reports[] = [ 'todo', 'turn the runtime advisory on ($global_runtime_advisory_enabled = true)' ];
+    } elseif ( $enable === false && $on ) {
+        $lines[]   = '$global_runtime_advisory_enabled = false;';
+        $reports[] = [ 'todo', 'turn the runtime advisory off ($global_runtime_advisory_enabled = false)' ];
+    } elseif ( $enable !== null ) {
+        $reports[] = [ 'ok', 'the runtime advisory is already ' . ( $on ? 'on' : 'off' ) ];
+    } else {
+        $reports[] = [ 'note', 'the runtime advisory is ' . ( $on ? 'on' : 'off' )
+                             . ' on this host; --runtime-advisory DIR|off changes it' ];
+    }
+
+    $clusters = is_array( $gc[ 'cluster_details' ] ?? null ) ? $gc[ 'cluster_details' ] : [];
+    foreach ( $mappings as $cluster => $identity ) {
+        if ( !isset( $clusters[ $cluster ] ) ) {
+            $reports[] = [ 'FAIL', "--prediction-cluster: no cluster '$cluster' in global_config.php" ];
+        } elseif ( $code( $identity ) === null ) {
+            $reports[] = [ 'FAIL', "--prediction-cluster: '$identity' has no code in common's runtime_cluster_map.php" ];
+        } elseif ( ( $clusters[ $cluster ][ 'prediction_cluster_name' ] ?? null ) === $identity ) {
+            $reports[] = [ 'ok', "'$cluster' is scored as $identity" ];
+        } else {
+            $lines[]   = '$cluster_details[ ' . var_export( (string) $cluster, true )
+                       . " ][ 'prediction_cluster_name' ] = " . var_export( (string) $identity, true ) . ';';
+            $reports[] = [ 'todo', "score '$cluster' as $identity (prediction_cluster_name)" ];
+        }
+    }
+    return [ $lines, $reports ];
 }
 
 ## Classifies the outcome of actually running gfac.runtime_prediction's
