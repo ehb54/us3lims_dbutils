@@ -300,7 +300,8 @@ if ( $busy_check ) {
         active_jobmonitors(),
         array_merge( dispatch_work_in_flight( $db_handle ), $refused_error ),
         count( active_dispatchers() ),
-        [ 'early' => gridctl_moved_early( $us3bin ), 'refused' => (array) $refused,
+        ## Only before listen-config.php is converted: afterwards such a database is no 4.2.0 instance in flight.
+        [ 'early' => gridctl_moved_early( $us3bin ), 'refused' => ( $listen_config_version ?? 0 ) < 2 ? (array) $refused : [],
           'controller' => is_file( "$us3bin/gridctl_pro.php" ) ] );
     foreach ( $busy_notes as $note ) {
         echo "note: $note\n";
@@ -771,6 +772,14 @@ function jobs_restart_skip_reason( array $row, $reqid ) {
     return null;
 }
 
+## Whether $db exists; true when that can't be read, so a refusal errs toward keeping the row.
+function jobs_database_exists( $link, $db ) {
+    $stmt = mysqli_prepare( $link, "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?" );
+    $res = $stmt && mysqli_stmt_bind_param( $stmt, 's', $db ) && mysqli_stmt_execute( $stmt ) ? mysqli_stmt_get_result( $stmt ) : false;
+    $row = $res ? mysqli_fetch_row( $res ) : null;
+    return !$row || (int) $row[ 0 ] > 0;
+}
+
 ## Whether jobmonitor.php takes this instance name.
 function jobs_monitor_accepts_instance( $inst ) {
     return (bool) preg_match( '/^uslims3_[A-Za-z0-9_]*$/', $inst );
@@ -809,7 +818,7 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
         return mysqli_query( $link, "DELETE FROM $gdb.analysis WHERE id = " . (int) $id ); // NOSONAR $gdb is validated above
     };
     ## Both can still import it: closing would fail a job whose results may exist.
-    if ( $reqid !== 0 && !jobs_monitor_accepts_instance( $inst ) ) {
+    if ( $reqid !== 0 && !jobs_monitor_accepts_instance( $inst ) && jobs_database_exists( $link, $inst ) ) {
         return [ false, [ "job $job in $inst is not closed here: this release's monitor refuses the instance name, and 4.2.0's"
             . " controller imports its jobs: " . legacy_controller_command( $host[ 'controller' ] ?? true ) . "."
             . " --reqid 0 removes only the row, importing nothing and telling nobody" ] ];

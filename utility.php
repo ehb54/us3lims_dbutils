@@ -981,15 +981,17 @@ function legacy_controller_command( $controller = true ) {
 
 ## Instance databases whose names this release's job monitor refuses; null when unreadable.
 function refused_instance_names( $link ) {
+    ## BINARY: the monitor's own match is case-sensitive.
     $res = mysqli_query( $link, "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME LIKE 'uslims3\\_%'"
-        . " AND SCHEMA_NAME NOT REGEXP '^uslims3_[A-Za-z0-9_]+$' ORDER BY SCHEMA_NAME" );
+        . " AND CAST( SCHEMA_NAME AS BINARY ) NOT REGEXP '^uslims3_[A-Za-z0-9_]*$' ORDER BY SCHEMA_NAME" );
     return $res ? array_column( mysqli_fetch_all( $res ), 0 ) : null;
 }
 
 ## What to do about an instance this release refuses, printed before gridctl and common move.
 function refused_instance_remedy( $name, $controller = true ) {
-    return "instance '$name': this release can't run an instance with this name, so the upgrade stops here,"
-         . " before gridctl and common move. Until its jobs are done, 4.2.0's controller imports them: "
+    return "instance '$name': this release can't run an instance with this name, so the upgrade can't go on"
+         . ( $controller ? " (move gridctl and common only after this is clear)" : '' )
+         . ". Until its jobs are done, 4.2.0's controller imports them: "
          . legacy_controller_command( $controller ) . ". Then rename it to letters, digits and underscores only (its database,"
          . " its directory and its config.php), or retire it, and rerun php uslims_jobs.php --busy";
 }
