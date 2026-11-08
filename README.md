@@ -17,6 +17,8 @@ checks and fixes does, and is documented under its own entry below, not here.
    monitors don't run until `--apply` has converted `listen-config.php`, so the code that
    started the jobs has to finish them. If gridctl and common were already moved, check
    out the release that started the jobs in both, finish the jobs, and move them again.
+   `--busy` also names any instance whose name this release can't run; it stays busy until
+   that instance is renamed or retired.
 4. Take a full sql dump (`uslims_db_binary_backup.php`, or your own backup process), now
    that the finished jobs are imported.
 5. Move the rest to the new release: common, every instance's dbinst, gridctl, webinfo,

@@ -293,11 +293,15 @@ if ( $busy_check ) {
     if ( $analysis !== null ) {
         $analysis[ 'rows' ] = (array) analysis_stranded_rows( $db_handle, 'gfac', 20, false );
     }
+    $refused = refused_instance_names( $db_handle );
+    $refused_error = $refused === null ? [ "the instance databases could not be read: " . mysqli_error( $db_handle ) ] : [];
     list( $busy_lines, $busy_notes ) = jobs_busy_report(
         $analysis,
         active_jobmonitors(),
-        dispatch_work_in_flight( $db_handle ),
-        count( active_dispatchers() ) );
+        array_merge( dispatch_work_in_flight( $db_handle ), $refused_error ),
+        count( active_dispatchers() ),
+        [ 'early' => gridctl_moved_early( $us3bin ), 'refused' => (array) $refused,
+          'controller' => is_file( "$us3bin/gridctl_pro.php" ) ] );
     foreach ( $busy_notes as $note ) {
         echo "note: $note\n";
     }
@@ -313,7 +317,8 @@ if ( $close_job !== false ) {
     $close = jobs_close_row( $db_handle, 'gfac', (int) $close_job, $reqid === false ? null : (int) $reqid, active_jobmonitors(),
         function ( $to, $subject, $body ) {
             return mail( $to, $subject, $body );
-        }, (string) ( ( $global_site_admin_email ?? '' ) ?: ( $admin_email ?? '' ) ) );
+        }, (string) ( ( $global_site_admin_email ?? '' ) ?: ( $admin_email ?? '' ) ),
+        [ 'early' => gridctl_moved_early( $us3bin ), 'controller' => is_file( "$us3bin/gridctl_pro.php" ) ] );
     echo implode( "\n", $close[ 1 ] ) . "\n";
     exit( !$close[ 0 ] ? 1 : ( ( $close[ 2 ] ?? true ) ? 0 : 3 ) );
 }
@@ -741,6 +746,31 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
     @unlink( $marker );
 }
 
+## The request --restart hands a row's monitor, "unknown" when there is none. Before gfac.analysis
+## records it, a reused job number is its newest result's, as 4.2.0's monitor took it.
+function jobs_row_request( $db_handle, array $row ) {
+    if ( array_key_exists( 'HPCAnalysisRequestID', $row ) ) {
+        return empty( $row[ 'HPCAnalysisRequestID' ] ) ? "unknown" : $row[ 'HPCAnalysisRequestID' ];
+    }
+    $res = db_obj_result( $db_handle, "select HPCAnalysisRequestID from `{$row['us3_db']}`.HPCAnalysisResult where gfacID='"
+        . mysqli_real_escape_string( $db_handle, $row[ 'gfacID' ] ) . "' order by HPCAnalysisResultID desc limit 1", false, true );
+    return $res && !empty( $res->{ "HPCAnalysisRequestID" } ) ? $res->{ "HPCAnalysisRequestID" } : "unknown";
+}
+
+## Why --restart starts no monitor for a row, or null. A row it queued anyway made jobmonitor.php exit 255,
+## which ended the whole pass, so every row after it went without a monitor.
+function jobs_restart_skip_reason( array $row, $reqid ) {
+    if ( !jobs_monitor_accepts_instance( (string) $row[ 'us3_db' ] ) ) {
+        return "this release's monitor refuses the instance name; php uslims_jobs.php --busy says what to do";
+    }
+    if ( $reqid === "unknown" ) {
+        return array_key_exists( 'HPCAnalysisRequestID', $row )
+            ? "no request recorded; php uslims_jobs.php --close-job {$row['id']} says what to do"
+            : "orphan row {$row['id']}, no HPCAnalysisResult";
+    }
+    return null;
+}
+
 ## Whether jobmonitor.php takes this instance name.
 function jobs_monitor_accepts_instance( $inst ) {
     return (bool) preg_match( '/^uslims3_[A-Za-z0-9_]*$/', $inst );
@@ -756,7 +786,8 @@ function jobs_monitor_cannot_import( $inst, $job ) {
 ## [ closed, lines, told ]; told is false only when a closed job reached nobody.
 ## $reqid: null when not given; 0 removes only the row. A result is never chosen from a job number alone: a row
 ## without a recorded request needs the operator to name its own, since the number may have been reused.
-function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $mailer, $admin = '' ) {
+## $host: 'early' when gridctl moved before its jobs finished; then only --reqid 0 closes anything.
+function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $mailer, $admin = '', array $host = [] ) {
     sql_identifier_or_die( $gdb );
     $found = mysqli_query( $link, "SELECT * FROM $gdb.analysis WHERE id = " . (int) $id ); // NOSONAR $gdb is validated above
     $row = $found ? mysqli_fetch_assoc( $found ) : null;
@@ -777,6 +808,16 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
     $delete = function () use ( $link, $gdb, $id ) {
         return mysqli_query( $link, "DELETE FROM $gdb.analysis WHERE id = " . (int) $id ); // NOSONAR $gdb is validated above
     };
+    ## Both can still import it: closing would fail a job whose results may exist.
+    if ( $reqid !== 0 && !jobs_monitor_accepts_instance( $inst ) ) {
+        return [ false, [ "job $job in $inst is not closed here: this release's monitor refuses the instance name, and 4.2.0's"
+            . " controller imports its jobs: " . legacy_controller_command( $host[ 'controller' ] ?? true ) . "."
+            . " --reqid 0 removes only the row, importing nothing and telling nobody" ] ];
+    }
+    if ( $reqid !== 0 && !empty( $host[ 'early' ] ) ) {
+        return [ false, [ "job $job in $inst is not closed here. " . gridctl_early_move_recovery() . "."
+            . " --reqid 0 removes only the row, importing nothing and telling nobody" ] ];
+    }
     if ( $reqid === 0 ) {
         return $delete() ? [ true, [ "removed row $id only; no result changed and nobody was told" ] ]
                          : [ false, [ "could not remove row $id: " . mysqli_error( $link ) ] ];
@@ -850,9 +891,10 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
         return $fail( 'the result' );
     }
     ## A GMP stage must stop waiting, or its run never reaches its report. An instance without the table has none.
+    ## Also one a monitor marked done: this job's results are not imported, so its run must not go on.
     $staged = 0;
     $flow = mysqli_prepare( $link, "UPDATE `$inst`.autoflowAnalysis SET status = 'failed', statusMsg = ?"
-        . " WHERE currentHPCARID = ? AND currentGfacID = ? AND LOWER(status) NOT IN ( 'failed', 'error', 'canceled', 'complete', 'done', 'finished' )" );
+        . " WHERE currentHPCARID = ? AND currentGfacID = ? AND LOWER(status) NOT IN ( 'failed', 'error', 'canceled' )" );
     if ( $flow ) {
         if ( !mysqli_stmt_bind_param( $flow, 'sis', $msg, $want, $job ) || !mysqli_stmt_execute( $flow ) ) {
             return $fail( 'its autoflow stage' );
@@ -893,9 +935,15 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
 }
 
 ## --busy's answer: [ busy lines, notes ], with every gfac.analysis row counted, as
-## uslims_upgrade.php's idle check counts them.
-function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines, $dispatchers = 0 ) {
+## uslims_upgrade.php's idle check counts them. $host: 'early' when gridctl moved before its
+## jobs finished (gridctl_moved_early()), 'refused' the instance names this release refuses.
+function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines, $dispatchers = 0, array $host = [] ) {
     $busy  = [];
+    $early = !empty( $host[ 'early' ] );
+    $controller = $host[ 'controller' ] ?? true;
+    foreach ( $host[ 'refused' ] ?? [] as $name ) {
+        $busy[] = refused_instance_remedy( $name, $controller );
+    }
     if ( $dispatchers ) {
         $busy[] = "$dispatchers dispatchone.php running";
     }
@@ -903,23 +951,22 @@ function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines, $d
     if ( $analysis === null ) {
         $busy[] = "gfac.analysis could not be read";
     } else {
+        if ( $early && $analysis[ 'unfinished' ] ) {
+            $busy[] = gridctl_early_move_recovery();
+        }
         $stranded = $analysis[ 'stranded' ];
         $unfinished = $analysis[ 'unfinished' ] - $stranded;
         if ( $unfinished ) {
             $busy[] = "$unfinished unfinished job(s) in gfac.analysis"
-                    . ( $monitors ? '' : " and no jobmonitor; run php uslims_jobs.php --restart as us3 to resume them" );
+                    . ( $monitors || $early ? '' : " and no jobmonitor; run php uslims_jobs.php --restart as us3 to resume them" );
         }
         if ( $stranded ) {
-            $busy[] = "$stranded job(s) in gfac.analysis ended without being closed out or are parked at a timeout"
-                    . ( $monitors ? '' : ". " . analysis_stranded_remedy() );
+            $busy[] = "$stranded job(s) in gfac.analysis ended on the cluster or at a timeout and are not closed out yet"
+                    . ( $monitors || $early ? '' : ". " . analysis_stranded_remedy() );
         }
         foreach ( $analysis[ 'rows' ] ?? [] as $r ) {
             $busy[] = "  id {$r['id']}: job {$r['gfacID']} in {$r['us3_db']} on {$r['cluster']}, {$r['status']}: "
-                    . ( !jobs_monitor_accepts_instance( (string) $r[ 'us3_db' ] )
-                        ? "no monitor accepts this instance name; --close-job {$r['id']}"
-                        : ( strtoupper( (string) $r[ 'status' ] ) === 'COMPLETE' && !jobs_monitor_cannot_import( (string) $r[ 'us3_db' ], (string) $r[ 'gfacID' ] )
-                        ? "--restart imports it"
-                        : "--restart resumes it; if no monitor can finish it, --close-job {$r['id']}" ) );
+                    . jobs_busy_row_action( $r, $monitors, $early, $controller );
         }
         $more = $analysis[ 'unfinished' ] - count( $analysis[ 'rows' ] ?? [] );
         if ( isset( $analysis[ 'rows' ] ) && $more > 0 ) {
@@ -930,6 +977,27 @@ function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines, $d
         $busy[] = count( $monitors ) . " jobmonitor(s) running";
     }
     return [ array_merge( $busy, $dispatch_lines ), $notes ];
+}
+
+## What finishes one listed gfac.analysis row.
+function jobs_busy_row_action( array $r, array $monitors, $early, $controller = true ) {
+    $inst = (string) $r[ 'us3_db' ];
+    $job  = (string) $r[ 'gfacID' ];
+    if ( !jobs_monitor_accepts_instance( $inst ) ) {
+        return "this release's monitor refuses this instance name; 4.2.0's controller imports it: " . legacy_controller_command( $controller );
+    }
+    ## Keyed by this row's cluster: another cluster's job with the same number has its own monitor.
+    foreach ( [ "$inst:$job@{$r['cluster']}", "$inst:$job" ] as $key ) {
+        if ( isset( $monitors[ $key ] ) ) {
+            return "its monitor {$monitors[ $key ]} is running and finishes it; if it mailed about a fault, fix that";
+        }
+    }
+    if ( $early ) {
+        return "the release that started it finishes it; see above";
+    }
+    return strtoupper( (string) $r[ 'status' ] ) === 'COMPLETE' && !jobs_monitor_cannot_import( $inst, $job )
+        ? "--restart imports it"
+        : "--restart resumes it; if no monitor can finish it, --close-job {$r['id']}";
 }
 
 ## "php:<path>", matched no row, and the job read as unmonitored: --restart then
@@ -1245,46 +1313,13 @@ if ( $running || $restart || $restart_only ) {
             $jm_key = "$db:$gfacid";
         }
 
-        ## emptyok=true: gridctl can leave a gfac.analysis row with no
-        ## HPCAnalysisResult behind (a deleted request or database).
-        ## services.php's own start() runs --restart at every boot; exiting
-        ## here on the first such row (the old emptyok=false) would skip
-        ## restarting the monitor for every row after it, not just this one.
-        ## Where gfac.analysis records the request, a row without one is never guessed at.
-        ## Before that column exists the job number alone is all there is.
-        $reqid = "unknown";
-        if ( !array_key_exists( 'HPCAnalysisRequestID', $row ) ) {
-            $reshpc =
-                db_obj_result(
-                    $db_handle
-                    ,"select HPCAnalysisRequestID from $db.HPCAnalysisResult where gfacID=\"$gfacid\""
-                     . " order by HPCAnalysisResultID limit 1"
-                    , false
-                    , true
-                );
-            if ( $reshpc ) {
-                $reqid = $reshpc->{ "HPCAnalysisRequestID" };
-            }
-        }
-        if ( !empty( $row[ 'HPCAnalysisRequestID' ] ) ) {
-            $reqid = $row[ 'HPCAnalysisRequestID' ];
-        }
+        ## A row with no HPCAnalysisResult is skipped, not fatal: services.php's start() runs this at every boot.
+        $reqid = jobs_row_request( $db_handle, $row );
 
         if ( array_key_exists( $jm_key, $jm_active ) ) {
             $jm_pid = $jm_active[ $jm_key ];
             unset( $jm_active[ $jm_key ] );
-        } elseif ( $reqid === "unknown" ) {
-            ## Queuing this orphan row for restart anyway sent
-            ## jobmonitor.php a non-numeric HPCAnalysisRequestID ("unknown"),
-            ## which it rejects, exiting 255; run_cmd()'s default
-            ## die_if_exit then aborted the whole --restart pass, skipping
-            ## every row after this one, every single boot. Nothing can be
-            ## restarted for a row with no HPCAnalysisResult to read a
-            ## request id from, so it is skipped here instead, with a
-            ## message, rather than queued to fail the whole pass.
-            $jm_skip_why = array_key_exists( 'HPCAnalysisRequestID', $row ) || !jobs_monitor_accepts_instance( $db )
-                         ? "no request recorded; php uslims_jobs.php --close-job {$row['id']} says what to do"
-                         : "orphan row {$row['id']}, no HPCAnalysisResult";
+        } elseif ( ( $jm_skip_why = jobs_restart_skip_reason( $row, $reqid ) ) !== null ) {
             $jm_pid = "skipped ($jm_skip_why)";
             $jm_orphan_skips[] = "skipped $db gfacID=$gfacid: $jm_skip_why";
         } else {

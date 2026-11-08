@@ -955,6 +955,45 @@ function analysis_stranded_rows( $gdb, $schema = 'gfac', $limit = 20, $stranded_
     return $res ? mysqli_fetch_all( $res, MYSQLI_ASSOC ) : null;
 }
 
+## Whether gridctl moved to this release before its jobs finished: its code is here, listen-config.php not yet converted.
+function gridctl_moved_early( $us3bin ) {
+    if ( !is_file( "$us3bin/gridctl_bootstrap.php" ) && !is_file( "$us3bin/gridctl/gridctl_bootstrap.php" ) ) {
+        return false;
+    }
+    $text = @file_get_contents( "$us3bin/listen-config.php" );
+    return $text !== false
+        && ( !preg_match( '/^\s*\$listen_config_version\s*=\s*(\d+)/m', $text, $m ) || (int) $m[ 1 ] < 2 );
+}
+
+## Step 3's recovery after an early move, as every listing and refusal prints it.
+function gridctl_early_move_recovery() {
+    return "gridctl moved to the new release before these jobs finished, and it can't finish them:"
+         . " check out the release that started them in gridctl and common, run php uslims_jobs.php --restart as us3,"
+         . " and repeat php uslims_jobs.php --busy until it says idle. Then move both back. Close no job before that";
+}
+
+## How 4.2.0 imports a job of an instance this release's monitor refuses: its cron controller, which
+## this release's gridctl no longer has. $controller: whether gridctl_pro.php is in ~us3/lims/bin.
+function legacy_controller_command( $controller = true ) {
+    return ( $controller ? '' : "check out the release that started them in gridctl and common, then " )
+         . "as us3, cd ~us3/lims/bin && php gridctl_pro.php (the cron line step 1 commented out runs it each minute)";
+}
+
+## Instance databases whose names this release's job monitor refuses; null when unreadable.
+function refused_instance_names( $link ) {
+    $res = mysqli_query( $link, "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME LIKE 'uslims3\\_%'"
+        . " AND SCHEMA_NAME NOT REGEXP '^uslims3_[A-Za-z0-9_]+$' ORDER BY SCHEMA_NAME" );
+    return $res ? array_column( mysqli_fetch_all( $res ), 0 ) : null;
+}
+
+## What to do about an instance this release refuses, printed before gridctl and common move.
+function refused_instance_remedy( $name, $controller = true ) {
+    return "instance '$name': this release can't run an instance with this name, so the upgrade stops here,"
+         . " before gridctl and common move. Until its jobs are done, 4.2.0's controller imports them: "
+         . legacy_controller_command( $controller ) . ". Then rename it to letters, digits and underscores only (its database,"
+         . " its directory and its config.php), or retire it, and rerun php uslims_jobs.php --busy";
+}
+
 ## What to do about stranded rows, as a refusal prints it.
 function analysis_stranded_remedy() {
     return "If gridctl and common already moved, first check out the release that started the jobs in both."

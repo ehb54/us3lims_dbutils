@@ -1719,8 +1719,9 @@ if ( $row === null ) {
         $busy[] = "$stranded job(s) not finished";
     }
     if ( $unfinished ) {
-        report( 'FAIL', "$unfinished job(s) in gfac.analysis are not in a terminal status;"
-                        . " php uslims_jobs.php --busy lists each and what to do, then rerun" );
+        report( 'FAIL', "$unfinished job(s) in gfac.analysis are not in a terminal status; "
+                        . ( gridctl_moved_early( $us3bin ) ? gridctl_early_move_recovery() . ", then rerun"
+                            : "php uslims_jobs.php --busy lists each and what to do, then rerun" ) );
         $busy[] = "$unfinished unfinished job(s)";
     } elseif ( !$stranded ) {
         report( 'ok', "no unfinished job in gfac.analysis" );
@@ -3837,7 +3838,10 @@ if ( !$instance_configs ) {
         ## name -- after steps 1-8 have already applied. report()+continue
         ## instead, same as every other per-instance failure in this loop.
         if ( !is_sql_identifier( $cfg[ 'dbname' ] ) ) {
-            report( 'FAIL', "$label: '{$cfg['dbname']}' is not a usable database name; convert people_audit by hand" );
+            report( 'FAIL', "$label: '{$cfg['dbname']}' is not a usable database name, so its people_audit conversion,"
+                          . " dispatch tables and procedures are skipped. "
+                          . "This release can't run an instance with this name: rename it to letters, digits and underscores"
+                          . " only (its database, its directory and its config.php), or retire it, then rerun" );
             continue;
         }
 
