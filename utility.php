@@ -987,14 +987,29 @@ function refused_instance_names( $link ) {
     return $res ? array_column( mysqli_fetch_all( $res ), 0 ) : null;
 }
 
+## The retire, as one command run as root: the metadata row's removal, then the drop, only once a complete
+## dump is in place. The dump is written beside it first, so a rerun never empties one an earlier run kept.
+function refused_instance_retire_command( $name ) {
+    return "mysqldump -u root -p --routines '$name' > '$name.sql.part' && grep -q '^-- Dump completed' '$name.sql.part'"
+         . " && mv '$name.sql.part' '$name.sql'"
+         . " && mysql -u root -p -e 'DELETE FROM newus3.metadata WHERE dbname = \"$name\"; DROP DATABASE `$name`'";
+}
+
+## How to retire such an instance; $dir names its directory.
+function refused_instance_retire_steps( $name, $dir ) {
+    return "retire it: as root, in a directory that keeps files, run " . refused_instance_retire_command( $name )
+         . " (each mysql asks for MariaDB root's password). $name.sql is then its only copy until step 4's dump; keep it."
+         . " Then move $dir out of the web root";
+}
+
 ## What to do about an instance this release refuses, printed before gridctl and common move.
 function refused_instance_remedy( $name, $controller = true ) {
     return "instance '$name': this release can't run an instance with this name, so the upgrade can't go on"
          . ( $controller ? " (move gridctl and common only after this is clear)" : '' )
          . ". Until its jobs are done, 4.2.0's controller imports them: "
-         . legacy_controller_command( $controller ) . ". Then retire it: dump it (mysqldump --routines $name > $name.sql), drop database `$name` and move its"
-         . " directory (the one under uslims3/ in the web root whose config.php names $name) out of uslims3/; this"
-         . " release has no way to rename it. Then rerun php uslims_jobs.php --busy";
+         . legacy_controller_command( $controller ) . ". Then "
+         . refused_instance_retire_steps( $name, "its directory (the one under uslims3/ whose config.php names $name)" )
+         . "; this release has no way to rename it. Then rerun php uslims_jobs.php --busy";
 }
 
 ## What to do about stranded rows, as a refusal prints it.

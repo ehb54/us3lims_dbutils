@@ -747,10 +747,11 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
     @unlink( $marker );
 }
 
-## The request --restart hands a row's monitor, "unknown" when there is none. Before gfac.analysis
-## records it, a reused job number is its newest result's, as 4.2.0's monitor took it.
-function jobs_row_request( $db_handle, array $row ) {
-    if ( array_key_exists( 'HPCAnalysisRequestID', $row ) ) {
+## The request --restart hands a row's monitor, "unknown" when there is none. This release's monitor
+## ($legacy false) gets only the row's own: two clusters can give out one job number. 4.2.0's monitor,
+## at README step 3 before gfac.analysis has the column, takes the newest result itself.
+function jobs_row_request( $db_handle, array $row, $legacy = false ) {
+    if ( array_key_exists( 'HPCAnalysisRequestID', $row ) || !$legacy ) {
         return empty( $row[ 'HPCAnalysisRequestID' ] ) ? "unknown" : $row[ 'HPCAnalysisRequestID' ];
     }
     $res = db_obj_result( $db_handle, "select HPCAnalysisRequestID from `{$row['us3_db']}`.HPCAnalysisResult where gfacID='"
@@ -760,14 +761,15 @@ function jobs_row_request( $db_handle, array $row ) {
 
 ## Why --restart starts no monitor for a row, or null. A row it queued anyway made jobmonitor.php exit 255,
 ## which ended the whole pass, so every row after it went without a monitor.
-function jobs_restart_skip_reason( array $row, $reqid ) {
+function jobs_restart_skip_reason( array $row, $reqid, $legacy = false ) {
     if ( !jobs_monitor_accepts_instance( (string) $row[ 'us3_db' ] ) ) {
         return "this release's monitor refuses the instance name; php uslims_jobs.php --busy says what to do";
     }
     if ( $reqid === "unknown" ) {
         return array_key_exists( 'HPCAnalysisRequestID', $row )
             ? "no request recorded; php uslims_jobs.php --close-job {$row['id']} says what to do"
-            : "orphan row {$row['id']}, no HPCAnalysisResult";
+            : ( $legacy ? "orphan row {$row['id']}, no HPCAnalysisResult"
+                        : "gfac.analysis has no HPCAnalysisRequestID column; as root run php uslims_upgrade.php --apply, then rerun --restart" );
     }
     return null;
 }
@@ -857,8 +859,11 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
         if ( ( !$want || (int) $r[ 'HPCAnalysisRequestID' ] === (int) $want )
              && ( $r[ 'queueStatus' ] === 'completed'
                   || ( $status === 'COMPLETE' && !in_array( $r[ 'queueStatus' ], [ 'failed', 'aborted' ], true ) ) ) ) {
-            return [ false, [ "job $job in $inst completed and its results are not imported, so it is not closed here."
-                              . " Run php uslims_jobs.php --restart as us3: its monitor imports them about 10 minutes"
+            return [ false, [ "job $job in $inst completed and its results are not imported, so it is not closed here. "
+                              . ( $own || !array_key_exists( 'HPCAnalysisRequestID', $row ) ? "" : "Row $id records no request, so no monitor takes it until it does: once you know the"
+                                              . " request it ran, as root run mysql -u root -p -e 'UPDATE $gdb.analysis SET"
+                                              . " HPCAnalysisRequestID = <request> WHERE id = $id'. Then " )
+                              . ( $own || !array_key_exists( 'HPCAnalysisRequestID', $row ) ? "Run" : "run" ) . " php uslims_jobs.php --restart as us3: its monitor imports them about 10 minutes"
                               . " after it sees the job complete, at most 6 hours."
                               . " --reqid 0 removes only the row, importing nothing and telling nobody" ] ];
         }
@@ -1323,12 +1328,12 @@ if ( $running || $restart || $restart_only ) {
         }
 
         ## A row with no HPCAnalysisResult is skipped, not fatal: services.php's start() runs this at every boot.
-        $reqid = jobs_row_request( $db_handle, $row );
+        $reqid = jobs_row_request( $db_handle, $row, ( $listen_config_version ?? 0 ) < 2 );
 
         if ( array_key_exists( $jm_key, $jm_active ) ) {
             $jm_pid = $jm_active[ $jm_key ];
             unset( $jm_active[ $jm_key ] );
-        } elseif ( ( $jm_skip_why = jobs_restart_skip_reason( $row, $reqid ) ) !== null ) {
+        } elseif ( ( $jm_skip_why = jobs_restart_skip_reason( $row, $reqid, ( $listen_config_version ?? 0 ) < 2 ) ) !== null ) {
             $jm_pid = "skipped ($jm_skip_why)";
             $jm_orphan_skips[] = "skipped $db gfacID=$gfacid: $jm_skip_why";
         } else {

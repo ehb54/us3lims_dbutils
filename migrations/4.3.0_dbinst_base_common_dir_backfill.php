@@ -26,7 +26,7 @@ return [
         $base_path = "$us3_home/lims/etc/config/dbinst-base.v1.php";
 
         if ( !is_file( $base_path ) ) {
-            report( 'ok', "no dbinst-base.v1.php at $base_path; this host has no base+overlay instances" );
+            report( 'ok', "no dbinst-base.v1.php at $base_path yet; nothing to backfill" );
             return;
         }
 

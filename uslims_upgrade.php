@@ -195,8 +195,9 @@ Options
                                since someone else's work on a shared cluster is not this upgrade's business
 --runtime-advisory dir|off   : turn the runtime advisory pilot on, installing each runtime_advisory_<family>.json
                                in dir (2DSA, GA, PCSA; checked by common's own loader) to ~us3/lims/etc as
-                               0640 us3:<web group>, or turn it off ('off' leaves the installed files). The
-                               switch stays as it is while any artifact fails its check.
+                               0640, owned by us3 and the web account's primary group, or turn it off ('off'
+                               leaves the installed files). Nothing is installed, and the switch stays as it is,
+                               while any artifact fails its check or gfac.runtime_prediction can't be created.
 --prediction-cluster c=name  : score cluster c as the model's cluster name (prediction_cluster_name), for a
                                cluster whose own name the model does not know; repeatable
 --activate cluster[,cluster] : bring a converted entry live: sets active=true in global_config.php and
@@ -331,6 +332,10 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             list( $k, $v ) = explode( '=', $pair, 2 );
             if ( trim( $k ) === '' || trim( $v ) === '' ) {
                 error_exit( "--prediction-cluster needs a cluster and a name, as cluster=name" );
+            }
+            if ( isset( $prediction_clusters[ trim( $k ) ] ) && $prediction_clusters[ trim( $k ) ] !== trim( $v ) ) {
+                error_exit( "--prediction-cluster names two names for '" . trim( $k ) . "': "
+                            . $prediction_clusters[ trim( $k ) ] . " and " . trim( $v ) );
             }
             $prediction_clusters[ trim( $k ) ] = trim( $v );
             break;
@@ -488,7 +493,7 @@ function apply_refusal( $output, $errors = '' ) {
         return null;
     }
     return "--apply would stop at these, after changing everything before them:\n"
-         . implode( "\n", $open ) . "\nRerun with the option each one names. Nothing was changed.";
+         . implode( "\n", $open ) . "\nDo what each one names (pass its option, or run its step first), then rerun. Nothing was changed.";
 }
 
 ## The failures dbinst's tools/check_installation.php reports ("[FAIL] name   detail"), as
@@ -2577,6 +2582,7 @@ foreach ( $activate_want as $name ) {
 ## The runtime advisory pilot: its artifacts, its switch and each cluster's scoring name.
 ## The table itself is step 5's.
 $advisory_classes = "$wwwpath/common/class/prediction";
+$advisory_on_after = !empty( $gc[ 'global_runtime_advisory_enabled' ] );
 $advisory_asked   = $advisory_source !== null || $advisory_off || $prediction_clusters;
 if ( !is_file( "$advisory_classes/runtime_model.php" ) || !is_file( "$advisory_classes/runtime_cluster_map.php" ) ) {
     if ( $advisory_asked ) {
@@ -2587,27 +2593,30 @@ if ( !is_file( "$advisory_classes/runtime_model.php" ) || !is_file( "$advisory_c
     require_once "$advisory_classes/runtime_model.php";
     require_once "$advisory_classes/runtime_cluster_map.php";
     $advisory_enable = $advisory_off ? false : ( $advisory_source !== null ? true : null );
+    $advisory_held   = false;
     if ( $advisory_source !== null ) {
-        $advisory_etc  = "$us3_home/lims/etc";
-        $advisory_gid  = posix_getgrnam( $web_group )[ 'gid' ];
-        $artifacts_ok  = true;
-        $advisory_plan = runtime_advisory_artifact_plan( $advisory_source, $advisory_etc,
+        $advisory_etc   = "$us3_home/lims/etc";
+        $advisory_group = posix_getgrnam( $web_group );
+        $advisory_gid   = $advisory_group === false ? -1 : $advisory_group[ 'gid' ];
+        $advisory_plan  = runtime_advisory_artifact_plan( $advisory_source, $advisory_etc,
             function ( $path ) { return runtime_model::load( $path ); }, $us3_entry[ 'uid' ], $advisory_gid );
-        $advisory_installs = [];
         foreach ( $advisory_plan as $entry ) {
-            list( , $status, $message, $src ) = $entry;
-            report( $status, $message );
-            if ( $status === 'FAIL' ) {
-                $artifacts_ok = false;
-            }
-            if ( $src !== null ) {
-                $advisory_installs[] = $src;
-            }
+            report( $entry[ 1 ], $entry[ 2 ] );
+        }
+        $pilot_sql    = "$wwwpath/common/class/prediction/runtime_pilot_table.sql";
+        $pilot_exists = mysqli_query( $gdb, "SHOW TABLES IN gfac LIKE 'runtime_prediction'" );
+        $table_ready  = ( $pilot_exists && mysqli_num_rows( $pilot_exists ) > 0 )
+                        || gfac_runtime_table_create_privileged( mysqli_grant_rows( $gdb ) );
+        list( $advisory_installs, $advisory_held, $held_report ) = runtime_advisory_installs(
+            $advisory_plan, $gc, $advisory_group !== false, $web_group, $table_ready, $pilot_sql );
+        if ( $held_report !== null ) {
+            report( $held_report[ 0 ], $held_report[ 1 ] );
         }
         if ( $advisory_installs && !( $apply && confirm( "Install the runtime advisory artifacts in $advisory_etc?" ) ) ) {
             $advisory_installs = [];
             if ( $apply ) {
-                $artifacts_ok = false;
+                $advisory_held = true;
+                report( 'note', 'the artifacts were not installed, so the runtime advisory switch is left as it is' );
             }
         }
         foreach ( $advisory_installs as $src ) {
@@ -2615,7 +2624,7 @@ if ( !is_file( "$advisory_classes/runtime_model.php" ) || !is_file( "$advisory_c
             $tmp  = "$dest.uslims_upgrade-" . getmypid();
             if ( is_link( $dest ) ) {
                 report( 'FAIL', "$dest is a symlink; remove it by hand and rerun" );
-                $artifacts_ok = false;
+                $advisory_held = true;
                 continue;
             }
             if ( is_file( $dest ) ) {
@@ -2626,19 +2635,20 @@ if ( !is_file( "$advisory_classes/runtime_model.php" ) || !is_file( "$advisory_c
                  || !chmod( $tmp, 0640 ) || !rename( $tmp, $dest ) ) {
                 @unlink( $tmp );
                 report( 'FAIL', "could not install $dest" );
-                $artifacts_ok = false;
+                $advisory_held = true;
                 continue;
             }
             $changes++;
             report( 'done', "$dest installed" );
         }
-        if ( !$artifacts_ok ) {
-            report( 'note', 'the runtime advisory switch is left as it is until every artifact above passes' );
+        if ( $advisory_held ) {
             $advisory_enable = null;
         }
     }
     list( $advisory_lines, $advisory_reports ) = runtime_advisory_settings( $gc, $advisory_enable, $prediction_clusters,
-        function ( $identity ) { return runtime_cluster_map::code( $identity ); } );
+        function ( $identity ) { return runtime_cluster_map::code( $identity ); }, $advisory_held );
+    $advisory_on_after = $advisory_enable === true
+                         || ( $advisory_enable === null && !empty( $gc[ 'global_runtime_advisory_enabled' ] ) );
     foreach ( $advisory_reports as $r ) {
         report( $r[ 0 ], $r[ 1 ] );
     }
@@ -3118,12 +3128,43 @@ function runtime_advisory_artifact_plan( $source_dir, $dest_dir, callable $load,
     return $plan;
 }
 
+## Which of the plan's artifacts to install: all or none, decided before any is copied.
+## [ sources, held, [ status, message ] or null ]; held keeps the switch as it is.
+function runtime_advisory_installs( array $plan, array $gc, $group_ok, $group, $table_ready, $pilot_sql ) {
+    if ( !$group_ok ) {
+        return [ [], true, [ 'FAIL', "--runtime-advisory: no '$group' group on this host, so nothing is installed" ] ];
+    }
+    if ( isset( $gc[ 'global_runtime_advisory_artifact' ] ) ) {
+        return [ [], true, [ 'FAIL', 'global_config.php sets $global_runtime_advisory_artifact, so the advisory would not'
+                                   . ' read the artifacts --runtime-advisory installs; nothing is installed. Remove that setting and rerun' ] ];
+    }
+    foreach ( $plan as $entry ) {
+        if ( $entry[ 1 ] === 'FAIL' ) {
+            return [ [], true, [ 'note', 'nothing is installed, and the runtime advisory switch is left as it is,'
+                                       . ' until every artifact above passes' ] ];
+        }
+    }
+    if ( !$table_ready ) {
+        return [ [], true, [ 'FAIL', "--runtime-advisory: gfac.runtime_prediction doesn't exist and the gfac account"
+                                   . " can't create it, so the advisory would record nothing; nothing is installed."
+                                   . " An account with CREATE on gfac can create it (mysql gfac < $pilot_sql); then rerun" ] ];
+    }
+    return [ array_values( array_filter( array_column( $plan, 3 ) ) ), false, null ];
+}
+
+## A pilot table the gfac account can't fix: a note while the advisory is off, a FAIL while it is on.
+function runtime_pilot_gap( $message, $advisory_on ) {
+    return $advisory_on
+        ? [ 'FAIL', "the runtime advisory is on and records nothing until this is fixed: $message" ]
+        : [ 'note', $message ];
+}
+
 ## The managed global_config.php lines for the runtime advisory, and the reports:
 ## [ lines, [ [ status, message ], ... ] ]. $enable is true for --runtime-advisory DIR,
 ## false for --runtime-advisory off and null when neither was given. $mappings is
 ## cluster => identity from --prediction-cluster; $code gives an identity's cluster
-## code in common's runtime_cluster_map, or null.
-function runtime_advisory_settings( array $gc, $enable, array $mappings, callable $code ) {
+## code in common's runtime_cluster_map, or null. $held: --runtime-advisory DIR was given and held back.
+function runtime_advisory_settings( array $gc, $enable, array $mappings, callable $code, $held = false ) {
     $lines   = [];
     $reports = [];
     $on      = !empty( $gc[ 'global_runtime_advisory_enabled' ] );
@@ -3139,6 +3180,8 @@ function runtime_advisory_settings( array $gc, $enable, array $mappings, callabl
         $reports[] = [ 'todo', 'turn the runtime advisory off ($global_runtime_advisory_enabled = false)' ];
     } elseif ( $enable !== null ) {
         $reports[] = [ 'ok', 'the runtime advisory is already ' . ( $on ? 'on' : 'off' ) ];
+    } elseif ( $held ) {
+        $reports[] = [ 'note', 'the runtime advisory stays ' . ( $on ? 'on' : 'off' ) ];
     } else {
         $reports[] = [ 'note', 'the runtime advisory is ' . ( $on ? 'on' : 'off' )
                              . ' on this host; --runtime-advisory DIR|off changes it' ];
@@ -3180,7 +3223,8 @@ function runtime_advisory_settings( array $gc, $enable, array $mappings, callabl
 ##
 ## Returns [$status, $message] for report().
 function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_errno, $create_error,
-                                             $runtime_table_sql = 'common/class/prediction/runtime_pilot_table.sql' ) {
+                                             $runtime_table_sql = 'common/class/prediction/runtime_pilot_table.sql',
+                                             $advisory_on = false ) {
     if ( trim( (string) $create_sql ) === '' ) {
         return [ 'FAIL', "the runtime advisory pilot table's SQL file has no SQL left after"
                         . " stripping comments" ];
@@ -3196,10 +3240,10 @@ function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_err
         ## Absolute path: a relative path here fails for an
         ## operator running the suggested command from anywhere but the
         ## dbutils checkout itself.
-        return [ 'note', "gfac account lacks privilege to create the optional runtime advisory"
+        return runtime_pilot_gap( "gfac account lacks privilege to create the optional runtime advisory"
                         . " pilot table: " . reason( (string) $create_error )
                         . "; an account with CREATE on gfac can run it by hand:"
-                        . " mysql gfac < $runtime_table_sql" ];
+                        . " mysql gfac < $runtime_table_sql", $advisory_on );
     }
     return [ 'FAIL', "could not create gfac.runtime_prediction: " . reason( (string) $create_error ) ];
 }
@@ -3210,7 +3254,7 @@ function runtime_prediction_create_outcome( $create_sql, $create_ok, $create_err
 ## columns needs instead of a CREATE. Without those columns every insert
 ## into the table fails.
 function runtime_prediction_alter_outcome( $alter_sql, $alter_ok, $alter_errno, $alter_error,
-                                            $runtime_table_alter_sql ) {
+                                            $runtime_table_alter_sql, $advisory_on = false ) {
     if ( trim( (string) $alter_sql ) === '' ) {
         return [ 'FAIL', "the runtime advisory pilot table's column-migration SQL file has no SQL"
                         . " left after stripping comments" ];
@@ -3219,11 +3263,11 @@ function runtime_prediction_alter_outcome( $alter_sql, $alter_ok, $alter_errno, 
         return [ 'done', "gfac.runtime_prediction.prediction_cluster[_source] and maxwall_reference_seconds columns added" ];
     }
     if ( in_array( (int) $alter_errno, [ 1142, 1044 ], true ) ) {
-        return [ 'note', "gfac account lacks privilege to add the optional runtime advisory"
+        return runtime_pilot_gap( "gfac account lacks privilege to add the optional runtime advisory"
                         . " pilot table's prediction_cluster and maxwall_reference_seconds columns, so every record will fail until they exist: "
                         . reason( (string) $alter_error )
                         . "; an account with ALTER on gfac can run it by hand:"
-                        . " mysql gfac < $runtime_table_alter_sql" ];
+                        . " mysql gfac < $runtime_table_alter_sql", $advisory_on );
     }
     return [ 'FAIL', "could not add gfac.runtime_prediction's prediction_cluster and maxwall_reference_seconds columns: "
                     . reason( (string) $alter_error ) ];
@@ -3345,9 +3389,10 @@ if ( !is_file( $runtime_table_sql ) ) {
             ## case below, for ALTER instead: a roles-built gfac account has
             ## neither, so without this, --check would report this as a
             ## pending change forever that --apply could never actually make.
-            report( 'note', "gfac account lacks privilege to add the optional runtime advisory"
+            list( $status, $message ) = runtime_pilot_gap( "gfac account lacks privilege to add the optional runtime advisory"
                   . " pilot table's prediction_cluster and maxwall_reference_seconds columns, so every record will fail until they exist; an account with ALTER"
-                  . " on gfac can run it by hand: mysql gfac < $runtime_table_alter_sql" );
+                  . " on gfac can run it by hand: mysql gfac < $runtime_table_alter_sql", $advisory_on_after );
+            report( $status, $message );
         } else {
             report( 'todo', "add gfac.runtime_prediction.prediction_cluster[_source] and maxwall_reference_seconds columns"
                   . " (runtime advisory pilot): $runtime_table_alter_sql" );
@@ -3368,7 +3413,7 @@ if ( !is_file( $runtime_table_sql ) ) {
                 }
 
                 list( $status, $message ) = runtime_prediction_alter_outcome(
-                    $alter, $alter_ok, $errno, $error, $runtime_table_alter_sql );
+                    $alter, $alter_ok, $errno, $error, $runtime_table_alter_sql, $advisory_on_after );
                 report( $status, $message );
             }
         }
@@ -3380,9 +3425,10 @@ if ( !is_file( $runtime_table_sql ) ) {
         ## database. Applies to --apply too: the probe is
         ## reliable enough for --check alone to depend on, so it is
         ## reliable enough for --apply to skip the doomed attempt on too.
-        report( 'note', "gfac account lacks privilege to create the optional runtime advisory"
+        list( $status, $message ) = runtime_pilot_gap( "gfac account lacks privilege to create the optional runtime advisory"
               . " pilot table; an account with CREATE on gfac can run it by hand:"
-              . " mysql gfac < $runtime_table_sql" );
+              . " mysql gfac < $runtime_table_sql", $advisory_on_after );
+        report( $status, $message );
     } else {
         report( 'todo', "create gfac.runtime_prediction (runtime advisory pilot)" );
         if ( $apply ) {
@@ -3405,7 +3451,7 @@ if ( !is_file( $runtime_table_sql ) ) {
             }
 
             list( $status, $message ) = runtime_prediction_create_outcome(
-                $create, $create_ok, $errno, $error, $runtime_table_sql );
+                $create, $create_ok, $errno, $error, $runtime_table_sql, $advisory_on_after );
             report( $status, $message );
         }
     }
@@ -3966,6 +4012,14 @@ run_host_migrations( null, $required_version, $apply,
                       [ 'wwwpath' => $wwwpath, 'newus3_configs' => $newus3_configs ],
                       [ 'webinfo_newinst_common_dir_backfill' ] );
 
+## The dbinst base and instances/ newinst needs, made as the roles make them when missing.
+run_host_migrations( null, $required_version, $apply,
+                      [ 'wwwpath' => $wwwpath, 'us3_home' => $us3_home, 'instance_configs' => $instance_configs,
+                        'newus3_configs' => $newus3_configs, 'owner' => 'us3', 'web_group' => $web_group ],
+                      [ 'dbinst_base_install' ] );
+run_host_migrations( null, $required_version, $apply, [ 'wwwpath' => $wwwpath, 'db_config' => __DIR__ . '/db_config.php' ],
+                      [ 'dbinst_branch' ] );
+
 ## dbinst_base_common_dir_backfill: the
 ## shared base+overlay base file, fixed once per host -- see the sibling
 ## instance migration above, which defers to this one for a base+overlay
@@ -4034,8 +4088,8 @@ if ( !$instance_configs ) {
         if ( !is_sql_identifier( $cfg[ 'dbname' ] ) ) {
             report( 'FAIL', "$label: '{$cfg['dbname']}' is not a usable database name, so its people_audit conversion,"
                           . " dispatch tables and procedures are skipped. "
-                          . "This release can't run an instance with this name, and has no way to rename it: retire it"
-                          . " (dump its database, drop it and move $wwwpath/uslims3/$label out of uslims3/), then rerun" );
+                          . "This release can't run an instance with this name, and has no way to rename it: "
+                          . refused_instance_retire_steps( $cfg[ 'dbname' ], "$wwwpath/uslims3/$label" ) . ". Then rerun" );
             continue;
         }
 

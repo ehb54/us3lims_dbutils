@@ -45,7 +45,8 @@ return [
         $alter = "ALTER TABLE `$db`.analysis ADD COLUMN HPCAnalysisRequestID int(11) DEFAULT NULL AFTER us3_db";
         ## Checked in --check too, so --check reports what --apply would fail on.
         if ( !gfac_runtime_table_alter_privileged( mysqli_grant_rows( $gdb ) ) ) {
-            report( 'FAIL', "the gfac account cannot alter $db.analysis; as an account with ALTER on gfac run: $alter" );
+            ## An input, not a FAIL: --apply then changes nothing, since this release can't track a job without the column.
+            report_input( "the gfac account cannot alter $db.analysis; as an account with ALTER on gfac run: $alter", false );
             return;
         }
         report( 'todo', "add $db.analysis.HPCAnalysisRequestID" );
