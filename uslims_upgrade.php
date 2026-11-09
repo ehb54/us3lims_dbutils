@@ -4034,8 +4034,8 @@ if ( !$instance_configs ) {
         if ( !is_sql_identifier( $cfg[ 'dbname' ] ) ) {
             report( 'FAIL', "$label: '{$cfg['dbname']}' is not a usable database name, so its people_audit conversion,"
                           . " dispatch tables and procedures are skipped. "
-                          . "This release can't run an instance with this name: rename it to letters, digits and underscores"
-                          . " only (its database, its directory and its config.php), or retire it, then rerun" );
+                          . "This release can't run an instance with this name, and has no way to rename it: retire it"
+                          . " (dump its database, drop it and move $wwwpath/uslims3/$label out of uslims3/), then rerun" );
             continue;
         }
 

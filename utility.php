@@ -992,8 +992,9 @@ function refused_instance_remedy( $name, $controller = true ) {
     return "instance '$name': this release can't run an instance with this name, so the upgrade can't go on"
          . ( $controller ? " (move gridctl and common only after this is clear)" : '' )
          . ". Until its jobs are done, 4.2.0's controller imports them: "
-         . legacy_controller_command( $controller ) . ". Then rename it to letters, digits and underscores only (its database,"
-         . " its directory and its config.php), or retire it, and rerun php uslims_jobs.php --busy";
+         . legacy_controller_command( $controller ) . ". Then retire it: dump it (mysqldump --routines $name > $name.sql), drop database `$name` and move its"
+         . " directory (the one under uslims3/ in the web root whose config.php names $name) out of uslims3/; this"
+         . " release has no way to rename it. Then rerun php uslims_jobs.php --busy";
 }
 
 ## What to do about stranded rows, as a refusal prints it.

@@ -18,7 +18,7 @@ checks and fixes does, and is documented under its own entry below, not here.
    started the jobs has to finish them. If gridctl and common were already moved, check
    out the release that started the jobs in both, finish the jobs, and move them again.
    `--busy` also names any instance whose name this release can't run; it stays busy until
-   that instance is renamed or retired.
+   that instance is retired (its database dumped, then dropped, and its directory moved out of uslims3/).
 4. Take a full sql dump (`uslims_db_binary_backup.php`, or your own backup process), now
    that the finished jobs are imported.
 5. Move the rest to the new release: common, every instance's dbinst, gridctl, webinfo,
