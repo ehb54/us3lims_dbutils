@@ -42,7 +42,7 @@ return [
             return;
         }
 
-        $alter = "ALTER TABLE `$db`.analysis ADD COLUMN HPCAnalysisRequestID int(11) DEFAULT NULL AFTER us3_db";
+        $alter = gfac_analysis_request_id_alter( $db );
         ## Checked in --check too, so --check reports what --apply would fail on.
         if ( !gfac_runtime_table_alter_privileged( mysqli_grant_rows( $gdb ) ) ) {
             ## An input, not a FAIL: --apply then changes nothing, since this release can't track a job without the column.

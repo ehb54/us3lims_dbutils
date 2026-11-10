@@ -950,9 +950,19 @@ function analysis_stranded_condition() {
 ## The stranded rows, or all rows, for a refusal to name; null when unreadable.
 function analysis_stranded_rows( $gdb, $schema = 'gfac', $limit = 20, $stranded_only = true ) {
     sql_identifier_or_die( $schema );
-    $res = mysqli_query( $gdb, "SELECT id, gfacID, us3_db, cluster, status FROM $schema.analysis" // NOSONAR $schema is validated above
+    $res = mysqli_query( $gdb, "SELECT * FROM $schema.analysis" // NOSONAR $schema is validated above
         . ( $stranded_only ? " WHERE " . analysis_stranded_condition() : '' ) . " ORDER BY id LIMIT " . (int) $limit );
     return $res ? mysqli_fetch_all( $res, MYSQLI_ASSOC ) : null;
+}
+
+## The request column's ALTER, for an account with ALTER on gfac; needs no idle host.
+function gfac_analysis_request_id_alter( $db = 'gfac' ) {
+    return "ALTER TABLE `$db`.analysis ADD COLUMN HPCAnalysisRequestID int(11) DEFAULT NULL AFTER us3_db";
+}
+
+## The ALTER as an operator types it.
+function gfac_analysis_request_id_alter_command() {
+    return "mysql -u root -p -e '" . gfac_analysis_request_id_alter() . "'";
 }
 
 ## Whether gridctl moved to this release before its jobs finished: its code is here, listen-config.php not yet converted.

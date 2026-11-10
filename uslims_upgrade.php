@@ -4015,7 +4015,8 @@ run_host_migrations( null, $required_version, $apply,
 ## The dbinst base and instances/ newinst needs, made as the roles make them when missing.
 run_host_migrations( null, $required_version, $apply,
                       [ 'wwwpath' => $wwwpath, 'us3_home' => $us3_home, 'instance_configs' => $instance_configs,
-                        'newus3_configs' => $newus3_configs, 'owner' => 'us3', 'web_group' => $web_group ],
+                        'newus3_configs' => $newus3_configs, 'owner' => 'us3', 'web_group' => $web_group,
+                        'db_config' => __DIR__ . '/db_config.php' ],
                       [ 'dbinst_base_install' ] );
 run_host_migrations( null, $required_version, $apply, [ 'wwwpath' => $wwwpath, 'db_config' => __DIR__ . '/db_config.php' ],
                       [ 'dbinst_branch' ] );
