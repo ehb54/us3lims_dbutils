@@ -799,8 +799,8 @@ function jobs_monitor_cannot_import( $inst, $job ) {
 ## What a row that records no request needs before a monitor takes it, after the upgrade.
 function jobs_row_without_request_remedy( $id, $has_column, $reused = false ) {
     if ( $has_column && $reused ) {
-        return "More than one request carries row $id's job number, so which it ran can't be told and --reqid records none of them."
-             . " Its job's results stay at the cluster, and a listed request left open stays open: tell its submitter yourself.";
+        return "More than one request that is not failed, aborted or imported carries row $id's job number, so which it ran can't be told and --reqid records none of them."
+             . " Its job's results stay at the cluster, and a listed request left open or completed stays so: tell its submitter yourself.";
     }
     return $has_column
         ? "Row $id records no request, so no monitor takes it until it does: rerun this with --reqid and the request it ran"
@@ -810,9 +810,12 @@ function jobs_row_without_request_remedy( $id, $has_column, $reused = false ) {
           . gfac_analysis_request_id_alter_command() . ", then rerun this.";
 }
 
-## A reused job number: more than one request carries it, so which a row ran can't be told.
+## A reused job number: more than one request that could be the row's carries it. Failed, aborted and imported ones can't.
 function jobs_number_reused( array $results ) {
-    return count( array_unique( array_column( $results, 'HPCAnalysisRequestID' ) ) ) > 1;
+    $live = array_filter( $results, function ( $r ) {
+        return !in_array( $r[ 'queueStatus' ], [ 'failed', 'aborted' ], true ) && empty( $r[ 'imported' ] );
+    } );
+    return count( array_unique( array_column( $live, 'HPCAnalysisRequestID' ) ) ) > 1;
 }
 
 ## The requests that carry a job number, as --close-job lists them.
@@ -835,7 +838,7 @@ function jobs_record_row_request( $link, $gdb, array $row, $reqid, array $result
               . gfac_analysis_request_id_alter_command() . ", then rerun this. Nothing was changed" ] ];
     }
     if ( jobs_number_reused( $results ) ) {
-        return [ false, array_merge( [ "more than one request in $inst carries job $job, so which row $id ran can't be told and none is recorded."
+        return [ false, array_merge( [ "more than one request in $inst that is not failed, aborted or imported carries job $job, so which row $id ran can't be told and none is recorded."
                                      . " Nothing was changed. --reqid 0 removes only the row, importing nothing and telling nobody; the job's results stay at the cluster. These carry job $job:" ],
                                      jobs_request_candidates( $results ) ) ];
     }
@@ -923,7 +926,8 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
     if ( !preg_match( '/^[\w-]+$/', $inst ) ) {
         return [ false, [ "row $id names instance '$inst', which is not a database name; rerun with --reqid 0 to remove only the row" ] ];
     }
-    $stmt = mysqli_prepare( $link, "SELECT r.HPCAnalysisResultID, r.HPCAnalysisRequestID, r.queueStatus, q.email, q.clusterName, q.submitTime FROM `$inst`.HPCAnalysisResult r"
+    $stmt = mysqli_prepare( $link, "SELECT r.HPCAnalysisResultID, r.HPCAnalysisRequestID, r.queueStatus, q.email, q.clusterName, q.submitTime,"
+        . " EXISTS (SELECT 1 FROM `$inst`.HPCAnalysisResultData d WHERE d.HPCAnalysisResultID = r.HPCAnalysisResultID) AS imported FROM `$inst`.HPCAnalysisResult r"
         . " JOIN `$inst`.HPCAnalysisRequest q ON q.HPCAnalysisRequestID = r.HPCAnalysisRequestID"
         . " WHERE r.gfacID = ?" );
     $res = $stmt && mysqli_stmt_bind_param( $stmt, 's', $job ) && mysqli_stmt_execute( $stmt ) ? mysqli_stmt_get_result( $stmt ) : false;
