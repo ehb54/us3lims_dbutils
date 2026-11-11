@@ -806,16 +806,22 @@ function jobs_row_without_request_remedy( $id, $has_column ) {
           . gfac_analysis_request_id_alter_command() . ", then rerun this to record its request.";
 }
 
-## The requests that carry a job number, as --close-job lists them.
-function jobs_request_candidates( array $results ) {
-    return array_map( function ( $r ) {
-        return "  request {$r['HPCAnalysisRequestID']}, {$r['clusterName']}, submitted {$r['submitTime']}, {$r['queueStatus']}";
+## The result 4.2.0's monitor takes for a job number: the newest carrying it.
+function jobs_newest_result_id( array $results ) {
+    return $results ? max( array_map( 'intval', array_column( $results, 'HPCAnalysisResultID' ) ) ) : 0;
+}
+
+## The requests that carry a job number, as --close-job lists them; $all marks the newest, the one --reqid takes.
+function jobs_request_candidates( array $results, ?array $all = null ) {
+    $newest = jobs_newest_result_id( $all ?? $results );
+    return array_map( function ( $r ) use ( $newest ) {
+        return "  request {$r['HPCAnalysisRequestID']}, {$r['clusterName']}, submitted {$r['submitTime']}, {$r['queueStatus']}"
+             . ( (int) $r[ 'HPCAnalysisResultID' ] === $newest ? ' (newest: the one --reqid takes)' : '' );
     }, $results );
 }
 
-## --close-job --reqid on a row that records no request: records the operator's request when it is this job's and
-## still open, so --restart's monitor finishes the job. Never the request of a result already ended or imported:
-## a monitor handed that would fail another job's finished result.
+## --close-job --reqid on a row that records no request: records the operator's request when it is the one 4.2.0's
+## monitor takes (the newest result carrying the job number) and still open, so --restart's monitor finishes the job.
 function jobs_record_row_request( $link, $gdb, array $row, $reqid, array $results, $legacy ) {
     $id   = (int) $row[ 'id' ];
     $inst = (string) $row[ 'us3_db' ];
@@ -834,11 +840,11 @@ function jobs_record_row_request( $link, $gdb, array $row, $reqid, array $result
                                      jobs_request_candidates( $results ) ) ];
     }
     $result = $mine[ 0 ];
-    ## Two clusters give out one number: a request submitted to another cluster, or tracked by another row, is another job.
-    $clusters = array_filter( [ (string) $row[ 'cluster' ], (string) ( $row[ 'metaschedulerClusterExecuting' ] ?? '' ) ] );
-    if ( (string) $result[ 'clusterName' ] !== '' && !in_array( (string) $result[ 'clusterName' ], $clusters, true ) ) {
-        return [ false, [ "request $reqid was submitted to {$result['clusterName']}, and row $id's job is on {$row['cluster']},"
-                          . " so it is not this row's. Nothing was changed" ] ];
+    ## A reused number: an older request carrying it is another job.
+    if ( (int) $result[ 'HPCAnalysisResultID' ] !== jobs_newest_result_id( $results ) ) {
+        return [ false, array_merge( [ "request $reqid is not the newest carrying job $job in $inst, so it is not this row's. Nothing was changed."
+                                     . " If the newest, marked below, is failed or aborted, --reqid 0 removes only the row, telling nobody; otherwise rerun with --reqid and the newest:" ],
+                                     jobs_request_candidates( $results ) ) ];
     }
     $other = mysqli_prepare( $link, "SELECT id FROM $gdb.analysis WHERE HPCAnalysisRequestID = ? AND us3_db = ? AND id <> ?" ); // NOSONAR $gdb is validated by the caller
     $taken = $other && mysqli_stmt_bind_param( $other, 'isi', $reqid, $inst, $id ) && mysqli_stmt_execute( $other )
@@ -969,7 +975,7 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
                    . ( $legacy ? "Run php uslims_jobs.php --restart as us3: 4.2.0's monitor finds its request."
                                : jobs_row_without_request_remedy( $id, $has_column ) )
                    . " --reqid 0 removes only the row if none of these is its job:" ];
-        return [ false, array_merge( $lines, jobs_request_candidates( $open ) ) ];
+        return [ false, array_merge( $lines, jobs_request_candidates( $open, $results ) ) ];
     }
     $open = array_values( array_filter( $open, function ( $o ) use ( $want ) {
         return (int) $o[ 'HPCAnalysisRequestID' ] === (int) $want;
