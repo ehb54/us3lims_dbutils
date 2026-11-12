@@ -2,43 +2,58 @@
 
 ## Upgrading a host
 
-This procedure doesn't change from release to release -- what `uslims_upgrade.php` itself
-checks and fixes does, and is documented under its own entry below, not here.
+`uslims_upgrade.php` runs inside the usual upgrade sequence: check each checkout for local
+changes with `uslims_git_info.php`, pull, build, run dbupgrade's stage1 and stage2, then
+validate. That sequence starts from an idle host with gfac.analysis empty. Steps 1 to 5 below
+get the host there for this release, since its jobs have to finish under the code that
+started them. What `uslims_upgrade.php` itself checks and fixes is under its own entry below.
 
 1. Let any dispatch request settle first, with Resolve or Close on the dispatch dashboard for
    a held one: that needs the web server and services running. Then stop the web server (or
-   otherwise block access), so nothing can write to any LIMS database while the upgrade runs. Take the gridctl services out of service too, so
-   nothing is submitted while the code moves: `php services.php stop` in `~us3/lims/bin`,
-   then comment out the LIMS cron lines, wherever they are (`/etc/crontab`, us3's crontab
-   or `/etc/cron.d`).
-2. Move this repo only to the new release (`git fetch`, then `git checkout <release>`).
-3. Finish every job. `php uslims_jobs.php --busy` lists each one and what to do; repeat
+   otherwise block access), so nothing can write to any LIMS database while the upgrade runs.
+   Take the gridctl services out of service too, so nothing is submitted while the code
+   moves: `php services.php stop` in `~us3/lims/bin`, then comment out the LIMS cron lines,
+   wherever they are (`/etc/crontab`, us3's crontab or `/etc/cron.d`).
+2. Check each checkout for local changes: `php uslims_git_info.php` (`--diff-report` shows
+   them). Commit or set aside each one before anything is pulled. Keep its report: it names
+   the branch and revision each checkout runs, which "Backing out a failed upgrade" returns to.
+3. Move this repo only to the new release (`git fetch`, then `git checkout <release>`).
+4. Finish every job. `php uslims_jobs.php --busy` lists each one and what to do; repeat
    until it says idle. This has to come before gridctl and common move: this release's
    monitors don't run until `--apply` has converted `listen-config.php`, so the code that
    started the jobs has to finish them. If gridctl and common were already moved, check
    out the release that started the jobs in both, finish the jobs, and move them again.
    `--busy` also names any instance whose name this release can't run; it stays busy until
-   that instance is retired: `--busy` prints the commands (dump, then drop the database and its newus3.metadata row, then move its directory out of the web root).
-4. Take a full sql dump (`uslims_db_binary_backup.php`, or your own backup process), now
-   that the finished jobs are imported.
-5. Move the rest to the new release: common, every instance's dbinst, gridctl, webinfo,
-   newinst and us3_sql.
-   Host configuration and code/schema are upgraded separately, and the code has to be in
-   place first.
-6. `php uslims_upgrade.php --check` to see what it would do, then `--apply` to make the
-   changes.
-7. Uncomment the LIMS cron lines you commented out in step 1. `--apply` retires
-   the gridctl lines; the others, such as `cluster_status.php` and the nightly backup,
-   stay off until you do, and a later run of the roles' play leaves them off too.
-8. Restart the web server, confirm the host is actually serving again, and test (log
-   in, submit a job, check queue_viewer.php) before considering the host upgraded.
+   that instance is retired: `--busy` prints the commands (dump, then drop the database and
+   its newus3.metadata row, then move its directory out of the web root).
+5. Take a full backup of the whole database server (`uslims_db_binary_backup.php`, or your
+   own backup process), now that the finished jobs are imported. "Backing out a failed
+   upgrade" restores it; stage1's export below covers only the instances, not gfac or newus3.
+6. Pull the rest to the new release and build, as for any release: common, every instance's
+   dbinst, gridctl, webinfo, newinst and us3_sql, and the UltraScan checkouts. On checkouts
+   already on their release branch, `php uslims_git_info.php --update-pull all
+   --update-pull-build` does it; check out the release first in any that isn't (a tag or
+   another branch). The code has to be in place before the next steps.
+7. Run dbupgrade's stage1 and stage2 (see dbupgrade below), from `dbupgrade/` as root with its
+   `my.cnf`: `php stage1_export_dbinsts.php <dbhost>`, then `php stage2_import_dbinsts.php
+   <dbhost>`. Stage2 rebuilds every instance from the release's us3.sql, which is what puts
+   each one on the release's schema: tables, columns, enum values and stored procedures.
+8. `php uslims_upgrade.php --check` as root to see what it would do, then `--apply` to make
+   the changes. Its step 9 refuses an instance that lacks anything us3.sql defines, naming
+   stage1 and stage2: it adds only this release's own tables and columns in place.
+9. Finish as `--apply` prints at its end: uncomment the LIMS cron lines you commented out in
+   step 1, except the gridctl lines `--apply` retired (the others, such as
+   `cluster_status.php` and the nightly backup, stay off until you do, and a later run of the
+   roles' play leaves them off too), then start the services as us3.
+10. Validate: restart the web server, confirm the host is actually serving again, and test
+    (log in, submit a job, check queue_viewer.php) before considering the host upgraded.
 
-Steps 1-5 happen before `--apply` ever runs, with nothing serving requests in between --
-that's what makes step 9 of `--apply` (the UTC migration) and every config rewrite in
+Steps 1-7 happen before `--apply` ever runs, with nothing serving requests in between.
+That's what makes step 9 of `--apply` (the UTC migration) and every config rewrite in
 between safe: there is no window where new code could write a row, or read a config
 file, before the migration has run. `uslims_upgrade.php` doesn't defend against that
-window itself; its own preflight (step 1) checks that the host is idle -- no jobs, no
-other DB client, cron entries commented out -- the same way, without also needing to
+window itself; its own preflight (step 1) checks that the host is idle (no jobs, no
+other DB client, cron entries commented out) the same way, without also needing to
 account for live web traffic, because this procedure already guarantees that.
 
 No separate script is needed for a host starting from an older release than the
@@ -46,6 +61,58 @@ previous one, or several releases behind at once: every step in `uslims_upgrade.
 checks the host's own current state and decides whether it has anything to do, rather
 than assuming a specific starting point. A host several releases behind just sees more
 `todo`s in one `--apply`, not a different tool.
+
+## Backing out a failed upgrade
+
+For an emergency only: it puts the host back on the release it ran before, with the code,
+the databases and every file `uslims_upgrade.php --apply` changed. Restoring the backup
+discards everything written since step 5 of "Upgrading a host", including any job submitted on
+the new release.
+
+1. Stop the web server and the gridctl services (`php services.php stop` as us3 in
+   `~us3/lims/bin`, or `systemctl stop us3-listen`), and comment out the LIMS cron lines.
+2. Check out the old release in every checkout (`git checkout <ref>`, with the branch or
+   revision step 2's `uslims_git_info.php` report gave for it), then build the UltraScan
+   checkouts as for an upgrade. `--update-branch` can't do this: it follows db_config.php's
+   `$repo_branches`, which `--apply` may have changed until step 4 puts it back.
+3. Restore the full backup from step 5 of "Upgrading a host", with its tool's own restore
+   (for `uslims_db_binary_backup.php`: stop MariaDB, replace its data directory with the
+   backup, as the script printed, and start it again). It returns every instance as it
+   was before stage2 rebuilt it, and undoes everything `--apply` did in the databases: the
+   people_audit UTC conversion, the stored procedures, the dispatch tables in gfac and each
+   instance, gfac.analysis.HPCAnalysisRequestID and gfac.runtime_prediction.
+4. Put back the files `--apply` changed. Each run of `--apply` copies the files it changes into
+   its own directory, `~us3/lims/etc/uslims_upgrade-backup-<time>-pid<pid>`, and names it when
+   it first copies a file and again at the end. A run copies a file as it found it, so when `--apply` ran more than once,
+   a file's original is the copy in the oldest directory that holds it.
+
+   | Copy in the backup directory | Put back as |
+   |---|---|
+   | `global_config.php` | `/srv/www/htdocs/common/global_config.php` |
+   | `listen-config.php`, `cluster_config.php` | `~us3/lims/bin/` |
+   | `db_config.php` | this repo's `db_config.php` |
+   | `config.<name>` | the `config.php` (or its overlay) of the instance, webinfo or newinst `<name>` under `/srv/www/htdocs` that the run's output names |
+   | `dbinst-base.v1.php` | `~us3/lims/etc/config/dbinst-base.v1.php` |
+   | `runtime_advisory_<family>.json` | `~us3/lims/etc/` |
+   | `known_hosts.<account>`, `authorized_keys.<account>` | that account's `~/.ssh/`. Where the run's output says `(did not exist)`, delete the file instead |
+   | `us3.crontab` | us3's crontab: `crontab -u us3 us3.crontab` |
+   | `crontab`, any other cron file | `/etc/crontab`, or `/etc/cron.d/<name>` |
+   | `lims-common-alias.conf` | the Apache configuration directory, as below |
+
+   The cron files bring back the gridctl entry `--apply` removed, which the old release needs.
+5. Remove what `--apply` installed in Apache, then reload it: on Red Hat,
+   `/etc/httpd/conf.d/lims-csp.conf` and `/etc/httpd/conf.d/lims-common-alias.conf`; on
+   Debian, `a2disconf lims-csp lims-common-alias`, then the same two files in
+   `/etc/apache2/conf-available/`. A `lims-common-alias.conf` with a copy in a backup
+   directory was there before, and `--apply` replaced or removed it: put the copy back
+   instead (on Debian, then `a2enconf lims-common-alias`).
+6. What else `--apply` made can stay, since a release before 4.3.0 doesn't use it: the
+   circuit-breaker, dispatch spool and ssh-control directories, elog.txt and its HMAC key,
+   `~us3/lims/etc/config/instances/`, and a `dbinst-base.v1.php` or `runtime_advisory_*.json`
+   with no copy in a backup directory.
+7. Uncomment the LIMS cron lines, start the old release's services as it started them before,
+   and restart the web server. Test as in step 10 of "Upgrading a host": log in, submit a job,
+   and watch it finish in queue_viewer.php.
 
 ## Various utilities for managing the database
 
@@ -84,7 +151,7 @@ than assuming a specific starting point. A host several releases behind just see
        - old_domain_name is required for metadata & httpd config changes.
    - optionally sets up redirects
  - uslims_upgrade.php
-   - moves an existing host to the Slurm submission contract; run as root at step 6 of "Upgrading a host" above, once the jobs are finished and every repo has moved
+   - moves an existing host to the Slurm submission contract; run as root at step 8 of "Upgrading a host" above, once the jobs are finished, every repo has moved and stage2 has rebuilt the instances
    - host configuration only: the stack code and the database schema are upgraded separately, and the code must be in place first
      0. checks that every stack checkout (us3_sql included) is at 4.3.0 or newer, read from each repository's VERSION, and refuses to go further while one is older (each instance docroot is its own dbinst clone, so each is checked on its own)
      1. refuses to run unless the host is idle: none of listen, manage-us3-pipe, submitctl, dispatchone or esign running (however they were started, not only via the us3-listen unit), no jobmonitor and no unfinished gfac.analysis row, no unsettled dispatch request, no cleanup claim, an empty local Slurm queue, no node allocated, no other client on MariaDB, nobody else logged in, and the LIMS cron entries commented out; every failing check is reported before it stops
@@ -95,13 +162,13 @@ than assuming a specific starting point. A host several releases behind just see
      6. removes the gridctl cron entries from the crontabs (us3's, /etc/crontab, /etc/cron.d), under gridctl.php and the gridctl_pro/dev names before it, since each job's jobmonitor now carries it to a terminal state
      7. installs the util/csp policy as Report-Only in Apache (lims-csp.conf) unless a policy is already configured; enforcing it is a later step
      8. verifies the result, including that every active cluster passes the submission sizing gate rather than refusing every job
-     9. per instance: migrates people_audit.created_at to UTC if not already done, using the running config.php (or overlay) each instance already connects with -- idempotent, so a host dbupgrade/stage1+stage2 already migrated is reported 'ok' here, not migrated again; creates the dispatch tables; loads the release's stored procedures. Host-level: the dbinst base (dbinst-base.v1.php) and `instances/` under `~us3/lims/etc/config` that newinst needs to make an instance, made from the instances' and newinst's configs as the roles make them, when the host has none (with no instance yet, dbinst's contract comes from a temporary clone at db_config.php's dbinst entry); db_config.php's `$repo_branches` dbinst entry, set to the branch or tag the instances run, since newinst clones a new instance from it; the gfac dispatch tables and gfac.analysis.HPCAnalysisRequestID. The idle check refuses a host with any row in gfac.analysis, since a finished cleanup deletes its row; a row without a request that reaches this step is listed and kept, and no monitor acts on it
+     9. per instance: migrates people_audit.created_at to UTC if not already done, using the running config.php (or overlay) each instance already connects with -- idempotent, so a host dbupgrade/stage1+stage2 already migrated is reported 'ok' here, not migrated again; creates the dispatch tables; checks that the instance has every table, column and enum value us3.sql defines, and if not, FAILs it, naming stage1 and stage2, and loads no procedures there; loads the release's stored procedures. Host-level: the dbinst base (dbinst-base.v1.php) and `instances/` under `~us3/lims/etc/config` that newinst needs to make an instance, made from the instances' and newinst's configs as the roles make them, when the host has none (with no instance yet, dbinst's contract comes from a temporary clone at db_config.php's dbinst entry); db_config.php's `$repo_branches` dbinst entry, set to the branch or tag the instances run, since newinst clones a new instance from it; the gfac dispatch tables and gfac.analysis.HPCAnalysisRequestID. The idle check refuses a host with any row in gfac.analysis, since a finished cleanup deletes its row; a row without a request that reaches this step is listed and kept, and no monitor acts on it
      10. runs dbinst's read-only installation check (tools/check_installation.php) and reports what needs the operator
    - ```--activate cluster[,cluster]``` brings a converted entry live: sets active=true in global_config.php and turns on its cluster_config.php probe, together, once its env_script_lines are real and ssh to it succeeds (as us3, and as the web account if different). --activate checks ssh before step 4, which records the host key (and, for the host's own cluster, authorizes the key). So the first --apply --activate for a cluster records its host key, and the next one activates it -- not only for a cluster converted in this very run, but any cluster whose host key is not recorded yet. For a remote cluster, authorize the account's own key on the cluster by hand first; step 4 only ever records that cluster's host key, never authorizes this account's key on the far end
    - ```--site-admin-email address``` sets who receives the site's submission-failure and outage notices. Without it the address comes from listen-config.php's ```$admin_email```, except on a host built from the roles' main branch, whose listen-config.php still has their former default (us3-admin@biophysics.uleth.ca): that is reported as input to supply, and the given address replaces it in listen-config.php too. The idle check treats a host that global_config.php records as shared as shared, without ```--single-tenant no```
    - ```--runtime-advisory dir|off``` turns the runtime advisory pilot on or off in step 3. With a directory it checks each runtime_advisory_<family>.json there (2DSA, GA, PCSA) with common's own loader, installs it to ~us3/lims/etc as 0640, owned by us3 and the web account's primary group, when the installed file differs, and sets ```$global_runtime_advisory_enabled = true```. Nothing is installed and the switch is left alone while any artifact fails, or while gfac.runtime_prediction is missing and the gfac account can't create it (the FAIL names the command to create it by hand). ```off``` sets it false and leaves the files. Step 5 creates the table when the gfac account can; while the advisory is on, a table it can't create or complete is a FAIL
    - ```--prediction-cluster cluster=name``` (repeatable) sets a cluster's prediction_cluster_name, the cluster name the model scores it as, for a cluster whose own name the model does not know; a name with no code in common's runtime_cluster_map.php is refused
-   - dry run by default; ```php uslims_upgrade.php --apply``` makes the changes, backing up each file first; safe to rerun. See "Upgrading a host" below for the actual procedure this fits into
+   - dry run by default; ```php uslims_upgrade.php --apply``` makes the changes, backing up each file first; safe to rerun. See "Upgrading a host" above for the actual procedure this fits into, and "Backing out a failed upgrade" for the way back
  - uslims_git_info.php
    - for all expected and discovered repos, reports path, url, branch, use, rev#, rev date, local changes, and deltas
    - also allows updating to expected branches, git pull, and build (for gui & mpi)

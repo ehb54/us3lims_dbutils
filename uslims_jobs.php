@@ -75,9 +75,10 @@ Options
                              the site admin. Exits 3 if nobody was told. A job still at the cluster is not cancelled.
                              A completed job is refused, since --restart imports it, unless --reqid 0, which removes
                              only the row and tells nobody. A row with no recorded request lists the requests
-                             carrying its number: --reqid records the row's own when it is the only one, unless its
-                             result is already ended or imported, and --restart's monitor then finishes the job; --reqid 0
-                             removes only the row when none of them is, or when more than one request carries the number
+                             carrying its number: --reqid records the newest of them when every other one is imported,
+                             unless its result is already ended or imported, and --restart's monitor then finishes the job;
+                             otherwise nothing is recorded, and --reqid 0 removes only the row. Only the row's own instance
+                             is read: --db naming another instance is refused
 --check-log                : checks the log (requires --gfacid & exclusive of --monitor)
 --getrundir                : print the remote job directory for a request (requires --reqid)
 --getrun                   : collect a request's job files from the cluster into $getrunbdir/db/HPCAnalysisRequestID (requires --reqid)
@@ -321,7 +322,7 @@ if ( $close_job !== false ) {
             return mail( $to, $subject, $body );
         }, (string) ( ( $global_site_admin_email ?? '' ) ?: ( $admin_email ?? '' ) ),
         [ 'early' => gridctl_moved_early( $us3bin ), 'controller' => is_file( "$us3bin/gridctl_pro.php" ),
-          'legacy' => ( $listen_config_version ?? 0 ) < 2 ] );
+          'legacy' => ( $listen_config_version ?? 0 ) < 2, 'db' => (string) $db ] );
     echo implode( "\n", $close[ 1 ] ) . "\n";
     exit( !$close[ 0 ] ? 1 : ( ( $close[ 2 ] ?? true ) ? 0 : 3 ) );
 }
@@ -799,7 +800,7 @@ function jobs_monitor_cannot_import( $inst, $job ) {
 ## What a row that records no request needs before a monitor takes it, after the upgrade.
 function jobs_row_without_request_remedy( $id, $has_column, $reused = false ) {
     if ( $has_column && $reused ) {
-        return "More than one request that is not failed, aborted or imported carries row $id's job number, so which it ran can't be told and --reqid records none of them."
+        return "More than one request carries row $id's job number, and --reqid records the newest only when every other one is imported, so none is recorded."
              . " Its job's results stay at the cluster, and a listed request left open or completed stays so: tell its submitter yourself.";
     }
     return $has_column
@@ -810,23 +811,42 @@ function jobs_row_without_request_remedy( $id, $has_column, $reused = false ) {
           . gfac_analysis_request_id_alter_command() . ", then rerun this.";
 }
 
-## A reused job number: more than one request that could be the row's carries it. Failed, aborted and imported ones can't.
-function jobs_number_reused( array $results ) {
-    $live = array_filter( $results, function ( $r ) {
-        return !in_array( $r[ 'queueStatus' ], [ 'failed', 'aborted' ], true ) && empty( $r[ 'imported' ] );
+## The result carrying the job number that was created last, as 4.2.0's monitor orders them; null when none.
+function jobs_newest_result( array $results ) {
+    return array_reduce( $results, function ( $a, $r ) {
+        return !$a || (int) $r[ 'HPCAnalysisResultID' ] > (int) $a[ 'HPCAnalysisResultID' ] ? $r : $a;
     } );
-    return count( array_unique( array_column( $live, 'HPCAnalysisRequestID' ) ) ) > 1;
+}
+
+## --reqid's rule: the newest request carrying the job number, when every other one carrying it is imported; else null.
+function jobs_recordable_request( array $results ) {
+    $newest = jobs_newest_result( $results );
+    if ( !$newest ) {
+        return null;
+    }
+    foreach ( $results as $r ) {
+        if ( (int) $r[ 'HPCAnalysisRequestID' ] !== (int) $newest[ 'HPCAnalysisRequestID' ] && empty( $r[ 'imported' ] ) ) {
+            return null;
+        }
+    }
+    return (int) $newest[ 'HPCAnalysisRequestID' ];
+}
+
+## A reused job number the rule records none of.
+function jobs_number_reused( array $results ) {
+    return count( array_unique( array_column( $results, 'HPCAnalysisRequestID' ) ) ) > 1 && jobs_recordable_request( $results ) === null;
 }
 
 ## The requests that carry a job number, as --close-job lists them.
 function jobs_request_candidates( array $results ) {
     return array_map( function ( $r ) {
-        return "  request {$r['HPCAnalysisRequestID']}, {$r['clusterName']}, submitted {$r['submitTime']}, {$r['queueStatus']}";
+        return "  request {$r['HPCAnalysisRequestID']}, {$r['clusterName']}, submitted {$r['submitTime']}, {$r['queueStatus']}"
+             . ( empty( $r[ 'imported' ] ) ? '' : ', imported' );
     }, $results );
 }
 
-## --close-job --reqid on a row that records no request: records the operator's request when it is the only one
-## carrying the job number and still open, so --restart's monitor finishes the job.
+## --close-job --reqid on a row that records no request: records the operator's request when the rule allows it
+## and its result is still open, so --restart's monitor finishes the job.
 function jobs_record_row_request( $link, $gdb, array $row, $reqid, array $results, $legacy ) {
     $id   = (int) $row[ 'id' ];
     $inst = (string) $row[ 'us3_db' ];
@@ -836,11 +856,6 @@ function jobs_record_row_request( $link, $gdb, array $row, $reqid, array $result
             ? "row $id records no request, and 4.2.0's monitor finds it: run php uslims_jobs.php --restart as us3. Nothing was changed"
             : "gfac.analysis has no HPCAnalysisRequestID column, so row $id can't record request $reqid: as root run "
               . gfac_analysis_request_id_alter_command() . ", then rerun this. Nothing was changed" ] ];
-    }
-    if ( jobs_number_reused( $results ) ) {
-        return [ false, array_merge( [ "more than one request in $inst that is not failed, aborted or imported carries job $job, so which row $id ran can't be told and none is recorded."
-                                     . " Nothing was changed. --reqid 0 removes only the row, importing nothing and telling nobody; the job's results stay at the cluster. These carry job $job:" ],
-                                     jobs_request_candidates( $results ) ) ];
     }
     $mine = array_values( array_filter( $results, function ( $r ) use ( $reqid ) {
         return (int) $r[ 'HPCAnalysisRequestID' ] === $reqid;
@@ -874,6 +889,15 @@ function jobs_record_row_request( $link, $gdb, array $row, $reqid, array $result
         return [ false, [ "request $reqid's results for job $job are already imported, so it is not this row's job. Nothing was changed."
                           . " --reqid 0 removes only the row, telling nobody" ] ];
     }
+    $recordable = jobs_recordable_request( $results );
+    if ( $recordable !== $reqid ) {
+        $newest = (int) jobs_newest_result( $results )[ 'HPCAnalysisRequestID' ];
+        $why = $newest !== $reqid ? "request $newest carrying it is newer" : "another request carrying it is not imported";
+        return [ false, array_merge( [ "request $reqid is not recorded: --reqid records only the newest request carrying job $job in $inst,"
+                                     . " and only when every other one carrying it is imported, and $why. Nothing was changed. --reqid 0 removes only"
+                                     . " the row, importing nothing and telling nobody; the job's results stay at the cluster. These carry job $job in $inst:" ],
+                                     jobs_request_candidates( $results ) ) ];
+    }
     $up = mysqli_prepare( $link, "UPDATE $gdb.analysis SET HPCAnalysisRequestID = ? WHERE id = ? AND COALESCE( HPCAnalysisRequestID, 0 ) = 0" ); // NOSONAR $gdb is validated by the caller
     if ( !$up || !mysqli_stmt_bind_param( $up, 'ii', $reqid, $id ) || !mysqli_stmt_execute( $up ) || mysqli_stmt_affected_rows( $up ) !== 1 ) {
         return [ false, [ "could not record request $reqid on row $id: " . mysqli_error( $link ) ] ];
@@ -888,6 +912,7 @@ function jobs_record_row_request( $link, $gdb, array $row, $reqid, array $result
 ## $reqid: null when not given; 0 removes only the row. A result is never chosen from a job number alone: a row
 ## without a recorded request needs the operator to name its own, since the number may have been reused.
 ## $host: 'early' when gridctl moved before its jobs finished; then only --reqid 0 closes anything.
+## $host['db']: the operator's --db; a row of another instance is refused.
 function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $mailer, $admin = '', array $host = [] ) {
     sql_identifier_or_die( $gdb );
     $found = mysqli_query( $link, "SELECT * FROM $gdb.analysis WHERE id = " . (int) $id ); // NOSONAR $gdb is validated above
@@ -898,6 +923,10 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
     $status = strtoupper( (string) $row[ 'status' ] );
     $inst = (string) $row[ 'us3_db' ];
     $job  = (string) $row[ 'gfacID' ];
+    if ( ( $host[ 'db' ] ?? '' ) !== '' && $host[ 'db' ] !== $inst ) {
+        return [ false, [ "row $id is job $job in $inst, not in --db {$host['db']}, and request ids mean something only within one instance."
+                          . " Nothing was changed. Rerun with --db $inst, or without --db" ] ];
+    }
     $unimportable = jobs_monitor_cannot_import( $inst, $job );
     foreach ( $monitors as $key => $pid ) {
         if ( $key === "$inst:$job" || strpos( $key, "$inst:$job@" ) === 0 ) {
@@ -974,10 +1003,10 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
                              : [ false, [ "could not remove row $id: " . mysqli_error( $link ) ] ];
         }
         if ( $unimportable ) {
-            $lines = [ "row $id on {$row['cluster']} records no request. Rerun with --reqid and the one it ran, or --reqid 0 to remove only the row if none of these is its job:" ];
+            $lines = [ "row $id (job $job in $inst, on {$row['cluster']}) records no request. Rerun with --reqid and the one it ran, or --reqid 0 to remove only the row if none of these is its job:" ];
             return [ false, array_merge( $lines, jobs_request_candidates( $open ) ) ];
         }
-        $lines = [ "row $id on {$row['cluster']} records no request. "
+        $lines = [ "row $id (job $job in $inst, on {$row['cluster']}) records no request. "
                    . ( $legacy ? "Run php uslims_jobs.php --restart as us3: 4.2.0's monitor finds its request."
                                : jobs_row_without_request_remedy( $id, $has_column, jobs_number_reused( $results ) ) )
                    . ( !$legacy && $has_column && jobs_number_reused( $results )

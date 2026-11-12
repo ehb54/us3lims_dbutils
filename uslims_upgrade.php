@@ -51,14 +51,18 @@ gives the whole procedure, in this order:
     1. Let any dispatch request settle, then stop the web server and the gridctl services ("php services.php stop", while the
        host's own 4.2.0 copy can still read its own listen-config.php), and comment out
        the LIMS cron entries.
-    2. Move dbutils only to $required_version or newer.
-    3. Finish every job: "php uslims_jobs.php --busy" lists each one and what to do. This
+    2. Check each checkout for local changes: "php uslims_git_info.php".
+    3. Move dbutils only to $required_version or newer.
+    4. Finish every job: "php uslims_jobs.php --busy" lists each one and what to do. This
        comes before gridctl moves, since this release's monitors do not run until --apply.
-    4. Take a full sql dump.
-    5. Move common, every instance, gridctl, webinfo, newinst and us3_sql. On a checkout
-       already on its release branch, "php uslims_git_info.php --update-pull lims" does it;
-       'all' also pulls the UltraScan gui and mpi checkouts, which this upgrade doesn't touch.
-    6. Run this as root. Step 0 refuses while any checkout is older.
+    5. Take a full backup of the whole database server.
+    6. Pull common, every instance, gridctl, webinfo, newinst, us3_sql and the UltraScan
+       checkouts and build. On checkouts already on their release branch,
+       "php uslims_git_info.php --update-pull all --update-pull-build" does it.
+    7. Run dbupgrade's stage1_export_dbinsts.php and stage2_import_dbinsts.php: stage2 puts
+       every instance on the release's schema (us3.sql), which step 9 checks.
+    8. Run this as root. Step 0 refuses while any checkout is older.
+    9. Finish as printed at the end, then validate.
 
 Once the new code is in place services.php refuses a pre-upgrade config, and the listener has
 to be stopped with "systemctl stop us3-listen" instead. Step 1 checks that the host is idle
@@ -108,25 +112,34 @@ Steps
     gfac.analysis.HPCAnalysisRequestID, listing any row from before it; then, in each dbinstance, using the running
     config.php (or overlay) it already connects with: migrates people_audit.created_at to
     UTC if not already done (idempotent, so a host dbupgrade/stage1+stage2 already migrated
-    is reported 'ok' here), creates the dispatch tables (us3_dispatch.sql) and loads the
+    is reported 'ok' here), creates the dispatch tables (us3_dispatch.sql), checks that it has
+    every table, column and enum value us3.sql defines (FAIL otherwise: an in-place upgrade
+    doesn't change the schema, so dbupgrade's stage1 and stage2 rebuild it), and then loads the
     release's stored procedures (us3_procedures.sql) when they are not this release's
 10: runs dbinst's tools/check_installation.php and reports what it finds as notes
 
 Undoing it
 
-Every file this script rewrites is copied first, and so is every file it appends to;
-both go to one timestamped directory, named when the run starts and again at the end.
-To roll back, with the services stopped:
+README.md's "Backing out a failed upgrade" gives the whole procedure: stop the services, check
+out the old release and build, restore the full backup taken before the upgrade, then put back
+the files this script changed.
 
-  1. copy global_config.php, listen-config.php and cluster_config.php back from
-     that directory;
+Every file this script rewrites is copied first, once per run, and so is every file it appends
+to; both go to one directory per run, ~us3/lims/etc/uslims_upgrade-backup-<time>-pid<pid>,
+named when it is first used and again at the end. When --apply ran more than once, a file's original is the copy in
+the oldest directory that holds it. To roll back, with the services stopped:
+
+  1. copy global_config.php, listen-config.php, cluster_config.php and db_config.php back,
+     and each config.<name> to the instance, webinfo or newinst config.php it came from;
+     dbinst-base.v1.php and runtime_advisory_<family>.json too where a copy was taken;
   2. copy known_hosts and authorized_keys back, or delete them where the backup is
      recorded as "(did not exist)";
-  3. restore the LIMS cron entries, including the gridctl entry step 6 removed, if
-     you are going back to a release that still expects the sweep;
-  4. the circuit-breaker directory, the ssh-control directory, and elog.txt/
-     elog_hmac_key's ownership and mode can all stay: unused or already-correct,
-     none of them changes anything left alone;
+  3. restore the cron files and us3's crontab (us3.crontab), which brings back the
+     gridctl entry step 6 removed, if you are going back to a release that still expects
+     the sweep;
+  4. the circuit-breaker, dispatch spool and ssh-control directories, elog.txt/
+     elog_hmac_key's ownership and mode, and ~us3/lims/etc/config can all stay: a
+     release before 4.3.0 doesn't use them;
   5. remove step 7's installed policy, /etc/httpd/conf.d/lims-csp.conf or
      /etc/apache2/conf-available/lims-csp.conf (Debian: "a2disconf lims-csp"
      first), and reload Apache -- step 7 never backs this one up, since it is
@@ -136,7 +149,8 @@ To roll back, with the services stopped:
      (Debian: "a2disconf lims-common-alias" first), and reload Apache -- also
      new, not rewritten, and also not backed up.
 
-Nothing else to undo in the database, with these exceptions. Step 9's dispatch tables (the 6
+Restoring the full backup undoes all of this in the databases. Without it, nothing else
+needs undoing there, with these exceptions. Step 9's dispatch tables (the 6
 gfac.dispatch_* tables, and dispatch_request, dispatch_attempt and dispatch_event in each
 dbinstance) and gfac.analysis.HPCAnalysisRequestID are additive: the release before this one
 ignores them, so they stay. Step 9 also reloads each dbinstance's stored procedures; going back
@@ -696,24 +710,29 @@ function confirm_host_keys( $question ) {
 ## Write a file after backing up the original. Rewriting an existing file
 ## truncates it in place, so it keeps its owner, group and mode: a switch to
 ## writing a temp file and renaming it would have to restore all three.
-## $verify lints the result and restores the original if it does not parse, so a
+## $verify lints the result and restores the previous contents if it does not parse, so a
 ## bad rewrite never stays live: global_config.php and listen-config.php are both
 ## loaded by running services.
 function write_file( $path, $contents, $verify = true ) {
-    global $changes;
+    global $changes, $written_backups;
     $saved = null;
+    $before = is_file( $path ) ? file_get_contents( $path ) : false;
     if ( is_file( $path ) ) {
-        ensure_backup_dir();
-        backup_file( $path );
+        ## Once per run: a second rewrite would replace the original with the first rewrite.
+        if ( !isset( $written_backups[ $path ] ) ) {
+            ensure_backup_dir();
+            backup_file( $path );
+            $written_backups[ $path ] = true;
+        }
         $saved = backup_path( $path );
     }
     if ( file_put_contents( $path, $contents ) === false ) {
         error_exit( "could not write $path" );
     }
     if ( $verify && !lint_ok( $path, $why ) ) {
-        if ( $saved !== null && is_file( $saved ) && @copy( $saved, $path ) ) {
+        if ( $before !== false && file_put_contents( $path, $before ) !== false ) {
             error_exit( "the new $path does not parse (" . reason( $why ) . ")\n"
-                        . "The original has been restored from $saved. Nothing further was changed." );
+                        . "Its previous contents have been restored; the original is in $saved. Nothing further was changed." );
         }
         error_exit( "the new $path does not parse (" . reason( $why ) . ")\n"
                     . "It could NOT be restored automatically"
@@ -4040,7 +4059,7 @@ if ( !$instance_configs ) {
 } else {
     ## The release's instance SQL is checked once: missing, it is the host's failure, not each instance's.
     $sql_missing = [];
-    foreach ( [ 'us3_dispatch.sql', 'us3_procedures.sql' ] as $instance_sql ) {
+    foreach ( [ 'us3.sql', 'us3_dispatch.sql', 'us3_procedures.sql' ] as $instance_sql ) {
         if ( !is_readable( "$sql_dir/$instance_sql" ) ) {
             report( 'FAIL', "$sql_dir/$instance_sql cannot be read; update the us3_sql checkout first" );
             $sql_missing[] = $instance_sql;
@@ -4105,8 +4124,14 @@ if ( !$instance_configs ) {
                                   [ 'people_audit_utc' ] );
         run_instance_migrations( $conn, $cfg[ 'dbname' ], $required_version, $apply, $context,
                                   [ 'dispatch_instance_tables' ] );
+        ## Procedures are loaded only onto the release's schema.
+        $schema_mark = $failures;
         run_instance_migrations( $conn, $cfg[ 'dbname' ], $required_version, $apply, $context,
-                                  [ 'instance_procedures' ] );
+                                  [ 'instance_schema' ] );
+        if ( $failures === $schema_mark && !in_array( 'us3.sql', $sql_missing, true ) ) {
+            run_instance_migrations( $conn, $cfg[ 'dbname' ], $required_version, $apply, $context,
+                                      [ 'instance_procedures' ] );
+        }
 
         mysqli_close( $conn );
     }

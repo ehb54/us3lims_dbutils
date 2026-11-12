@@ -1461,6 +1461,123 @@ function import_schema_mismatches( $db_handle, $db, array $insert_columns ) {
     return $missing;
 }
 
+## The quoted values of an enum or set column type, or null for any other type.
+function schema_enum_values( $type ) {
+    if ( !preg_match( '/^\s*(enum|set)\s*\((.*)\)/is', $type, $m ) ) {
+        return null;
+    }
+    preg_match_all( "/'((?:[^'\\\\]|\\\\.|'')*)'/", $m[ 2 ], $v );
+    return array_map( function ( $s ) {
+        return str_replace( "''", "'", $s );
+    }, $v[ 1 ] );
+}
+
+## Splits $text at commas outside parentheses and quotes, up to the parenthesis that closes it.
+function schema_split_top_level( $text ) {
+    $parts = [];
+    $depth = 0;
+    $quote = '';
+    $start = 0;
+    for ( $i = 0, $n = strlen( $text ); $i < $n; $i++ ) {
+        $c = $text[ $i ];
+        if ( $quote !== '' ) {
+            if ( $c === '\\' ) {
+                $i++;
+            } elseif ( $c === $quote ) {
+                $quote = '';
+            }
+        } elseif ( $c === "'" || $c === '"' || $c === '`' ) {
+            $quote = $c;
+        } elseif ( $c === '(' ) {
+            $depth++;
+        } elseif ( $c === ')' && --$depth < 0 ) {
+            break;
+        } elseif ( $c === ',' && $depth === 0 ) {
+            $parts[] = substr( $text, $start, $i - $start );
+            $start = $i + 1;
+        }
+    }
+    $parts[] = substr( $text, $start );
+    return $parts;
+}
+
+## The instance tables us3.sql and the files it SOURCEs define: [ table => [ column => enum/set values or null ] ].
+## null when a file can't be read.
+function release_instance_schema( $sql_dir, $file = 'us3.sql' ) {
+    $text = @file_get_contents( "$sql_dir/$file" );
+    if ( $text === false ) {
+        return null;
+    }
+    $text = preg_replace( [ '#/\*.*?\*/#s', '/--[^\n]*/' ], '', $text );
+    $schema = [];
+    preg_match_all( '/^\s*SOURCE\s+([^\s;]+)/mi', $text, $sources );
+    foreach ( $sources[ 1 ] as $source ) {
+        $sub = release_instance_schema( $sql_dir, $source );
+        if ( $sub === null ) {
+            return null;
+        }
+        $schema = array_merge( $schema, $sub );
+    }
+    preg_match_all( '/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?\s*\(/i', $text, $m, PREG_OFFSET_CAPTURE );
+    foreach ( $m[ 0 ] as $k => $match ) {
+        $open = $match[ 1 ] + strlen( $match[ 0 ] );
+        $body = schema_split_top_level( substr( $text, $open ) );
+        $columns = [];
+        foreach ( $body as $item ) {
+            $item = trim( $item );
+            if ( preg_match( '/^(PRIMARY|KEY|INDEX|UNIQUE|CONSTRAINT|FOREIGN|FULLTEXT|SPATIAL|CHECK)\b/i', $item ) ) {
+                continue;
+            }
+            if ( preg_match( '/^`?(\w+)`?\s+(.*)$/s', $item, $col ) ) {
+                $columns[ $col[ 1 ] ] = schema_enum_values( $col[ 2 ] );
+            }
+        }
+        $schema[ $m[ 1 ][ $k ][ 0 ] ] = $columns;
+    }
+    return $schema;
+}
+
+## What $db lacks of $schema (release_instance_schema()), as "table", "table.column" or "table.column value 'v'";
+## null when its columns can't be read. $skip names tables or "table.column" an in-place step adds.
+function instance_schema_mismatches( $conn, $db, array $schema, array $skip = [] ) {
+    $res = schema_query( $conn, "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ?", $db );
+    if ( !$res ) {
+        return null;
+    }
+    $have = [];
+    while ( $row = mysqli_fetch_row( $res ) ) {
+        $have[ strtolower( $row[ 0 ] ) ][ strtolower( $row[ 1 ] ) ] = schema_enum_values( $row[ 2 ] );
+    }
+    $skip = array_map( 'strtolower', $skip );
+    $missing = [];
+    foreach ( $schema as $table => $columns ) {
+        $t = strtolower( $table );
+        if ( in_array( $t, $skip, true ) ) {
+            continue;
+        }
+        if ( !isset( $have[ $t ] ) ) {
+            $missing[] = $table;
+            continue;
+        }
+        foreach ( $columns as $column => $values ) {
+            $c = strtolower( $column );
+            if ( in_array( "$t.$c", $skip, true ) ) {
+                continue;
+            }
+            if ( !array_key_exists( $c, $have[ $t ] ) ) {
+                $missing[] = "$table.$column";
+                continue;
+            }
+            foreach ( (array) $values as $value ) {
+                if ( !in_array( $value, (array) $have[ $t ][ $c ], true ) ) {
+                    $missing[] = "$table.$column value '$value'";
+                }
+            }
+        }
+    }
+    return $missing;
+}
+
 ## Checks each dump against a scratch schema built the way the import builds
 ## an instance (us3.sql, then prepare_imported_instance_schema()), before
 ## anything is dropped. $dumps is [ dbname => [ dump file, autoincrement file ] ];
