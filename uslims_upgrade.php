@@ -51,14 +51,15 @@ gives the whole procedure, in this order:
     1. Let any dispatch request settle, then stop the web server and the gridctl services ("php services.php stop", while the
        host's own 4.2.0 copy can still read its own listen-config.php), and comment out
        the LIMS cron entries.
-    2. Check each checkout for local changes: "php uslims_git_info.php".
-    3. Move dbutils only to $required_version or newer.
+    2. Check each checkout for local changes: "php uslims_git_info.php", and record the
+       commit each one runs in ~us3/lims/etc/pre-upgrade-checkouts.txt.
+    3. Move dbutils only to $required_version or newer (git fetch, checkout, pull --ff-only).
     4. Finish every job: "php uslims_jobs.php --busy" lists each one and what to do. This
        comes before gridctl moves, since this release's monitors do not run until --apply.
     5. Take a full backup of the whole database server.
     6. Pull common, every instance, gridctl, webinfo, newinst, us3_sql and the UltraScan
-       checkouts and build. On checkouts already on their release branch,
-       "php uslims_git_info.php --update-pull all --update-pull-build" does it.
+       checkouts and build: "git fetch" and check out the release branch in each, then
+       "php uslims_git_info.php --update-pull all --update-pull-build".
     7. Run dbupgrade's stage1_export_dbinsts.php and stage2_import_dbinsts.php: stage2 puts
        every instance on the release's schema (us3.sql), which step 9 checks.
     8. Run this as root. Step 0 refuses while any checkout is older.
@@ -120,34 +121,26 @@ Steps
 
 Undoing it
 
-README.md's "Backing out a failed upgrade" gives the whole procedure: stop the services, check
-out the old release and build, restore the full backup taken before the upgrade, then put back
-the files this script changed.
+README.md's "Backing out a failed upgrade" gives the whole procedure: stop the services, put
+each checkout back at its recorded commit and build, restore the full backup taken before the
+upgrade, put back the files this script changed and delete the ones it created, then restart
+us3-listen.
 
-Every file this script rewrites is copied first, once per run, and so is every file it appends
-to; both go to one directory per run, ~us3/lims/etc/uslims_upgrade-backup-<time>-pid<pid>,
-named when it is first used and again at the end. When --apply ran more than once, a file's original is the copy in
-the oldest directory that holds it. To roll back, with the services stopped:
+Every file this script rewrites, appends to or removes is copied first, once per run, into one
+directory per run, ~us3/lims/etc/uslims_upgrade-backup-<time>-pid<pid>, named when it is first
+used and again at the end. Every file it creates is listed in that directory's created.txt. To
+roll back, with the services stopped, use only the directories newer than
+pre-upgrade-checkouts.txt; for each file, the oldest of them that names it decides:
 
-  1. copy global_config.php, listen-config.php, cluster_config.php and db_config.php back,
+  1. a copy is the original: put global_config.php, listen-config.php, cluster_config.php,
+     db_config.php, dbinst-base.v1.php, runtime_advisory_<family>.json, known_hosts.<account>,
+     authorized_keys.<account>, the cron files, us3.crontab and lims-common-alias.conf back,
      and each config.<name> to the instance, webinfo or newinst config.php it came from;
-     dbinst-base.v1.php and runtime_advisory_<family>.json too where a copy was taken;
-  2. copy known_hosts and authorized_keys back, or delete them where the backup is
-     recorded as "(did not exist)";
-  3. restore the cron files and us3's crontab (us3.crontab), which brings back the
-     gridctl entry step 6 removed, if you are going back to a release that still expects
-     the sweep;
-  4. the circuit-breaker, dispatch spool and ssh-control directories, elog.txt/
-     elog_hmac_key's ownership and mode, and ~us3/lims/etc/config can all stay: a
-     release before 4.3.0 doesn't use them;
-  5. remove step 7's installed policy, /etc/httpd/conf.d/lims-csp.conf or
-     /etc/apache2/conf-available/lims-csp.conf (Debian: "a2disconf lims-csp"
-     first), and reload Apache -- step 7 never backs this one up, since it is
-     new, not rewritten.
-  6. remove step 7's installed /common alias the same way, /etc/httpd/conf.d/
-     lims-common-alias.conf or /etc/apache2/conf-available/lims-common-alias.conf
-     (Debian: "a2disconf lims-common-alias" first), and reload Apache -- also
-     new, not rewritten, and also not backed up.
+  2. a created.txt entry means the host didn't have it: delete it, including step 7's
+     lims-csp.conf and lims-common-alias.conf (Debian: "a2disconf" each first);
+  3. the circuit-breaker, dispatch spool and ssh-control directories, elog_hmac_key, the
+     accounts' id_ed25519 keys and ~us3/lims/etc/config can all stay: a release before 4.3.0
+     doesn't use them.
 
 Restoring the full backup undoes all of this in the databases. Without it, nothing else
 needs undoing there, with these exceptions. Step 9's dispatch tables (the 6
@@ -621,6 +614,16 @@ function common_dir_default( $wwwpath ) {
     return rtrim( $wwwpath, '/' ) . '/common/';
 }
 
+## Names a file this run creates in the run's created.txt, once, so a backout deletes it.
+function record_created( $path ) {
+    global $created_recorded;
+    if ( isset( $created_recorded[ $path ] ) ) {
+        return;
+    }
+    $created_recorded[ $path ] = true;
+    file_put_contents( ensure_backup_dir() . '/created.txt', "$path\n", FILE_APPEND );
+}
+
 ## A copy of a file this script appends to, taken once per file, so the append can
 ## be undone. write_file() already backs up what it rewrites; the ssh files are
 ## appended to instead, and were the one change with nothing to roll back to.
@@ -638,6 +641,7 @@ function backup_append_target( $path, $label ) {
 
     ## Absent is a restorable state too: rollback means deleting the file.
     if ( !is_file( $path ) ) {
+        record_created( $path );
         return $append_backups[ $path ] = '(did not exist)';
     }
 
@@ -725,6 +729,8 @@ function write_file( $path, $contents, $verify = true ) {
             $written_backups[ $path ] = true;
         }
         $saved = backup_path( $path );
+    } else {
+        record_created( $path );
     }
     if ( file_put_contents( $path, $contents ) === false ) {
         error_exit( "could not write $path" );
@@ -2649,6 +2655,8 @@ if ( !is_file( "$advisory_classes/runtime_model.php" ) || !is_file( "$advisory_c
             if ( is_file( $dest ) ) {
                 ensure_backup_dir();
                 backup_file( $dest );
+            } else {
+                record_created( $dest );
             }
             if ( !copy( $src, $tmp ) || !chown( $tmp, $us3_entry[ 'uid' ] ) || !chgrp( $tmp, $advisory_gid )
                  || !chmod( $tmp, 0640 ) || !rename( $tmp, $dest ) ) {

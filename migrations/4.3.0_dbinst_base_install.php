@@ -202,6 +202,7 @@ function dbinst_base_install_from( $loader, $temporary, $apply, array $context, 
         report( 'FAIL', "$base_path was not created: could not set its owner or move it into place" );
         return;
     }
+    record_created( $base_path );
     $changes++;
     report( 'done', "$base_path created" );
     $want_dir( $instances, 02750 );
