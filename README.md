@@ -15,16 +15,27 @@ started them. What `uslims_upgrade.php` itself checks and fixes is under its own
    moves: `php services.php stop` in `~us3/lims/bin`, then comment out the LIMS cron lines,
    wherever they are (`/etc/crontab`, us3's crontab or `/etc/cron.d`).
 2. Check each checkout for local changes as root: `php uslims_git_info.php` (`--diff-report`
-   shows them). Set aside each one (`git stash`) before anything is pulled. Then record the
-   commit each checkout runs, which "Backing out a failed upgrade" returns to:
+   shows them). Before resolving them, record as root each checkout's commit, branch and local
+   changes, which "Backing out a failed upgrade" puts back. This finds the checkouts where
+   `uslims_git_info.php` does, following symlinks as it does:
 
    ```
-   find ~us3 /srv/www/htdocs /opt/ultrascan3 -maxdepth 4 -name .git -printf '%h\n' |
-     while read -r d; do u=$(stat -c %U "$d"); echo "$d $(sudo -u "$u" git -C "$d" rev-parse HEAD) $u"; done \
-     > ~us3/lims/etc/pre-upgrade-checkouts.txt
+   mkdir -p ~us3/lims/etc/pre-upgrade-changes
+   find -L ~us3/lims/bin ~us3/lims/database ~us3/us3-nodb /opt/ultrascan3 /srv/www/htdocs \
+       -name .git 2>/dev/null | while read -r g; do readlink -f "${g%/.git}"; done | sort -u |
+     while read -r d; do
+       git -c safe.directory='*' -C "$d" diff --binary HEAD \
+         > ~us3/lims/etc/pre-upgrade-changes/"$(echo "$d" | tr / _)".diff
+       echo "$d $(git -c safe.directory='*' -C "$d" rev-parse HEAD) $(git -c safe.directory='*' -C "$d" branch --show-current)"
+     done > ~us3/lims/etc/pre-upgrade-checkouts.txt
    ```
+
+   Then resolve the local changes `uslims_git_info.php` reported, as for any release, without
+   hiding them in git: step 6's `--update-pull` refuses a checkout that still has them.
 3. Move this repo only to the new release, as us3: `git fetch`, `git checkout <release branch>`,
    then `git pull --ff-only`. This works from the release branch, another branch or a tag.
+   Keep a copy of this README outside the checkout (`cp README.md ~us3/lims/etc/upgrade-README.md`):
+   once a backout's step 2 has run, this repo is the old release's, which has no backout section.
 4. Finish every job. `php uslims_jobs.php --busy` lists each one and what to do; repeat
    until it says idle. This has to come before gridctl and common move: this release's
    monitors don't run until `--apply` has converted `listen-config.php`, so the code that
@@ -38,9 +49,9 @@ started them. What `uslims_upgrade.php` itself checks and fixes is under its own
    upgrade" restores it; stage1's export below covers only the instances, not gfac or newus3.
 6. Pull the rest to the new release and build, as for any release: common, every instance's
    dbinst, gridctl, webinfo, newinst and us3_sql, and the UltraScan checkouts. In each
-   checkout, as its owner, `git fetch`, then `git checkout <release branch>`; then, as root,
-   `php uslims_git_info.php --update-pull all --update-pull-build` pulls each to its branch's
-   head and builds. The code has to be in place before the next steps.
+   checkout, as its owner, `git fetch`, then `git checkout <release branch>`; then, as root from
+   a login shell (`sudo -i`, which the builds' `module` needs), `php uslims_git_info.php
+   --update-pull all --update-pull-build` pulls each to its branch's head and builds. The code has to be in place before the next steps.
 7. Run dbupgrade's stage1 and stage2 (see dbupgrade below), from `dbupgrade/` as root with its
    `my.cnf`: `php stage1_export_dbinsts.php <dbhost>`, then `php stage2_import_dbinsts.php
    <dbhost>`. Stage2 rebuilds every instance from the release's us3.sql, which is what puts
@@ -78,27 +89,46 @@ the new release.
 
 1. Stop the web server and the gridctl services (`php services.php stop` as us3 in
    `~us3/lims/bin`, or `systemctl stop us3-listen`), and comment out the LIMS cron lines.
-2. Put every checkout back at the commit step 2 of "Upgrading a host" recorded, as its owner:
+2. Put every checkout back as step 2 of "Upgrading a host" recorded it, at its commit with its
+   local changes, as root. Then the files git wrote are given to each checkout's owner, once all
+   are back, since a submodule's git directory sits inside its parent's:
 
    ```
-   while read -r d c u; do sudo -u "$u" git -C "$d" checkout -q "$c"; done \
-     < ~us3/lims/etc/pre-upgrade-checkouts.txt
+   while read -r d c b; do
+     p=~us3/lims/etc/pre-upgrade-changes/"$(echo "$d" | tr / _)".diff
+     git -c safe.directory='*' -C "$d" checkout -q -f "$c" &&
+       { [ ! -s "$p" ] || git -c safe.directory='*' -C "$d" apply --binary "$p"; }
+   done < ~us3/lims/etc/pre-upgrade-checkouts.txt
+   while read -r d c b; do
+     find "$d" -user root -newer ~us3/lims/etc/pre-upgrade-checkouts.txt -exec chown -h "$(stat -c %U:%G "$d")" {} +
+   done < ~us3/lims/etc/pre-upgrade-checkouts.txt
    ```
 
-   Then build the UltraScan checkouts with the commands `uslims_git_info.php` uses, without
-   pulling, each as its owner: in `~us3/us3-nodb`, `module swap ultrascan/mpi-build && ./make-uma
-   build && ./make-uma install`; in `/opt/ultrascan3`, `module swap ultrascan/gui-build &&
-   ./makeall.sh -j<cores> && ./makesomo.sh -j<cores>`. `uslims_git_info.php` can't do this: it pulls
-   first, and stops at a checked-out commit.
+   Then build the UltraScan checkouts without pulling, as `uslims_git_info.php` does: as root
+   from a login shell, which `module` needs, then each given to the owner it uses:
+
+   ```
+   su - -c 'cd ~us3/us3-nodb && module swap ultrascan/mpi-build && ./make-uma build && ./make-uma install && chown -R us3:us3 ~us3/us3-nodb/'
+   su - -c 'cd /opt/ultrascan3 && module swap ultrascan/gui-build && ./makeall.sh -j$(nproc) && ./makesomo.sh -j$(nproc) && chown -R usadmin:usadmin /opt/ultrascan3/'
+   ```
+
+   `uslims_git_info.php` can't do this: it pulls first, and stops at a checked-out commit. Each
+   checkout is now at a detached commit; a next attempt's steps 3 and 6 move it from there. To
+   take routine updates on the old release instead, first put each checkout on the branch in the
+   record's third field at its recorded commit (`git checkout -B <branch> <commit>`): 4.2.0's
+   `--update-pull` stops at a detached checkout. A branch that also carries the new release, such
+   as dbutils' `main`, then pulls the new release again.
 3. Restore the full backup from step 5 of "Upgrading a host", with its tool's own restore
    (for `uslims_db_binary_backup.php`: stop MariaDB, replace its data directory with the
    backup, as the script printed, and start it again). It returns every instance as it
    was before stage2 rebuilt it, and undoes everything `--apply` did in the databases: the
    people_audit UTC conversion, the stored procedures, the dispatch tables in gfac and each
    instance, gfac.analysis.HPCAnalysisRequestID and gfac.runtime_prediction. Request ids are
-   then given out again, so remove the cluster work directory (`<db>-<request id>`) of each job
-   submitted after the backup, such as step 10's test job: a job reusing its id would extract
-   its input over the old files and fail.
+   then given out again, so remove the cluster work directory of each job submitted after the
+   backup, such as step 10's test job: a job reusing its id would extract its input over the old
+   files and fail. Each is `<db>-<request id as six digits>` (`uslims3_x-000003`) under the old
+   listen-config.php's `$work_remote`, or the cluster's `workdir`; those to remove are numbered
+   above the restored instance's `SELECT MAX(HPCAnalysisRequestID) FROM HPCAnalysisRequest`.
 4. Put back the files `--apply` changed, and delete the ones it created. Each run of `--apply`
    copies the files it changes into its own directory,
    `~us3/lims/etc/uslims_upgrade-backup-<time>-pid<pid>`, and lists the files it creates in
@@ -129,9 +159,11 @@ the new release.
    | `lims-common-alias.conf` | `/etc/httpd/conf.d/`, or `/etc/apache2/conf-available/` then `a2enconf lims-common-alias` on Debian |
 5. Nothing else in Apache needs undoing: step 4 removed the confs `--apply` installed and put
    back one it replaced or removed. The web server starts again in step 7.
-6. What else `--apply` made can stay, since a release before 4.3.0 doesn't use it: the
-   circuit-breaker, dispatch spool and ssh-control directories, elog.txt's HMAC key, the
-   accounts' `id_ed25519` keys, and `~us3/lims/etc/config/instances/`.
+6. What else `--apply` made can stay, since a release before 4.3.0 doesn't use it or, for
+   `elog.txt`, appends to it: the circuit-breaker, dispatch spool and ssh-control directories,
+   `~us3/lims/etc/elog.txt` and its HMAC key, the accounts' `id_ed25519` keys, and
+   `~us3/lims/etc/config/instances/`. Move dbupgrade's export files (`dbupgrade/export-*`) aside
+   before a next attempt, whose stage1 refuses while they are there.
 7. Uncomment the LIMS cron lines you commented out in step 1 (not the dispatch heartbeat line,
    which the old gridctl doesn't have), then start the old release's services with
    `systemctl restart us3-listen` (a plain start does nothing: the unit stays active after
