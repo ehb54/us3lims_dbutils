@@ -128,11 +128,11 @@ Steps
 Undoing it
 
 README.md's "Backing out a failed upgrade" gives the whole procedure: stop the services, put
-each checkout back at its recorded commit with its saved local changes (staged and not), give
-the files git wrote to each checkout's owner, and build; restore the full backup taken before
-the upgrade, and remove the cluster work directories of jobs submitted since; put back the files
-this script changed, db_config.php from the copy step 2 saved, and delete the ones it created;
-move dbupgrade/export-* aside before a next attempt; then restart us3-listen.
+db_config.php back from the copy step 2 saved and each checkout at its recorded commit with its
+saved local changes (staged and not), give the files git wrote to each checkout's owner, and
+build; restore the full backup taken before the upgrade, and remove the cluster work
+directories of jobs submitted since; put back the files this script changed, and delete the
+ones it created; move dbupgrade/export-* aside before a next attempt; then restart us3-listen.
 
 Every file this script rewrites, appends to or removes is copied first, once per run, into one
 directory per run, ~us3/lims/etc/uslims_upgrade-backup-<time>-pid<pid>, named when it is first
@@ -142,7 +142,7 @@ roll back, with the services stopped, use only the directories newer than
 pre-upgrade-checkouts.txt; for each file, the oldest of them that names it decides:
 
   1. a copy is the original: put global_config.php, listen-config.php, cluster_config.php,
-     db_config.php, dbinst-base.v1.php, runtime_advisory_<family>.json, known_hosts.<account>,
+     dbinst-base.v1.php, runtime_advisory_<family>.json, known_hosts.<account>,
      authorized_keys.<account>, the cron files, us3.crontab and lims-common-alias.conf back,
      and each config.<name> to the instance, webinfo or newinst config.php it came from;
   2. a created.txt entry means the host didn't have it: delete it, including step 7's
@@ -1476,28 +1476,33 @@ $stack = upgrade_stack_checkouts( $gridctl_dir, __DIR__, $wwwpath, $us3_home );
 
 ## Each refused checkout is moved to its own repository's branch in db_config.php's $repo_branches.
 function stale_checkout_remedy( array $dirs, $db_config ) {
-    $text = (string) @file_get_contents( $db_config );
+    $repos = ( static function ( $f ) { @include $f; return isset( $repo_branches ) && is_array( $repo_branches ) ? $repo_branches : []; } )( $db_config );
     $cmds = '';
     $sets = '';
+    $note = '';
     foreach ( array_unique( $dirs ) as $dir ) {
         $git    = 'git -c safe.directory=* -C ' . escapeshellarg( $dir );
         $repo   = basename( trim( (string) shell_exec( "$git remote get-url origin 2>/dev/null" ) ) );
         $repo   = preg_replace( '/\.git$/', '', $repo );
         $url    = "https://github.com/ehb54/$repo.git";
-        $branch = preg_match( '#"' . preg_quote( $url, '#' ) . '"\s*=>\s*"([^"]*)"#', $text, $m ) ? trim( $m[ 1 ] ) : '';
+        $branch = trim( (string) ( $repos[ $url ] ?? '' ) );
         $now    = trim( (string) shell_exec( "$git branch --show-current 2>/dev/null" ) );
-        if ( $repo === '' || $branch === '' || strpos( $branch, 'SET-' ) === 0 || $branch === $now ) {
+        if ( $repo === '' || $branch === '' || strpos( $branch, 'SET-' ) === 0 ) {
             $sets .= "\n  set \$repo_branches[\"$url\"] in $db_config to this release's branch ("
-                   . ( $branch === '' ? 'it has none' : "it is '$branch'" ) . ", which $dir"
-                   . ( $branch === $now ? ' is on' : ' needs' ) . ')';
+                   . ( $branch === '' ? 'it has none' : "it is '$branch'" ) . ", which $dir needs)";
             continue;
         }
         $owner = function_exists( 'posix_getpwuid' ) ? ( posix_getpwuid( (int) @fileowner( $dir ) )['name'] ?? 'root' ) : 'root';
         $g     = 'sudo -u ' . escapeshellarg( $owner ) . ' git -C ' . escapeshellarg( $dir );
         $b     = escapeshellarg( $branch );
+        if ( $branch === $now ) {
+            $cmds .= "\n    $g fetch --tags && $g pull --ff-only";
+            $note .= "\n  if step 0 still refuses $dir, set \$repo_branches[\"$url\"] in $db_config to this release's branch (it is '$branch', which $dir is on)";
+            continue;
+        }
         $cmds .= "\n    $g fetch --tags && $g checkout $b && if $g symbolic-ref -q HEAD >/dev/null; then $g pull --ff-only; fi";
     }
-    return $sets !== '' ? "\nFirst$sets\nthen rerun for the commands." : $cmds;
+    return $sets !== '' ? "\nFirst$sets\nthen rerun for the commands." : $cmds . ( $note !== '' ? "\nThen$note" : '' );
 }
 
 $stale = [];
