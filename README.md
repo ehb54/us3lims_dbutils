@@ -8,6 +8,14 @@ validate. That sequence starts from an idle host with gfac.analysis empty. Steps
 get the host there for this release, since its jobs have to finish under the code that
 started them. What `uslims_upgrade.php` itself checks and fixes is under its own entry below.
 
+How to run these steps: log in to the LIMS host with ssh as your own account, then run
+`sudo -i` for a root login shell (`module` and the builds need one). Run every step from that
+shell. Paste each code block whole at its prompt and wait for it to finish before the next; do
+not save a block to a file and run it as a script. Where a step says to run a command as us3 or
+as a checkout's owner, run it from the same shell with `sudo -u <account>`. Answer the prompts
+the tools ask (the backup tool and stage2 ask y/n). The blocks call `command cp`, so root's
+`cp -i` alias does not stop them.
+
 1. Let any dispatch request settle first, with Resolve or Close on the dispatch dashboard for
    a held one: that needs the web server and services running. Then stop the web server (or
    otherwise block access), so nothing can write to any LIMS database while the upgrade runs.
@@ -22,7 +30,7 @@ started them. What `uslims_upgrade.php` itself checks and fixes is under its own
 
    ```
    mkdir -p ~us3/lims/etc/pre-upgrade-changes
-   cp ~us3/lims/database/utils/db_config.php ~us3/lims/etc/pre-upgrade-db_config.php
+   command cp ~us3/lims/database/utils/db_config.php ~us3/lims/etc/pre-upgrade-db_config.php
    find -L ~us3/lims/bin ~us3/lims/database ~us3/us3-nodb /opt/ultrascan3 /srv/www/htdocs \
        -name .git 2>/dev/null | while read -r g; do readlink -f "${g%/.git}"; done | sort -u |
      while read -r d; do
@@ -62,12 +70,29 @@ started them. What `uslims_upgrade.php` itself checks and fixes is under its own
    a login shell (`sudo -i`, which the builds' `module` needs), `php uslims_git_info.php
    --update-pull all --update-pull-build` pulls each to its branch's head and builds. The code has to be in place before the next steps.
 7. Run dbupgrade's stage1 and stage2 (see dbupgrade below), from `dbupgrade/` as root with its
-   `my.cnf`: `php stage1_export_dbinsts.php <dbhost>`, then `php stage2_import_dbinsts.php
-   <dbhost>`. Stage2 rebuilds every instance from the release's us3.sql, which is what puts
-   each one on the release's schema: tables, columns, enum values and stored procedures.
+   `my.cnf`. Stage1 reads its `[mysqldump]` section and stage2 its `[client]` section; if
+   `dbupgrade/my.cnf` doesn't exist yet, this creates it, mode 600, asking for MariaDB root's
+   password:
+
+   ```
+   [ -e ~us3/lims/database/utils/dbupgrade/my.cnf ] || ( umask 077
+     read -rsp 'MariaDB root password: ' pw; echo
+     printf '[%s]\npassword=%s\nmax_allowed_packet=256M\n' mysqldump "$pw" client "$pw" \
+       > ~us3/lims/database/utils/dbupgrade/my.cnf )
+   ```
+
+   Then, in `dbupgrade/`, `php stage1_export_dbinsts.php <dbhost>`, then `php
+   stage2_import_dbinsts.php <dbhost>`. Stage2 rebuilds every instance from the release's
+   us3.sql, which is what puts each one on the release's schema: tables, columns, enum values
+   and stored procedures.
 8. `php uslims_upgrade.php --check` as root to see what it would do, then `--apply` to make
    the changes. Its step 9 refuses an instance that lacks anything us3.sql defines, naming
-   stage1 and stage2: it adds only this release's own tables and columns in place.
+   stage1 and stage2: it adds only this release's own tables and columns in place. Where the
+   gfac account can't create gfac's dispatch tables or alter gfac.analysis, `--check` prints
+   the command for each, and root runs what it prints, then runs `--check` again. The first
+   reads MariaDB root's password from `DBPW`; set it without echoing it first, with
+   `read -rsp 'MariaDB root password: ' DBPW; export DBPW`, and `unset DBPW` after. Run the
+   `ALTER TABLE` it prints with `mysql -u root -p -e '<the statement>'`.
 9. Finish as `--apply` prints at its end: uncomment the LIMS cron lines you commented out in
    step 1, except the gridctl lines `--apply` retired (the others, such as
    `cluster_status.php` and the nightly backup, stay off until you do, and a later run of the
@@ -94,7 +119,7 @@ than assuming a specific starting point. A host several releases behind just see
 For an emergency only: it puts the host back on the release it ran before, with the code,
 the databases and every file `uslims_upgrade.php --apply` changed. Restoring the backup
 discards everything written since step 5 of "Upgrading a host", including any job submitted on
-the new release.
+the new release. Run it the way "Upgrading a host" says, from the same root login shell.
 
 1. Stop the web server and the gridctl services (`php services.php stop` as us3 in
    `~us3/lims/bin`, or `systemctl stop us3-listen`), and comment out the LIMS cron lines.
@@ -105,7 +130,7 @@ the new release.
    backup and `dbupgrade/my.cnf`, stay root's:
 
    ```
-   cp ~us3/lims/etc/pre-upgrade-db_config.php ~us3/lims/database/utils/db_config.php
+   command cp ~us3/lims/etc/pre-upgrade-db_config.php ~us3/lims/database/utils/db_config.php
    f=
    while read -r d c b; do
      p=~us3/lims/etc/pre-upgrade-changes/"$(echo "$d" | tr / _)"

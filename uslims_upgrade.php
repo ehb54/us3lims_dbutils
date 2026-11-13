@@ -139,7 +139,8 @@ directory per run, ~us3/lims/etc/uslims_upgrade-backup-<time>-pid<pid>, named wh
 used and again at the end. Every file it creates is listed in that directory's created.txt,
 except those item 3 lets stay. To
 roll back, with the services stopped, use only the directories newer than
-pre-upgrade-checkouts.txt; for each file, the oldest of them that names it decides:
+pre-upgrade-checkouts.txt; for each file, the oldest of them that names it decides,
+except db_config.php, which the backout put back from pre-upgrade-db_config.php:
 
   1. a copy is the original: put global_config.php, listen-config.php, cluster_config.php,
      dbinst-base.v1.php, runtime_advisory_<family>.json, known_hosts.<account>,
