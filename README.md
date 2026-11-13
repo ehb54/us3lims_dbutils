@@ -16,22 +16,27 @@ started them. What `uslims_upgrade.php` itself checks and fixes is under its own
    wherever they are (`/etc/crontab`, us3's crontab or `/etc/cron.d`).
 2. Check each checkout for local changes as root: `php uslims_git_info.php` (`--diff-report`
    shows them). Before resolving them, record as root each checkout's commit, branch and local
-   changes, which "Backing out a failed upgrade" puts back. This finds the checkouts where
-   `uslims_git_info.php` does, following symlinks as it does:
+   changes, staged and not, and this repo's `db_config.php`, which "Backing out a failed upgrade"
+   puts back. This finds the checkouts where `uslims_git_info.php` does, following symlinks as it
+   does:
 
    ```
    mkdir -p ~us3/lims/etc/pre-upgrade-changes
+   cp ~us3/lims/database/utils/db_config.php ~us3/lims/etc/pre-upgrade-db_config.php
    find -L ~us3/lims/bin ~us3/lims/database ~us3/us3-nodb /opt/ultrascan3 /srv/www/htdocs \
        -name .git 2>/dev/null | while read -r g; do readlink -f "${g%/.git}"; done | sort -u |
      while read -r d; do
-       git -c safe.directory='*' -C "$d" diff --binary HEAD \
-         > ~us3/lims/etc/pre-upgrade-changes/"$(echo "$d" | tr / _)".diff
+       p=~us3/lims/etc/pre-upgrade-changes/"$(echo "$d" | tr / _)"
+       git -c safe.directory='*' -C "$d" diff --cached --binary > "$p.staged.diff"
+       git -c safe.directory='*' -C "$d" diff --binary > "$p.diff"
        echo "$d $(git -c safe.directory='*' -C "$d" rev-parse HEAD) $(git -c safe.directory='*' -C "$d" branch --show-current)"
      done > ~us3/lims/etc/pre-upgrade-checkouts.txt
    ```
 
-   Then resolve the local changes `uslims_git_info.php` reported, as for any release, without
-   hiding them in git: step 6's `--update-pull` refuses a checkout that still has them.
+   Then resolve the local changes, as for any release, without hiding them in git, and leave none
+   staged either: step 6's `--update-pull` refuses a checkout with unstaged edits, which
+   `uslims_git_info.php` reports, and step 6's checkout stops at a staged change to a file the
+   release changes.
 3. Move this repo only to the new release, as us3: `git fetch`, `git checkout <release branch>`,
    then `git pull --ff-only`. This works from the release branch, another branch or a tag.
    Keep a copy of this README outside the checkout (`cp README.md ~us3/lims/etc/upgrade-README.md`):
@@ -48,8 +53,11 @@ started them. What `uslims_upgrade.php` itself checks and fixes is under its own
    own backup process), now that the finished jobs are imported. "Backing out a failed
    upgrade" restores it; stage1's export below covers only the instances, not gfac or newus3.
 6. Pull the rest to the new release and build, as for any release: common, every instance's
-   dbinst, gridctl, webinfo, newinst and us3_sql, and the UltraScan checkouts. In each
-   checkout, as its owner, `git fetch`, then `git checkout <release branch>`; then, as root from
+   dbinst, gridctl, webinfo, newinst and us3_sql, and the UltraScan checkouts. First set each
+   repository's entry in this repo's `db_config.php` `$repo_branches` to its release branch:
+   `uslims_git_info.php` takes it as each checkout's branch, newinst clones new instances from
+   it, and `uslims_upgrade.php` step 0 moves a missed checkout to it. In each checkout, as its
+   owner, `git fetch`, then `git checkout <its release branch>`; then, as root from
    a login shell (`sudo -i`, which the builds' `module` needs), `php uslims_git_info.php
    --update-pull all --update-pull-build` pulls each to its branch's head and builds. The code has to be in place before the next steps.
 7. Run dbupgrade's stage1 and stage2 (see dbupgrade below), from `dbupgrade/` as root with its
@@ -90,22 +98,28 @@ the new release.
 1. Stop the web server and the gridctl services (`php services.php stop` as us3 in
    `~us3/lims/bin`, or `systemctl stop us3-listen`), and comment out the LIMS cron lines.
 2. Put every checkout back as step 2 of "Upgrading a host" recorded it, at its commit with its
-   local changes, as root. Then the files git wrote are given to each checkout's owner, once all
-   are back, since a submodule's git directory sits inside its parent's:
+   local changes, staged and not, as root. Then the files git wrote are given to each checkout's
+   owner, once all are back, since a submodule's git directory sits inside its parent's:
 
    ```
    while read -r d c b; do
-     p=~us3/lims/etc/pre-upgrade-changes/"$(echo "$d" | tr / _)".diff
-     git -c safe.directory='*' -C "$d" checkout -q -f "$c" &&
-       { [ ! -s "$p" ] || git -c safe.directory='*' -C "$d" apply --binary "$p"; }
+     p=~us3/lims/etc/pre-upgrade-changes/"$(echo "$d" | tr / _)"
+     g() { git -c safe.directory='*' -C "$d" "$@"; }
+     g checkout -q -f "$c" &&
+       { [ ! -s "$p.staged.diff" ] || g apply --index --binary "$p.staged.diff"; } &&
+       { [ ! -s "$p.diff" ] || g apply --binary "$p.diff"; } || echo "FAILED: $d"
    done < ~us3/lims/etc/pre-upgrade-checkouts.txt
    while read -r d c b; do
      find "$d" -user root -newer ~us3/lims/etc/pre-upgrade-checkouts.txt -exec chown -h "$(stat -c %U:%G "$d")" {} +
    done < ~us3/lims/etc/pre-upgrade-checkouts.txt
    ```
 
+   A `FAILED:` line names a checkout left as it was, such as one with a stale `.git/index.lock`
+   or a file in the way of one its saved changes create: fix that, then run the loop again.
+
    Then build the UltraScan checkouts without pulling, as `uslims_git_info.php` does: as root
-   from a login shell, which `module` needs, then each given to the owner it uses:
+   from a login shell, which `module` needs, then each given to the owner it uses. This uses the
+   host's core count; `uslims_git_info.php` uses the Slurm node's:
 
    ```
    su - -c 'cd ~us3/us3-nodb && module swap ultrascan/mpi-build && ./make-uma build && ./make-uma install && chown -R us3:us3 ~us3/us3-nodb/'
@@ -114,10 +128,11 @@ the new release.
 
    `uslims_git_info.php` can't do this: it pulls first, and stops at a checked-out commit. Each
    checkout is now at a detached commit; a next attempt's steps 3 and 6 move it from there. To
-   take routine updates on the old release instead, first put each checkout on the branch in the
-   record's third field at its recorded commit (`git checkout -B <branch> <commit>`): 4.2.0's
-   `--update-pull` stops at a detached checkout. A branch that also carries the new release, such
-   as dbutils' `main`, then pulls the new release again.
+   take routine updates on the old release instead, first put each checkout on its repository's
+   branch in `db_config.php`'s `$repo_branches` (step 4 puts the file back) at its recorded
+   commit, `git checkout -B <branch> <commit>`: 4.2.0's `--update-pull` stops at a detached
+   checkout. A branch that also carries the new release, such as dbutils' `main`, then pulls the
+   new release again.
 3. Restore the full backup from step 5 of "Upgrading a host", with its tool's own restore
    (for `uslims_db_binary_backup.php`: stop MariaDB, replace its data directory with the
    backup, as the script printed, and start it again). It returns every instance as it
@@ -148,7 +163,7 @@ the new release.
    |---|---|
    | `global_config.php` | `/srv/www/htdocs/common/global_config.php` |
    | `listen-config.php`, `cluster_config.php` | `~us3/lims/bin/` |
-   | `db_config.php` | this repo's `db_config.php` |
+   | `db_config.php` | not from here: put back `~us3/lims/etc/pre-upgrade-db_config.php`, since step 6 changed `$repo_branches` before `--apply` ran |
    | `config.default` | webinfo's `config.php` (`/srv/www/htdocs/uslims3/config.php`) |
    | `config.<name>` | the `config.php` (or its overlay) of the instance or newinst `<name>` under `/srv/www/htdocs` that the run's output names |
    | `dbinst-base.v1.php` | `~us3/lims/etc/config/dbinst-base.v1.php` |

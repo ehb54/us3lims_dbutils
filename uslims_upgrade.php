@@ -52,16 +52,18 @@ gives the whole procedure, in this order:
        host's own 4.2.0 copy can still read its own listen-config.php), and comment out
        the LIMS cron entries.
     2. Check each checkout for local changes: "php uslims_git_info.php". Record each checkout's
-       commit, branch and local changes with README.md's command, which writes
-       ~us3/lims/etc/pre-upgrade-checkouts.txt and pre-upgrade-changes/, then resolve the
-       changes as for any release (no stash or commit).
+       commit, branch and local changes, and db_config.php, with README.md's command, which
+       writes ~us3/lims/etc/pre-upgrade-checkouts.txt, pre-upgrade-changes/ and
+       pre-upgrade-db_config.php, then resolve the changes as for any release, leaving none
+       staged (no stash or commit).
     3. Move dbutils only to $required_version or newer: git fetch, git checkout <release
        branch>, git pull --ff-only. Keep a copy of its README.md outside the checkout.
     4. Finish every job: "php uslims_jobs.php --busy" lists each one and what to do. This
        comes before gridctl moves, since this release's monitors do not run until --apply.
     5. Take a full backup of the whole database server.
     6. Pull common, every instance, gridctl, webinfo, newinst, us3_sql and the UltraScan
-       checkouts and build: "git fetch" and check out the release branch in each, then, as
+       checkouts and build: set each repository's release branch in db_config.php's
+       \$repo_branches, "git fetch" and check out that branch in each, then, as
        root from a login shell ("sudo -i"), "php uslims_git_info.php --update-pull all
        --update-pull-build".
     7. Run dbupgrade's stage1_export_dbinsts.php and stage2_import_dbinsts.php: stage2 puts
@@ -126,9 +128,11 @@ Steps
 Undoing it
 
 README.md's "Backing out a failed upgrade" gives the whole procedure: stop the services, put
-each checkout back at its recorded commit and build, restore the full backup taken before the
-upgrade, put back the files this script changed and delete the ones it created, then restart
-us3-listen.
+each checkout back at its recorded commit with its saved local changes (staged and not), give
+the files git wrote to each checkout's owner, and build; restore the full backup taken before
+the upgrade, and remove the cluster work directories of jobs submitted since; put back the files
+this script changed, db_config.php from the copy step 2 saved, and delete the ones it created;
+move dbupgrade/export-* aside before a next attempt; then restart us3-listen.
 
 Every file this script rewrites, appends to or removes is copied first, once per run, into one
 directory per run, ~us3/lims/etc/uslims_upgrade-backup-<time>-pid<pid>, named when it is first
@@ -1470,19 +1474,30 @@ function upgrade_stack_checkouts( $gridctl_dir, $dbutils_dir, $wwwpath, $us3_hom
 }
 $stack = upgrade_stack_checkouts( $gridctl_dir, __DIR__, $wwwpath, $us3_home );
 
-## --update-pull pulls the branch a checkout is on, so one left on the old branch is moved first.
-function stale_checkout_remedy( array $dirs, $dbutils_dir ) {
-    $branch = trim( (string) shell_exec( 'git -c safe.directory=* -C ' . escapeshellarg( $dbutils_dir )
-                                         . ' branch --show-current 2>/dev/null' ) );
-    $branch = $branch !== '' ? escapeshellarg( $branch ) : '<release branch>';
-    $out = '';
+## Each refused checkout is moved to its own repository's branch in db_config.php's $repo_branches.
+function stale_checkout_remedy( array $dirs, $db_config ) {
+    $text = (string) @file_get_contents( $db_config );
+    $cmds = '';
+    $sets = '';
     foreach ( array_unique( $dirs ) as $dir ) {
+        $git    = 'git -c safe.directory=* -C ' . escapeshellarg( $dir );
+        $repo   = basename( trim( (string) shell_exec( "$git remote get-url origin 2>/dev/null" ) ) );
+        $repo   = preg_replace( '/\.git$/', '', $repo );
+        $url    = "https://github.com/ehb54/$repo.git";
+        $branch = preg_match( '#"' . preg_quote( $url, '#' ) . '"\s*=>\s*"([^"]*)"#', $text, $m ) ? trim( $m[ 1 ] ) : '';
+        $now    = trim( (string) shell_exec( "$git branch --show-current 2>/dev/null" ) );
+        if ( $repo === '' || $branch === '' || strpos( $branch, 'SET-' ) === 0 || $branch === $now ) {
+            $sets .= "\n  set \$repo_branches[\"$url\"] in $db_config to this release's branch ("
+                   . ( $branch === '' ? 'it has none' : "it is '$branch'" ) . ", which $dir"
+                   . ( $branch === $now ? ' is on' : ' needs' ) . ')';
+            continue;
+        }
         $owner = function_exists( 'posix_getpwuid' ) ? ( posix_getpwuid( (int) @fileowner( $dir ) )['name'] ?? 'root' ) : 'root';
-        $git   = 'sudo -u ' . escapeshellarg( $owner ) . ' git -C ' . escapeshellarg( $dir );
-        $out  .= "\n    $git fetch && $git checkout $branch";
+        $g     = 'sudo -u ' . escapeshellarg( $owner ) . ' git -C ' . escapeshellarg( $dir );
+        $b     = escapeshellarg( $branch );
+        $cmds .= "\n    $g fetch --tags && $g checkout $b && if $g symbolic-ref -q HEAD >/dev/null; then $g pull --ff-only; fi";
     }
-    return $out . "\n    cd $dbutils_dir && php uslims_git_info.php --update-pull util"
-                . "\n    cd $dbutils_dir && php uslims_git_info.php --update-pull lims";
+    return $sets !== '' ? "\nFirst$sets\nthen rerun for the commands." : $cmds;
 }
 
 $stale = [];
@@ -1501,10 +1516,8 @@ foreach ( $stack as $label => $dir ) {
 if ( $stale ) {
     error_exit( "php uslims_jobs.php --busy must say idle before gridctl moves, since this release's monitors"
                 . " do not run until --apply. Then move " . implode( ', ', $stale ) . " to $required_version or newer, and rerun:"
-                . stale_checkout_remedy( array_map( function ( $l ) use ( $stack ) { return $stack[ $l ]; }, $stale ), __DIR__ )
-                . "\nRun both pulls: pulling util alone leaves gridctl and common behind, which is the"
-                . " state this check refuses. 'all' also pulls the UltraScan gui and mpi"
-                . " checkouts, which this upgrade does not touch."
+                . stale_checkout_remedy( array_map( function ( $l ) use ( $stack ) { return $stack[ $l ]; }, $stale ), __DIR__ . '/db_config.php' )
+                . "\nEach moves to its repository's branch in db_config.php's \$repo_branches (README.md, step 6)."
                 . "\nThe code and the database schema are upgraded separately; this script only"
                 . " changes this host's configuration. Nothing was changed" );
 }
@@ -1543,7 +1556,7 @@ if ( $missing ) {
     error_exit( "gridctl is not the $required_version contract: " . implode( ', ', $missing )
                 . ". A VERSION file alone is not enough, so check the checkout at $gridctl_dir"
                 . " is the upgraded one:"
-                . stale_checkout_remedy( [ $gridctl_dir ], __DIR__ )
+                . stale_checkout_remedy( [ $gridctl_dir ], __DIR__ . '/db_config.php' )
                 . "\nNothing was changed" );
 }
 
