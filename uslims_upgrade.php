@@ -1477,7 +1477,8 @@ $stack = upgrade_stack_checkouts( $gridctl_dir, __DIR__, $wwwpath, $us3_home );
 
 ## Each refused checkout is moved to its own repository's branch in db_config.php's $repo_branches.
 function stale_checkout_remedy( array $dirs, $db_config ) {
-    $repos = ( static function ( $f ) { @include $f; return isset( $repo_branches ) && is_array( $repo_branches ) ? $repo_branches : []; } )( $db_config );
+    $repos = config_vars( $db_config )['repo_branches'] ?? [];
+    $repos = is_array( $repos ) ? $repos : [];
     $cmds = '';
     $sets = '';
     $note = '';

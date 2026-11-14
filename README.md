@@ -81,6 +81,11 @@ the tools ask (the backup tool and stage2 ask y/n). The blocks call `command cp`
        > ~us3/lims/database/utils/dbupgrade/my.cnf )
    ```
 
+   If stage1 then stops at its mysqldump with "exit status '2'" (the error goes into its export
+   file), or stage2 reports "Access denied", the password in that file is wrong: a mistyped one,
+   or a blank line pasted after the block that `read` took as the password. Write it again: run
+   `command rm ~us3/lims/database/utils/dbupgrade/my.cnf`, then paste the block alone.
+
    Then, in `dbupgrade/`, `php stage1_export_dbinsts.php <dbhost>`, then `php
    stage2_import_dbinsts.php <dbhost>`. Stage2 rebuilds every instance from the release's
    us3.sql, which is what puts each one on the release's schema: tables, columns, enum values
@@ -170,7 +175,8 @@ the new release. Run it the way "Upgrading a host" says, from the same root logi
    `master`, then pulls the new release again.
 3. Restore the full backup from step 5 of "Upgrading a host", with its tool's own restore
    (for `uslims_db_binary_backup.php`: stop MariaDB, replace its data directory with the
-   backup, as the script printed, and start it again). It returns every instance as it
+   backup, as the script printed, and start it again; it names the backup by its full path,
+   so its lines run from any directory). It returns every instance as it
    was before stage2 rebuilt it, and undoes everything `--apply` did in the databases: the
    people_audit UTC conversion, the stored procedures, the dispatch tables in gfac and each
    instance, gfac.analysis.HPCAnalysisRequestID and gfac.runtime_prediction. Request ids are

@@ -244,10 +244,16 @@ echo
     "backups are in:\n"
     . "$newfile_dir\n"
     . "restore by:\n"
-    . "service mariadb stop\n"
-    . "rm -fr $datadir/*\n"
-    . "cp -rp  $newfile_dir/* $datadir\n"
-    . "chown -R mysql:mysql $datadir\n"
-    . "service mariadb start\n"
+    . binary_backup_restore( $newfile_dir, $datadir )
     ;
+
+## The backup is named by its full path, so the restore runs from any directory.
+function binary_backup_restore( $backup_dir, $datadir ) {
+    $backup_dir = realpath( $backup_dir ) ?: $backup_dir;
+    return "service mariadb stop\n"
+        . "rm -fr $datadir/*\n"
+        . "cp -rp  $backup_dir/* $datadir\n"
+        . "chown -R mysql:mysql $datadir\n"
+        . "service mariadb start\n";
+}
 
