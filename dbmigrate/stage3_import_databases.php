@@ -251,6 +251,17 @@ if ( get_yn_answer( "load metadata?" ) ) {
 # create dbinstances
 
 if ( get_yn_answer( "create dbinstances" ) ) {
+    # A dump that does not fit this host's schema would fail partway through the list.
+    echo "Checking every dump against this host's us3.sql\n";
+    $dumps = [];
+    foreach ( $dbnames_used as $db => $val ) {
+        $dumps[ $db ] = [ "export-$export_dbhost-$db.sql.$compressext", "export-$export_dbhost-$db-autoincrements.sql" ];
+    }
+    $errors = preflight_instance_imports( $db_handle, "mysql --defaults-file=$cwd/my.cnf -u root", $limsdbpath, $dumps );
+    if ( strlen( $errors ) ) {
+        error_exit( "ERRORS (nothing was created):\n" . $errors . "Terminating" );
+    }
+    echo "All dumps fit\n";
     $create_php = get_yn_answer( "clone php and makeconfig" );
     foreach ( $dbnames_used as $db => $val ) {
         echoline( '=' );
@@ -294,6 +305,15 @@ if ( get_yn_answer( "create dbinstances" ) ) {
                 echo "command returns: $res\n";
             }
         }
+        ## So the next uslims_upgrade.php --apply does not load them again. Recorded as the instance
+        ## account, which reads the routines as that check does (a non-definer sees no bodies).
+        $inst_link = @mysqli_connect( $dbhost, $dbuser, $dbpasswd, $db );
+        if ( !$inst_link || !record_instance_procedures_marker( $inst_link, $db, $limsdbpath ) ) {
+            echo "note: could not record $db's stored procedures as this release's; the next uslims_upgrade.php --apply reloads them\n";
+        }
+        if ( $inst_link ) {
+            mysqli_close( $inst_link );
+        }
         $querys = [
     "delete from $db.abstractCenterpiece"
     ,"delete from $db.abstractRotor"
@@ -309,6 +329,11 @@ if ( get_yn_answer( "create dbinstances" ) ) {
             if ( !$res ) {
                 error_exit( "db query failed : $q\ndb query error: " . mysqli_error($db_handle) );
             }
+        }
+
+        ## The data-only dump carries rows for objects us3.sql does not define.
+        if ( !prepare_imported_instance_schema( $db_handle, $db ) ) {
+            error_exit( "could not prepare $db for import: " . mysqli_error( $db_handle ) );
         }
 
         $cmds = [
