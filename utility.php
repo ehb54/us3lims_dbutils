@@ -915,7 +915,7 @@ function dispatch_tables_newer_than_schema_revs() {
 ## created, a dump with a table its us3.sql does not define.
 function dbmigrate_export_command( $db, $dumpfile ) {
     sql_identifier_or_die( $db );
-    return "mysqldump --defaults-file=my.cnf -u root --no-create-info --complete-insert $db > "
+    return "mysqldump --defaults-file=my.cnf -u root --no-create-info --complete-insert " . escapeshellarg( $db ) . " > "
          . escapeshellarg( $dumpfile );
 }
 
@@ -999,17 +999,23 @@ function refused_instance_names( $link ) {
 
 ## The retire, as one command run as root: the metadata row's removal, then the drop, only once a complete
 ## dump is in place. The dump is written beside it first, so a rerun never empties one an earlier run kept.
+## The name is quoted for the shell, and given to SQL as hex and as a backquoted identifier.
 function refused_instance_retire_command( $name ) {
-    return "mysqldump -u root -p --routines '$name' > '$name.sql.part' && grep -q '^-- Dump completed' '$name.sql.part'"
-         . " && mv '$name.sql.part' '$name.sql'"
-         . " && mysql -u root -p -e 'DELETE FROM newus3.metadata WHERE dbname = \"$name\"; DROP DATABASE `$name`'";
+    $part = escapeshellarg( "$name.sql.part" );
+    $sql  = "DELETE FROM newus3.metadata WHERE CAST( dbname AS BINARY ) = X'" . bin2hex( $name ) . "'; DROP DATABASE `"
+          . str_replace( '`', '``', $name ) . "`";
+    return "mysqldump -u root -p --routines " . escapeshellarg( $name ) . " > $part && grep -q '^-- Dump completed' $part"
+         . " && mv $part " . escapeshellarg( "$name.sql" )
+         . " && mysql -u root -p -e " . escapeshellarg( $sql );
 }
 
-## How to retire such an instance; $dir names its directory.
+## How to retire such an instance; $dir is its directory, or null when not known.
 function refused_instance_retire_steps( $name, $dir ) {
     return "retire it: as root, in a directory that keeps files, run " . refused_instance_retire_command( $name )
-         . " (each mysql asks for MariaDB root's password). $name.sql is then its only copy until step 4's dump; keep it."
-         . " Then move $dir out of the web root";
+         . " (each mysql asks for MariaDB root's password). " . escapeshellarg( "$name.sql" ) . " is then its only copy until"
+         . " step 4's dump; keep it. Then move " . ( $dir === null
+             ? "its directory (the one under uslims3/ whose config.php names " . escapeshellarg( $name ) . ")"
+             : escapeshellarg( $dir ) ) . " out of the web root";
 }
 
 ## What to do about an instance this release refuses, printed before gridctl and common move.
@@ -1018,7 +1024,7 @@ function refused_instance_remedy( $name, $controller = true ) {
          . ( $controller ? " (move gridctl and common only after this is clear)" : '' )
          . ". Until its jobs are done, 4.2.0's controller imports them: "
          . legacy_controller_command( $controller ) . ". Then "
-         . refused_instance_retire_steps( $name, "its directory (the one under uslims3/ whose config.php names $name)" )
+         . refused_instance_retire_steps( $name, null )
          . "; this release has no way to rename it. Then rerun php uslims_jobs.php --busy";
 }
 

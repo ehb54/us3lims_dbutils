@@ -164,8 +164,8 @@ function dbinst_base_install_from( $loader, $temporary, $apply, array $context, 
     if ( $problems ) {
         report( 'FAIL', "$base_path is missing and can't be made from this host's configs: " . implode( '; ', $problems )
                       . ". Copy " . ( $temporary ? "config-base.v1.php.template from this release's dbinst"
-                                                 : dirname( $loader, 2 ) . "/config-base.v1.php.template" )
-                      . " there as $base_name, set every value, and rerun" );
+                                                 : escapeshellarg( dirname( $loader, 2 ) . "/config-base.v1.php.template" ) )
+                      . " there as " . escapeshellarg( (string) $base_name ) . ", set every value, and rerun" );
         return;
     }
     report( 'todo', "create $base_path (0640 $owner:$group) from this host's instance and newinst configs, as the roles do" );

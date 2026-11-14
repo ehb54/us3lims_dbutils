@@ -750,12 +750,24 @@ function close_out_status_pending_marker( $db_handle, $marker, array $info ) {
     @unlink( $marker );
 }
 
+## The monitor command --restart runs for a row, every value quoted; $cluster null for 4.2.0's three-argument monitor.
+function jobs_monitor_command( $us3bin, $db, $gfacid, $hpcreqid, $cluster = null ) {
+    $args = [ "$us3bin/jobmonitor/jobmonitor.php", $db, $gfacid, $hpcreqid ];
+    if ( $cluster !== null ) {
+        $args[] = $cluster;
+    }
+    return "php " . implode( ' ', array_map( 'escapeshellarg', array_map( 'strval', $args ) ) );
+}
+
 ## The request --restart hands a row's monitor, "unknown" when there is none. This release's monitor
 ## ($legacy false) gets only the row's own: two clusters can give out one job number. 4.2.0's monitor,
 ## at README step 3 before gfac.analysis has the column, takes the newest result itself.
 function jobs_row_request( $db_handle, array $row, $legacy = false ) {
     if ( array_key_exists( 'HPCAnalysisRequestID', $row ) || !$legacy ) {
         return empty( $row[ 'HPCAnalysisRequestID' ] ) ? "unknown" : $row[ 'HPCAnalysisRequestID' ];
+    }
+    if ( !jobs_monitor_accepts_instance( (string) $row[ 'us3_db' ] ) ) {
+        return "unknown";
     }
     $res = db_obj_result( $db_handle, "select HPCAnalysisRequestID from `{$row['us3_db']}`.HPCAnalysisResult where gfacID='"
         . mysqli_real_escape_string( $db_handle, $row[ 'gfacID' ] ) . "' order by HPCAnalysisResultID desc limit 1", false, true );
@@ -925,7 +937,7 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
     $job  = (string) $row[ 'gfacID' ];
     if ( ( $host[ 'db' ] ?? '' ) !== '' && $host[ 'db' ] !== $inst ) {
         return [ false, [ "row $id is job $job in $inst, not in --db {$host['db']}, and request ids mean something only within one instance."
-                          . " Nothing was changed. Rerun with --db $inst, or without --db" ] ];
+                          . " Nothing was changed. Rerun with --db " . escapeshellarg( $inst ) . ", or without --db" ] ];
     }
     $unimportable = jobs_monitor_cannot_import( $inst, $job );
     foreach ( $monitors as $key => $pid ) {
@@ -1532,9 +1544,8 @@ if ( $running || $restart || $restart_only ) {
         ## root unconditionally.
         ## 4.2.0's monitor takes exactly three arguments, and still runs where an upgrade found work to finish first.
         $jm_takes_cluster = strpos( (string) @file_get_contents( "$us3bin/jobmonitor/jobmonitor.php" ), '[cluster]' ) !== false;
-        $inner_cmd = "php $us3bin/jobmonitor/jobmonitor.php $db $gfacid $hpcreqid"
-                   . ( $jm_takes_cluster ? ' ' . escapeshellarg( $jm_restart_cluster[ $index ] ) : '' );
-        $cmd       = runuser_wrap_if_root( $inner_cmd );
+        $cmd = runuser_wrap_if_root( jobs_monitor_command( $us3bin, $db, $gfacid, $hpcreqid,
+                                                           $jm_takes_cluster ? $jm_restart_cluster[ $index ] : null ) );
         echo "restarting: $cmd\n";
         run_cmd( $cmd );
         if ( $restart_only && ++$restarted >= $restart_only ) {
