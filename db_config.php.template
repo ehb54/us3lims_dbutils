@@ -98,7 +98,6 @@ $repo_branches =
      ,"https://github.com/ehb54/us3lims_webinfo.git"             => "SET-webinfo_branch"
      ,"https://github.com/ehb54/us3lims_newinst.git"             => "SET-newinst_branch"
      ,"https://github.com/ehb54/us3lims_dbinst.git"              => "SET-dbinst_branch"
-     ,"https://github.com/SciGaP/ultrascan-airavata-bridge.git"  => "SET-airavata_branch"
     ];
 
 ## extra databases to backup

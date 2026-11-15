@@ -142,7 +142,11 @@ $hostname = gethostname();
 
 ## create $generic
 
-$generic_out = $generic ? "@$hostname $user\n@biophysics.uleth.ca $user\n" : "";
+## Dropped the hardcoded "@biophysics.uleth.ca $user" generic mapping: a
+## fixed outside institution's domain has no meaning on any other site this
+## provisions, the same class of hardcoded-personal/institutional-address
+## issue already removed elsewhere this round.
+$generic_out = $generic ? "@$hostname $user\n" : "";
 if ( file_put_contents( $generic_file, $generic_out ) === false ) {
     error_exit( "permission denied on writing $generic" );
 }

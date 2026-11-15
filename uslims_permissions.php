@@ -1,5 +1,9 @@
 <?php
 
+## Report failed connections and queries as values, not exceptions (PHP
+## 8.1+), matching uslims_jobs.php/uslims_upgrade.php/gridctl_bootstrap.php.
+mysqli_report( MYSQLI_REPORT_OFF );
+
 ### users that can not be modified
 $system_user_list = [
     "gfac"

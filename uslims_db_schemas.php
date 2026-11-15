@@ -177,8 +177,17 @@ function dump_cmd( $db, $outfile = "" ) {
         $use_myconf = "../$myconf";
     }
 
-    $cmd = 
-        "mysqldump --defaults-file=$use_myconf -u root --no-data --events --routines $db | "
+    # dbutils' own bookkeeping tables are never in schema_rev#.sql / us3.sql
+    # and are never meant to be -- without excluding them here, every
+    # migrated dbinstance reads as differing from the reference schema over
+    # a table the reference was never going to define in the first place.
+    $ignore_tables = '';
+    foreach ( dbutils_owned_tables() as $owned_table ) {
+        $ignore_tables .= " --ignore-table=$db.$owned_table";
+    }
+
+    $cmd =
+        "mysqldump --defaults-file=$use_myconf -u root --no-data --events --routines$ignore_tables $db | "
         . "grep -Fv "
         . "-e 'ENGINE=' "
         . "-e 'Dumping events' "
