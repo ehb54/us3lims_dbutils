@@ -556,6 +556,7 @@ function usmd_parse_jobfile( $jobfile ) {
         "evidence" => []
     ];
     if ( $jobfile === null || trim( $jobfile ) === "" ) {
+        $out["wall_limit_status"] = 0;
         return $out;
     }
     $out["parser_status"] = "unsupported-format";
@@ -568,6 +569,9 @@ function usmd_parse_jobfile( $jobfile ) {
     }
     if ( preg_match( '/^#PBS\s+-l\s+[^\r\n]*walltime=([0-9:]+)/mi', $jobfile, $m ) ) {
         $out["requested_wall_limit"] = usmd_parse_wall_seconds( $m[1] );
+        if ( $out["requested_wall_limit"] === 0 ) {
+            $out["evidence"]["explicit_unlimited"] = 1;
+        }
         $out["parser_status"] = "partial";
     }
     /* The partition is the real queue; recorded verbatim, never parsed further. */
@@ -591,6 +595,10 @@ function usmd_parse_jobfile( $jobfile ) {
     if ( preg_match( '/\bus_mpi_analysis\b[^\r\n]*\s-walltime\s+(\d+)/i', $jobfile, $m ) ) {
         /* The application consumes this value as minutes (max_walltime). */
         $out["evidence"]["application_wall_minutes"] = intval( $m[1] );
+        // 999999 minutes is the gateway's no-limit sentinel.
+        if ( intval( $m[1] ) >= 999999 ) {
+            $out["evidence"]["application_sentinel"] = 1;
+        }
         $application_seconds = intval( $m[1] ) * 60;
         if ( $out["requested_wall_limit"] === null ) {
             $out["requested_wall_limit"] = $application_seconds;
@@ -635,11 +643,109 @@ function usmd_parse_jobfile( $jobfile ) {
             $out["evidence"]["wall_limit_conflict"] = ["scheduler_seconds"=>$seconds,"application_seconds"=>$out["requested_wall_limit"]];
         }
         $out["requested_wall_limit"] = $seconds > 0 ? $seconds : null;
+        if ($seconds === 0) {
+            // Slurm -t 0 means no limit.
+            $out["evidence"]["explicit_unlimited"] = 1;
+        }
         $out["scheduler_family"] = 'Slurm';
     }
     if ( $out["requested_nodes"] !== null || $out["requested_ranks"] !== null || $out["requested_wall_limit"] !== null ) {
         $out["parser_status"] = "parsed";
     }
+    $out["wall_limit_status"] = usmd_wall_limit_status( $out );
+    return $out;
+}
+
+// 0 no jobfile, 1 unsupported, 2 no limit directive, 3 limit, 4 explicit no limit, 5 sentinel only.
+function usmd_wall_limit_status( $parsed ) {
+    $e = $parsed["evidence"];
+    if ( $parsed["parser_status"] === "missing" ) {
+        return 0;
+    }
+    if ( isset( $e["explicit_unlimited"] ) ) {
+        return 4;
+    }
+    if ( isset( $e["application_sentinel"] ) && !isset( $e["wall_limit_conflict"] ) ) {
+        return 5;
+    }
+    if ( $parsed["requested_wall_limit"] !== null && $parsed["requested_wall_limit"] > 0 ) {
+        return 3;
+    }
+    return $parsed["parser_status"] === "unsupported-format" ? 1 : 2;
+}
+
+// Build from the stdout banner "Us_Mpi_Analysis <version> <YYYY-MM-DD>".
+// Status: 0 no stdout, 1 no banner, 2 revision and date, 3 revision only, 4 git commit, 5 other.
+function usmd_collector_host() {
+    $host = getenv( 'USLIMS_METADATA_HOST' );
+    if ( $host === false || trim( $host ) === '' ) {
+        $host = gethostname();
+    }
+    return ( $host === false || trim( $host ) === '' ) ? null : trim( $host );
+}
+
+function usmd_parse_build( $stdout ) {
+    $out = [ "us_revision" => null, "us_build_date" => null, "us_build_token" => null, "us_build_status" => 0 ];
+    if ( $stdout === null || trim( $stdout ) === "" ) {
+        return $out;
+    }
+    if ( !preg_match( '/Us_Mpi_Analysis\s+(\S+)(?:\s+(\d{4})-(\d{2})-(\d{2}))?/', $stdout, $m ) ) {
+        $out["us_build_status"] = 1;
+        return $out;
+    }
+    $out["us_build_token"] = substr( $m[1], 0, 40 );
+    // 4.0.<rev> and 4.1.0-dev.<rev> share one revision count.
+    if ( preg_match( '/^\d+\.\d+\.(\d+)$/', $m[1], $r ) || preg_match( '/^\d+\.\d+\.\d+-[A-Za-z]+\.(\d+)$/', $m[1], $r ) ) {
+        $out["us_revision"] = intval( $r[1] );
+        if ( isset( $m[2] ) && $m[2] !== "" ) {
+            $out["us_build_date"] = intval( $m[2] . $m[3] . $m[4] );
+            $out["us_build_status"] = 2;
+        } else {
+            $out["us_build_status"] = 3;
+        }
+        return $out;
+    }
+    if ( preg_match( '/^[0-9a-f]{7,40}$/', $m[1] ) ) {
+        $out["us_build_status"] = 4;
+        return $out;
+    }
+    $out["us_build_status"] = 5;
+    return $out;
+}
+
+// Whether the squashed request XML carries each 2DSA repair input.
+function usmd_xml_presence( $flat, $valid_xml ) {
+    $patterns = [
+        "xml_has_s_grid_points"   => '/^job\.jobParameters\.s_grid_points\./',
+        "xml_has_ff0_grid_points" => '/^job\.jobParameters\.ff0_grid_points\./',
+        "xml_has_uniform_grid"    => '/^job\.jobParameters\.uniform_grid\./',
+        "xml_has_fit_mb_select"   => '/^job\.jobParameters\.fit_mb_select\./',
+        "xml_has_rotorspeed"      => '/speedstep(\.\d+)?\.@attributes\.rotorspeed$/',
+        "xml_has_duration"        => '/speedstep(\.\d+)?\.@attributes\.duration_(hrs|mins)$/',
+    ];
+    $out = [];
+    foreach ( $patterns as $name => $re ) {
+        $out[$name] = null;
+    }
+    $out["xml_speedstep_blocks"] = null;
+    if ( !$valid_xml ) {
+        return $out;
+    }
+    foreach ( $patterns as $name => $re ) {
+        $out[$name] = 0;
+    }
+    $blocks = [];
+    foreach ( array_keys( $flat ) as $key ) {
+        foreach ( $patterns as $name => $re ) {
+            if ( $out[$name] === 0 && preg_match( $re, $key ) ) {
+                $out[$name] = 1;
+            }
+        }
+        if ( preg_match( '/^(.*speedstep(?:\.\d+)?)\.@attributes\.rotorspeed$/', $key, $m ) ) {
+            $blocks[$m[1]] = true;
+        }
+    }
+    $out["xml_speedstep_blocks"] = count( $blocks );
     return $out;
 }
 
@@ -1050,6 +1156,9 @@ foreach ($use_dbs as $db) {
         $base['serialized_dataset_count'] = $serialized;
         $base['request_xml_valid'] = (int)$valid_xml;
         $base['bucket_count'] = $valid_xml ? count(usmd_bucket_rows($jp)) : null;
+        foreach (usmd_xml_presence($flat,$valid_xml) as $name=>$value) {
+            $base[$name]=$value;
+        }
         // Campaign key: the edited dataset the primary analysis ran against.
         $base['edited_data_id'] = $datasets['edited_data_id_by_dataset'][0] ?? null;
         $reports = usmd_report_counts($db);
@@ -1188,6 +1297,8 @@ foreach ($use_dbs as $db) {
             // Verbatim companion to the mapped code: an unenumerated host maps
             // to null and would otherwise lose its identity.
             $values['cluster_name']=$base['job.cluster.@attributes.name']??null;
+            // Same-named databases on different servers can reuse request IDs.
+            $values['collector_host']=usmd_collector_host();
             // Investigator is whose science this is, submitter is who pressed the
             // button; they differ often enough that both are kept.
             $values['investigator_hash']=usmd_identity_hash($request['investigatorGUID']??null);
@@ -1216,6 +1327,10 @@ foreach ($use_dbs as $db) {
             $values['resource_parser_status']=$resources['parser_status'];
             $values['scheduler']=$resources['scheduler_family'];
             $values['resource_wall_limit_conflict']=isset($resources['evidence']['wall_limit_conflict'])?1:0;
+            $values['wall_limit_status']=$resources['wall_limit_status'];
+            foreach (usmd_parse_build($result['stdout']??null) as $name=>$value) {
+                $values[$name]=$value;
+            }
             $missing=[];$unmapped=[];$input_data=[];$target_data=[];
             foreach ($input_format as $field) {
                 $value=$values[$field]??null;
