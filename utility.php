@@ -1012,8 +1012,8 @@ function refused_instance_retire_command( $name ) {
 ## How to retire such an instance; $dir is its directory, or null when not known.
 function refused_instance_retire_steps( $name, $dir ) {
     return "retire it: as root, in a directory that keeps files, run " . refused_instance_retire_command( $name )
-         . " (each mysql asks for MariaDB root's password). " . escapeshellarg( "$name.sql" ) . " is then its only copy until"
-         . " step 4's dump; keep it. Then move " . ( $dir === null
+         . " (each mysql asks for MariaDB root's password). " . escapeshellarg( "$name.sql" ) . " is its only copy; a backup taken"
+         . " after this has none, so keep it. Then move " . ( $dir === null
              ? "its directory (the one under uslims3/ whose config.php names " . escapeshellarg( $name ) . ")"
              : escapeshellarg( $dir ) ) . " out of the web root";
 }
