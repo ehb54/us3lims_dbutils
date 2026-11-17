@@ -53,7 +53,9 @@ the tools ask (the backup tool and stage2 ask y/n). The blocks call `command cp`
    until it says idle. This has to come before gridctl and common move: this release's
    monitors don't run until `--apply` has converted `listen-config.php`, so the code that
    started the jobs has to finish them. If gridctl and common were already moved, check
-   out the release that started the jobs in both, finish the jobs, and move them again.
+   out the code that started the jobs in both, finish the jobs, and move them again. That is
+   the release tag, or on a host that tracks `main`, the commit each checkout was on before
+   the pull: `git reflog` in each lists it.
    `--busy` also names any instance whose name this release can't run; it stays busy until
    that instance is retired: `--busy` prints the commands (dump, then drop the database and
    its newus3.metadata row, then move its directory out of the web root).

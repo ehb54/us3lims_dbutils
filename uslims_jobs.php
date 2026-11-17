@@ -1151,7 +1151,7 @@ function jobs_busy_row_action( array $r, array $monitors, $early, $controller = 
         }
     }
     if ( $early ) {
-        return "the release that started it finishes it; see above";
+        return "the code that started it finishes it; see above";
     }
     ## --restart starts no monitor for a row without a request; 4.2.0's, before the upgrade, finds it.
     if ( ( !$legacy || array_key_exists( 'HPCAnalysisRequestID', $r ) ) && empty( $r[ 'HPCAnalysisRequestID' ] )
@@ -2209,37 +2209,65 @@ if ( $gfacid ) {
 
     echo $out;
 
-    $lock_dir = "$ll_base_dir/$db/$gfacid";
-    $logfile  = "$lock_dir/log.txt";
+    $lock_dirs = job_log_dirs( $ll_base_dir, $db, $gfacid );
+    $logfiles  = array_map( function( $d ) { return "$d/log.txt"; }, $lock_dirs );
     echoline();
-    echo "logfile                $logfile\n";
-    
+    foreach ( $logfiles as $logfile ) {
+        echo "logfile                $logfile\n";
+    }
+    if ( !$logfiles ) {
+        echo "logfile                none under $ll_base_dir/$db for $gfacid or $gfacid@<cluster>\n";
+    }
+
     if ( $checklog ) {
-       check_log( $logfile );
-       exit(0);
+        if ( !$logfiles ) {
+            error_exit( "can not check, no log for job $gfacid\n" );
+        }
+        foreach ( $logfiles as $logfile ) {
+            check_log( $logfile );
+        }
+        exit(0);
     }
 
     if ( $monitor ) {
-        if ( !file_exists( $logfile ) ) {
-            error_exit( "can not monitor, $logfile does not exist\n" );
+        if ( !$logfiles ) {
+            error_exit( "can not monitor, no log for job $gfacid\n" );
         }
 
-        $lockfile = "$ll_base_dir/$db/$gfacid/jobmonitor.php.lock";
-        if ( !file_exists( $lockfile ) ) {
-            echoline();
-            echo "jobmonitor.php is not running for this job\n";
-            echo "logfile contents:\n";
-            echoline();
-            echo `cat $logfile`;
+        $live = array_values( array_filter( $logfiles, function( $f ) {
+            return file_exists( dirname( $f ) . "/jobmonitor.php.lock" );
+        } ) );
+        if ( !$live ) {
+            foreach ( $logfiles as $logfile ) {
+                echoline();
+                echo "jobmonitor.php is not running for this job\n";
+                echo "logfile contents of $logfile:\n";
+                echoline();
+                readfile( $logfile );
+            }
             echoline();
             exit(0);
         }
-        echo "output of              tail -f $logfile\n";
+        $tail = "tail -f " . implode( " ", array_map( 'escapeshellarg', $live ) );
+        echo "output of              $tail\n";
         echo "*** use control-C to quit ***\n";
         echoline();
-        passthru( "tail -f $logfile" );
-    }            
+        passthru( $tail );
+    }
     exit(0);
+}
+
+## A job's log directories that exist: 4.2.0's "<gfacID>" and 4.3.0's "<gfacID>@<cluster>" (gridctl job_key()).
+function job_log_dirs( $base, $db, $gfacid ) {
+    $dirs = is_dir( "$base/$db/$gfacid" ) ? [ "$base/$db/$gfacid" ] : [];
+    foreach ( glob( "$base/$db/" . glob_escape( $gfacid ) . "@*", GLOB_ONLYDIR ) ?: [] as $d ) {
+        $dirs[] = $d;
+    }
+    return $dirs;
+}
+
+function glob_escape( $s ) {
+    return preg_replace( '/([*?\[\]\\\\])/', '\\\\$1', $s );
 }
 
 ## check log functions
