@@ -975,17 +975,23 @@ function gridctl_moved_early( $us3bin ) {
         && ( !preg_match( '/^\s*\$listen_config_version\s*=\s*(\d+)/m', $text, $m ) || (int) $m[ 1 ] < 2 );
 }
 
+## How to get back the code that started unfinished jobs, on a release host or one tracking main.
+function prior_code_checkout( $what = 'them' ) {
+    return "check out the code that started $what in gridctl and common (the release tag, or on a host that"
+         . " tracks main the commit each was on before the pull, which git reflog in each checkout lists)";
+}
+
 ## Step 3's recovery after an early move, as every listing and refusal prints it.
 function gridctl_early_move_recovery() {
-    return "gridctl moved to the new release before these jobs finished, and it can't finish them:"
-         . " check out the release that started them in gridctl and common, run php uslims_jobs.php --restart as us3,"
+    return "gridctl moved to the new release before these jobs finished, and it can't finish them: "
+         . prior_code_checkout() . ", run php uslims_jobs.php --restart as us3,"
          . " and repeat php uslims_jobs.php --busy until it says idle. Then move both back. Close no job before that";
 }
 
 ## How 4.2.0 imports a job of an instance this release's monitor refuses: its cron controller, which
 ## this release's gridctl no longer has. $controller: whether gridctl_pro.php is in ~us3/lims/bin.
 function legacy_controller_command( $controller = true ) {
-    return ( $controller ? '' : "check out the release that started them in gridctl and common, then " )
+    return ( $controller ? '' : prior_code_checkout() . ", then " )
          . "as us3, cd ~us3/lims/bin && php gridctl_pro.php (the cron line step 1 commented out runs it each minute)";
 }
 
@@ -1030,7 +1036,7 @@ function refused_instance_remedy( $name, $controller = true ) {
 
 ## What to do about stranded rows, as a refusal prints it.
 function analysis_stranded_remedy() {
-    return "If gridctl and common already moved, first check out the release that started the jobs in both."
+    return "If gridctl and common already moved, first " . prior_code_checkout( 'the jobs' ) . "."
          . " Then run php uslims_jobs.php --restart as us3 and let the"
          . " monitors finish, about 10 minutes for a completed job. A monitor can stop after moving a timed-out job on,"
          . " so repeat until the job's status stops changing. php uslims_jobs.php --busy lists each job. For a job no"

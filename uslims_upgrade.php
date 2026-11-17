@@ -189,9 +189,9 @@ Options
 --help                       : print this information and exit
 --check                      : dry run: report what would change, change nothing
 --apply                      : make the changes (each changed file is backed up first)
---yes                        : accept the proposed value wherever one can be proposed.
-                               Settings with no value to propose are reported instead of
-                               asked for, so --apply --yes never waits for input.
+--yes                        : no longer needed: --apply makes the changes --check lists
+                               without asking. Settings with no value to propose are reported
+                               as [input] and refuse --apply until given.
 --accept-host-keys           : trust the host keys this script fetches, without review.
                                Only for a network you already trust: --yes does not imply it.
 --convert-http               : convert the national HPC entries (submittype 'http', left over
@@ -697,9 +697,10 @@ function ask_yn( $question, $hint = 'rerun with --yes to accept' ) {
     }
 }
 
+## --apply carries out what --check listed without asking; only an unanswerable [input] stops it.
 function confirm( $question ) {
     global $assume_yes, $apply, $declined;
-    $answer = $assume_yes || ask_yn( $question );
+    $answer = $assume_yes || $apply || ask_yn( $question );
     if ( !$answer && $apply ) {
         $declined++;
     }
