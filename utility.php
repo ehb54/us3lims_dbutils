@@ -988,11 +988,11 @@ function gridctl_early_move_recovery() {
          . " and repeat php uslims_jobs.php --busy until it says idle. Then move both back. Close no job before that";
 }
 
-## How 4.2.0 imports a job of an instance this release's monitor refuses: its cron controller, which
-## this release's gridctl no longer has. $controller: whether gridctl_pro.php is in ~us3/lims/bin.
-function legacy_controller_command( $controller = true ) {
-    return ( $controller ? '' : prior_code_checkout() . ", then " )
-         . "as us3, cd ~us3/lims/bin && php gridctl_pro.php (the cron line step 1 commented out runs it each minute)";
+## Refused instance names have no automatic recovery in this release.
+function refused_instance_job_guidance( $early = false ) {
+    return ( $early ? prior_code_checkout() . ", then " : '' )
+         . "pause the upgrade and let existing per-job monitors finish. If no monitor can finish a job, this release"
+         . " has no automatic recovery for this instance name; keep its database and remote job files for administrator recovery";
 }
 
 ## Instance databases whose names this release's job monitor refuses; null when unreadable.
@@ -1025,11 +1025,11 @@ function refused_instance_retire_steps( $name, $dir ) {
 }
 
 ## What to do about an instance this release refuses, printed before gridctl and common move.
-function refused_instance_remedy( $name, $controller = true ) {
+function refused_instance_remedy( $name, $early = false ) {
     return "instance '$name': this release can't run an instance with this name, so the upgrade can't go on"
-         . ( $controller ? " (move gridctl and common only after this is clear)" : '' )
-         . ". Until its jobs are done, 4.2.0's controller imports them: "
-         . legacy_controller_command( $controller ) . ". Then "
+         . ( !$early ? " (move gridctl and common only after this is clear)" : '' )
+         . ". For its unfinished jobs, "
+         . refused_instance_job_guidance( $early ) . ". Only after its jobs and results are accounted for, "
          . refused_instance_retire_steps( $name, null )
          . "; this release has no way to rename it. Then rerun php uslims_jobs.php --busy";
 }
@@ -1199,7 +1199,7 @@ function load_instance_procedures( array $cfg, $sql_dir, $checksum, $client_opti
     return [ $rc === 0, trim( $err . ' ' . $out ) ];
 }
 
-## The LIMS scripts cron drives; gridctl_pro/dev are the pre-upgrade names.
+## Active LIMS scripts, plus retired controller names to detect leftover cron entries during an upgrade.
 function lims_cron_script_regex() {
     return '#(gridctl(_pro|_dev)?\.php|cluster_status\.php|update_notice\.php|listen\.php'
          . '|jobmonitor\.php|dispatch_heartbeat_check\.php|uslims_daily_backup\.php|uslims_daily_rsync\.php'
