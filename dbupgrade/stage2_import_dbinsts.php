@@ -72,6 +72,7 @@ and edit with appropriate values
 }
             
 require "../utility.php";
+require "../instance_grants.php";
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
@@ -184,6 +185,22 @@ if ( strlen( $errors ) ) {
 echo "All dumps fit\n";
 echoline( '=' );
 
+## Grants before the drop: a grant that fails stops the run here, with every dbinstance still
+## in place. They outlast the drop and apply to the recreated databases (instance_grants.php).
+echo "Applying every dbinstance's grants\n";
+$metas = [];
+foreach ( $dbnames_used as $db => $v ) {
+    check_db();
+    $metas[ $db ] = db_obj_result( $db_handle, "select * from newus3.metadata where dbname='$db'" );
+}
+check_db();
+$errors = apply_instance_grants( $db_handle, $metas, $us3phppw, $gfacpw );
+if ( strlen( $errors ) ) {
+    error_exit( "ERRORS (nothing was dropped):\n" . $errors . "Terminating" );
+}
+echo "All grants applied\n";
+echoline( '=' );
+
 get_yn_answer( "Have you made a binary backup using uslims_db_binary_backup.php?", true );
 get_yn_answer( "Are you really sure the binary backup is good?", true );
 
@@ -257,14 +274,9 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
                 echo "command returns: $res\n";
             }
         }
+        ## the grants were applied before the drop
         $querys = [
-    "GRANT ALL ON $db.* TO '$dbuser'@'localhost' IDENTIFIED BY '$dbpasswd'"
-    ,"GRANT ALL ON $db.* TO '$dbuser'@'%' IDENTIFIED BY '$dbpasswd'"
-    ,"GRANT EXECUTE ON $db.* TO '$secure_user'@'%' IDENTIFIED BY '$secure_pw' REQUIRE SSL"
-    ,"GRANT ALL ON $db.* TO 'us3php'@'localhost' IDENTIFIED by '$us3phppw'"
-    ,"GRANT ALL ON $db.* TO 'us3php'@'$use_dbhost' IDENTIFIED by '$us3phppw'"
-    ,"GRANT SELECT,INSERT,UPDATE ON $db.* TO 'gfac'@'localhost' IDENTIFIED by '$gfacpw'"
-    ,"delete from $db.abstractCenterpiece"
+    "delete from $db.abstractCenterpiece"
     ,"delete from $db.abstractRotor"
     ,"delete from $db.bufferComponent"
     ,"delete from $db.editedData"

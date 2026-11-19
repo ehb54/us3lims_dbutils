@@ -67,6 +67,7 @@ and edit with appropriate values
 }
             
 require "../utility.php";
+require "../instance_grants.php";
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
@@ -262,6 +263,18 @@ if ( get_yn_answer( "create dbinstances" ) ) {
         error_exit( "ERRORS (nothing was created):\n" . $errors . "Terminating" );
     }
     echo "All dumps fit\n";
+    ## Grants before any database is created: a grant that fails stops the run here, with
+    ## nothing created (instance_grants.php).
+    echo "Applying every dbinstance's grants\n";
+    $metas = [];
+    foreach ( $dbnames_used as $db => $val ) {
+        $metas[ $db ] = db_obj_result( $db_handle, "select * from newus3.metadata where dbname='$db'" );
+    }
+    $errors = apply_instance_grants( $db_handle, $metas, $us3phppw, $gfacpw );
+    if ( strlen( $errors ) ) {
+        error_exit( "ERRORS (nothing was created):\n" . $errors . "Terminating" );
+    }
+    echo "All grants applied\n";
     $create_php = get_yn_answer( "clone php and makeconfig" );
     foreach ( $dbnames_used as $db => $val ) {
         echoline( '=' );
@@ -278,14 +291,9 @@ if ( get_yn_answer( "create dbinstances" ) ) {
         $dbpasswd    = $res->{ 'dbpasswd' };
         $secure_user = $res->{ 'secure_user' };
         $secure_pw   = $res->{ 'secure_pw' };
+        ## the grants were applied before this loop
         $querys = [
     "CREATE database $db"
-    ,"GRANT ALL ON $db.* TO '$dbuser'@'localhost' IDENTIFIED BY '$dbpasswd'"
-    ,"GRANT ALL ON $db.* TO '$dbuser'@'%' IDENTIFIED BY '$dbpasswd'"
-    ,"GRANT EXECUTE ON $db.* TO '$secure_user'@'%' IDENTIFIED BY '$secure_pw' REQUIRE SSL"
-    ,"GRANT ALL ON $db.* TO 'us3php'@'localhost' IDENTIFIED by '$us3phppw'"
-    ,"GRANT ALL ON $db.* TO 'us3php'@'$this_dbhost' IDENTIFIED by '$us3phppw'"
-    ,"GRANT SELECT,INSERT,UPDATE ON $db.* TO 'gfac'@'localhost' IDENTIFIED by '$gfacpw'"
         ];
         foreach ( $querys as $q ) {
     # echo "query: $q\n";
