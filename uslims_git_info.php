@@ -380,9 +380,15 @@ if ( !$quiet && !file_exists( $rev_cache ) ) {
 # update known repos
 
 if ( !$no_db ) {
-    $existing_dbs = existing_dbs();
-    foreach ( $existing_dbs as $v ) {
-        $known_repos[ "$wwwpath/uslims3/$v" ] = [
+    mysqli_report( MYSQLI_REPORT_OFF );
+    $inventory = lims_instance_inventory( $wwwpath, $us3home, $use_config_file );
+    foreach ( $inventory[ 'notes' ] as $note ) { echo "[note] $note\n"; }
+    foreach ( $inventory[ 'errors' ] as $error ) { echo "[FAIL] $error\n"; }
+    if ( $inventory[ 'errors' ] ) {
+        error_exit( 'instance inventory is incomplete; no repositories were updated' );
+    }
+    foreach ( $inventory[ 'dirs' ] as $dir ) {
+        $known_repos[ $dir ] = [
             "use" => "lims"
             ,"git" =>
             [
@@ -413,6 +419,11 @@ foreach ( $reposearchpaths as $v ) {
 }
 
 foreach ( $repodirs as $k => $v ) {
+    foreach ( $inventory[ 'ignored_dirs' ] ?? [] as $ignored_dir ) {
+        if ( $v === $ignored_dir || strpos( $v, $ignored_dir . '/' ) === 0 ) {
+            unset( $repodirs[ $k ] );
+        }
+    }
     foreach ( $ignore_repos as $ignore ) {
         if ( preg_match( $ignore, $v ) ) {
             unset( $repodirs[ $k ] );

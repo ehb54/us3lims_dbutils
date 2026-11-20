@@ -356,6 +356,29 @@ the new release. Run it the way "Upgrading a host" says, from the same root logi
   - migrate_people_audit_utc.php runs the migration by itself, with none of uslims_upgrade.php's or stage2's other machinery: for a host already upgraded in-place before step 9 existed, or to fix one dbinstance by hand
  
 
+
+### Instance discovery during upgrades
+
+The upgrade, automatic `migrate_people_audit_utc.php` discovery and
+`uslims_git_info.php` reconcile the database list with the host's existing
+instance configs before using tenant checkouts. They use the existing
+`db_config.php` account (the roles configure root), which must have global
+`SHOW DATABASES` or `ALL PRIVILEGES`; a partial account view is not evidence
+that a database was deleted. No new grants or password prompts are added.
+
+A leftover config whose database is absent is reported and excluded from
+tenant migrations, base-template selection and branch selection; its files
+are left untouched. A database with missing/unreadable web config, an ambiguous
+config mapping, or an unverified different database endpoint is an explicit
+preflight failure. Correct the files/configuration and rerun. `VERSION` and
+loader files do not determine whether a tenant exists.
+
+Single-instance roots and base/overlay configs keep their existing resolution.
+Webinfo/newinst `newus3` configs remain host components. With no tenants, the
+existing base-contract fallback is retained. Database backup/export membership
+still comes from `existing_dbs()` and does not depend on website files. The
+standalone audit migration's explicit database-target options remain available.
+
 ## Tests
 
 `tests/run.sh` runs regression tests in throwaway containers (docker or podman), on OL8 with MariaDB 10.3 and PHP 7.4 and on OL10 with MariaDB 10.11 and PHP 8.3. They never touch a real server. See `tests/README.md`.
