@@ -1462,19 +1462,31 @@ function version_at_least( $version, $minimum ) {
 ## Every checkout the upgrade reads: step 9 loads the instance tables and procedures from us3_sql.
 ## newinst's create_instance.php clones dbinst once per instance, so every
 ## instance docroot is its own checkout and is upgraded on its own.
-function upgrade_stack_checkouts( $gridctl_dir, $dbutils_dir, $wwwpath, $us3_home ) {
+function upgrade_stack_checkouts( $gridctl_dir, $dbutils_dir, $wwwpath, $us3_home, array $instance_dirs, array $host_dirs ) {
     $stack = [ 'gridctl' => $gridctl_dir,
                'dbutils' => $dbutils_dir,
                'us3_sql' => "$us3_home/lims/database/sql",
                'common'  => "$wwwpath/common",
                'webinfo' => "$wwwpath/uslims3" ];
-    foreach ( glob( "$wwwpath/uslims3/*/VERSION" ) ?: [] as $version_file ) {
-        $dir = dirname( $version_file );
-        $stack[ basename( $dir ) ] = $dir;
+    foreach ( array_merge( $host_dirs, $instance_dirs ) as $label => $dir ) {
+        if ( $dir !== "$wwwpath/uslims3" ) {
+            $stack[ $label ] = $dir;
+        }
     }
     return $stack;
 }
-$stack = upgrade_stack_checkouts( $gridctl_dir, __DIR__, $wwwpath, $us3_home );
+$inventory = lims_instance_inventory( $wwwpath, $us3_home, __DIR__ . '/db_config.php' );
+foreach ( $inventory[ 'notes' ] as $note ) {
+    report( 'note', $note );
+}
+foreach ( $inventory[ 'errors' ] as $error ) {
+    report( 'FAIL', $error );
+}
+if ( $inventory[ 'errors' ] ) {
+    error_exit( 'instance inventory is incomplete; nothing was changed' );
+}
+$stack = upgrade_stack_checkouts( $gridctl_dir, __DIR__, $wwwpath, $us3_home,
+                                  $inventory[ 'dirs' ], $inventory[ 'host_dirs' ] );
 
 ## Each refused checkout is moved to its own repository's branch in db_config.php's $repo_branches.
 function stale_checkout_remedy( array $dirs, $db_config ) {
@@ -4055,24 +4067,12 @@ step( "9. Per-instance catch-up (\$common_dir, people_audit UTC migration, dispa
 ## via a marker table inside each dbinstance, safe to run here whether or
 ## not stage1/stage2 already ran against it.
 ##
-## No new credentials: each instance's own already-running config.php (or,
-## for one migrated under the per-instance config layout, its overlay --
-## same detection uslims_domain_info.php's instance_overlay() uses) already
-## has everything needed. A dbinstance that could not connect with its own
-## config would not be serving pages, so this connects with exactly what
-## the site itself depends on, never root or a separate db_config.php.
-## discover_lims_instance_configs() (utility.php) is shared with the
-## standalone migrate_people_audit_utc.php, so both agree on what "every
-## instance on this host" means. $instance_paths (by reference) gets the
-## real file each entry's config was actually read from -- needed below to
-## write $common_dir back to the right file, not guessed from $wwwpath.
-## $newus3_configs carries
-## webinfo's and newinst's own host-level configs -- the entries this
-## function finds on the same glob pass but discards, since they are not
-## LIMS tenant databases; run once below, outside the per-instance loop,
-## since there is exactly one webinfo and one newinst config per host, not
-## one per instance.
-$instance_configs = discover_lims_instance_configs( $wwwpath, $us3_home, $instance_paths, $newus3_configs );
+## Reuse the inventory checked before step 0, including resolved overlay paths and
+## separate webinfo/newinst configs. Database-wide credentials established membership;
+## each tenant's existing config supplies the credentials for its own migrations.
+$instance_configs = $inventory[ 'configs' ];
+$instance_paths = $inventory[ 'paths' ];
+$newus3_configs = $inventory[ 'host_configs' ];
 
 run_host_migrations( null, $required_version, $apply,
                       [ 'wwwpath' => $wwwpath, 'newus3_configs' => $newus3_configs ],
@@ -4080,11 +4080,11 @@ run_host_migrations( null, $required_version, $apply,
 
 ## The dbinst base and instances/ newinst needs, made as the roles make them when missing.
 run_host_migrations( null, $required_version, $apply,
-                      [ 'wwwpath' => $wwwpath, 'us3_home' => $us3_home, 'instance_configs' => $instance_configs,
+                      [ 'wwwpath' => $wwwpath, 'us3_home' => $us3_home, 'instance_dirs' => $inventory[ 'dirs' ], 'instance_configs' => $instance_configs,
                         'newus3_configs' => $newus3_configs, 'owner' => 'us3', 'web_group' => $web_group,
                         'db_config' => __DIR__ . '/db_config.php' ],
                       [ 'dbinst_base_install' ] );
-run_host_migrations( null, $required_version, $apply, [ 'wwwpath' => $wwwpath, 'db_config' => __DIR__ . '/db_config.php' ],
+run_host_migrations( null, $required_version, $apply, [ 'wwwpath' => $wwwpath, 'instance_dirs' => $inventory[ 'dirs' ], 'db_config' => __DIR__ . '/db_config.php' ],
                       [ 'dbinst_branch' ] );
 
 ## dbinst_base_common_dir_backfill: the
@@ -4102,7 +4102,7 @@ run_host_migrations( $gdb, $required_version, $apply, [ 'wwwpath' => $wwwpath, '
 $dispatch_gfac_server = function_exists( 'dispatch_server_identity' ) ? dispatch_server_identity( $gdb ) : '';
 
 if ( !$instance_configs ) {
-    report( 'note', "no $wwwpath/uslims3 config.php found; nothing to migrate" );
+    report( 'note', "no tenant databases on the inventory server; nothing to migrate" );
 } else {
     ## The release's instance SQL is checked once: missing, it is the host's failure, not each instance's.
     $sql_missing = [];
@@ -4138,7 +4138,7 @@ if ( !$instance_configs ) {
 
         ## common_dir_backfill (migrations/4.3.0_common_dir_backfill.php)
         ## needs no live connection -- it only reads $cfg, already parsed
-        ## by discover_lims_instance_configs() above -- and must run even
+        ## in the inventory above -- and must run even
         ## when this instance's own connection, checked next, fails: a
         ## misconfigured dbname should not also block the config fix.
         run_instance_migrations( null, null, $required_version, $apply, $context,
@@ -4196,8 +4196,9 @@ if ( !$instance_configs ) {
 ## template left unfilled, a missing overlay. Reported as notes: they need the operator, not this script.
 step( "10. Installation check (dbinst tools/check_installation.php)" );
 $installation_checker = '';
-foreach ( glob( "$wwwpath/uslims3/uslims3_*/tools/check_installation.php" ) ?: [] as $candidate ) {
-    if ( strpos( $candidate, '/uslims3_newlims/' ) === false && strpos( $candidate, '/uslims3_data/' ) === false ) {
+foreach ( $inventory[ 'dirs' ] as $instance_dir ) {
+    $candidate = "$instance_dir/tools/check_installation.php";
+    if ( is_file( $candidate ) && strpos( $candidate, '/uslims3_newlims/' ) === false && strpos( $candidate, '/uslims3_data/' ) === false ) {
         $installation_checker = $candidate;
         break;
     }
