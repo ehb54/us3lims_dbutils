@@ -29,8 +29,8 @@ return [
             return;
         }
         $refs = [];
-        foreach ( glob( rtrim( $context[ 'wwwpath' ], '/' ) . '/uslims3/*/lib/dbinst_config_loader.php' ) ?: [] as $loader ) {
-            $refs[ dbinst_checkout_ref( dirname( $loader, 2 ) ) ] = true;
+        foreach ( $context[ 'instance_dirs' ] as $instance_dir ) {
+            $refs[ dbinst_checkout_ref( $instance_dir ) ] = true;
         }
         $refs = array_keys( $refs );
         if ( count( $refs ) !== 1 || $refs[ 0 ] === '' ) {

@@ -235,14 +235,7 @@ if ( count( $uniqhosts ) != 1 ) {
 flush_warnings();
 # check dbs
 
-$res = db_obj_result( $db_handle, "show databases like 'uslims3_%'", True );
-$mysql_dbs = [];
-while( $row = mysqli_fetch_array($res) ) {
-    $this_db = (string)$row[0];
-    if ( $this_db != "uslims3_global" ) {
-        $mysql_dbs[ $this_db ] = 1;
-    }
-}
+$mysql_dbs = array_fill_keys( existing_dbs(), 1 );
 
 # make sure they match
 foreach ( $meta_dbs as $k => $v ) {
