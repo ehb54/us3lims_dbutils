@@ -67,7 +67,7 @@ and edit with appropriate values
 }
             
 require "../utility.php";
-require "../instance_grants.php";
+require_once "../instance_grants.php";
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
