@@ -108,7 +108,8 @@ Steps
     happens to touch them first), and gfac.runtime_prediction (the runtime
     advisory pilot table -- optional, pilot-scoped; a missing SQL
     file or no CREATE privilege is a note here, not a failure)
-6 : removes leftover retired-controller cron entries, if any (normally none)
+6 : removes leftover cron entries for the retired gridctl.php, gridctl_pro.php and
+    gridctl_dev.php, if any (normally none)
 7 : installs the Content-Security-Policy as Report-Only unless a policy is already
     configured (enforcing it is a later step), and installs the /common/{css,images,js}
     Apache alias us3lims-roles' config-lims-apache role normally provides, unless one is
@@ -1813,7 +1814,7 @@ if ( $row === null ) {
     }
     if ( $unfinished ) {
         report( 'FAIL', "$unfinished job(s) in gfac.analysis are not in a terminal status; "
-                        . ( gridctl_moved_early( $us3bin ) ? gridctl_early_move_recovery() . ", then rerun"
+                        . ( gridctl_moved_early( $us3bin ) ? gridctl_early_move_recovery() . ". php uslims_jobs.php --busy lists each and what to do, then rerun"
                             : "php uslims_jobs.php --busy lists each and what to do, then rerun" ) );
         $busy[] = "$unfinished unfinished job(s)";
     } elseif ( !$stranded ) {
@@ -3544,7 +3545,7 @@ if ( $cron_error !== '' ) {
 }
 foreach ( $old_crons as $where => $text ) {
     $label = $where === 'us3' ? 'us3 crontab' : $where;
-    report( 'todo', "$label: remove leftover retired-controller cron entries; these scripts are no longer used" );
+    report( 'todo', "$label: remove leftover gridctl.php, gridctl_pro.php or gridctl_dev.php cron entries; these scripts are no longer used" );
     if ( !$apply || !confirm( "Update the $label?" ) ) {
         continue;
     }
@@ -3589,7 +3590,7 @@ foreach ( $old_crons as $where => $text ) {
     }
 }
 if ( !$old_crons ) {
-    report( 'ok', "no retired-controller cron entries remain" );
+    report( 'ok', "no gridctl.php, gridctl_pro.php or gridctl_dev.php cron entries remain" );
 }
 
 ## Joins a backslash-continued directive ("Header set \\\nContent-Security-
@@ -3912,7 +3913,7 @@ if ( $verify_all ) {
 
     ## Nothing should still reach the old controllers after step 6.
     $left = array_keys( old_controller_crontabs() );
-    report( $left ? 'FAIL' : 'ok', "no retired-controller cron entries remain"
+    report( $left ? 'FAIL' : 'ok', "no gridctl.php, gridctl_pro.php or gridctl_dev.php cron entries remain"
             . ( $left ? ': ' . implode( ', ', $left ) : '' ) );
 
 }
@@ -4255,16 +4256,18 @@ if ( $apply && !$failures && !$needs_input && !$declined ) {
     ## it runs as us3: started as root the services would leave root-owned state.
     echo "\nFinish the upgrade in this order:\n"
        . "  1. re-enable the LIMS cron entries that were commented out for the upgrade,\n"
-       . "     except any leftover retired-controller entries removed by step 6. Those\n"
-       . "     scripts are no longer used; per-job monitors already handle jobs.\n"
-       . "     If the host has no dispatch\n"
-       . "     heartbeat check yet (us3lims-roles adds it), add it to /etc/crontab:\n"
+       . "     except any leftover gridctl.php, gridctl_pro.php or gridctl_dev.php entries\n"
+       . "     removed by step 6. Those scripts are no longer used; per-job monitors already\n"
+       . "     handle jobs. If the host has no dispatch heartbeat check yet (us3lims-roles\n"
+       . "     adds it), add it to /etc/crontab:\n"
        . "     */5 * * * * us3 /usr/bin/php $us3bin/dispatch_heartbeat_check.php >/dev/null 2>&1\n"
        . "  2. start the services as us3:   sudo -u us3 bash -c 'cd $us3bin && php services.php start'\n"
        . "  3. refresh the cluster health table once, so no cluster shows as stale:\n"
        . "     sudo -u us3 php $gridctl_dir/cluster_status.php\n"
        . "  4. verify that only the LIMS cron entries active before the upgrade were restored,\n"
-       . "     plus the dispatch heartbeat above; do not restore entries removed by step 6.\n";
+       . "     plus the dispatch heartbeat above; do not restore entries removed by step 6.\n"
+       . "     This prints nothing when none of the retired scripts is back:\n"
+       . "     crontab -l -u us3 2>/dev/null | grep -E 'gridctl(_pro|_dev)?\\.php' ; grep -rE 'gridctl(_pro|_dev)?\\.php' /etc/crontab /etc/cron.d 2>/dev/null\n";
 }
 ## See upgrade_exit_code(). The summary line is for callers that read --check's outcome.
 echo "SUMMARY failures=$failures pending=$pending input=$needs_input changes=$changes instance_failures=$instance_failures\n";

@@ -778,7 +778,7 @@ function jobs_row_request( $db_handle, array $row, $legacy = false ) {
 ## which ended the whole pass, so every row after it went without a monitor.
 function jobs_restart_skip_reason( array $row, $reqid, $legacy = false ) {
     if ( !jobs_monitor_accepts_instance( (string) $row[ 'us3_db' ] ) ) {
-        return "this release's monitor refuses the instance name; php uslims_jobs.php --busy says what to do";
+        return "no job monitor takes this instance name; php uslims_jobs.php --busy says what to do";
     }
     if ( $reqid === "unknown" ) {
         return array_key_exists( 'HPCAnalysisRequestID', $row )
@@ -804,7 +804,7 @@ function jobs_monitor_accepts_instance( $inst ) {
 }
 
 ## No monitor is sure to import this row's results: an instance name jobmonitor.php refuses, or an Airavata
-## job, whose monitor only imports while its service answers. --restart comes first for those, as --busy says.
+## job, whose monitor only imports while its service answers.
 function jobs_monitor_cannot_import( $inst, $job ) {
     return (bool) preg_match( '/US3-A/i', $job ) || !jobs_monitor_accepts_instance( $inst );
 }
@@ -952,9 +952,7 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
     };
     ## Preserve results that may still exist when this release cannot monitor the instance.
     if ( $reqid !== 0 && !jobs_monitor_accepts_instance( $inst ) && jobs_database_exists( $link, $inst ) ) {
-        return [ false, [ "job $job in $inst is not closed here: this release's monitor refuses the instance name; "
-            . refused_instance_job_guidance( !empty( $host[ 'early' ] ) ) . "."
-            . " --reqid 0 removes only the row, importing nothing and telling nobody" ] ];
+        return [ false, [ "job $job in $inst is not closed here: " . refused_instance_job_guidance( $id, !empty( $host[ 'early' ] ) ) ] ];
     }
     if ( $reqid !== 0 && !empty( $host[ 'early' ] ) ) {
         return [ false, [ "job $job in $inst is not closed here. " . gridctl_early_move_recovery() . "."
@@ -1141,7 +1139,7 @@ function jobs_busy_row_action( array $r, array $monitors, $early, $legacy = fals
     $inst = (string) $r[ 'us3_db' ];
     $job  = (string) $r[ 'gfacID' ];
     if ( !jobs_monitor_accepts_instance( $inst ) ) {
-        return "this release's monitor refuses this instance name; " . refused_instance_job_guidance( $early );
+        return refused_instance_job_guidance( $r[ 'id' ], $early );
     }
     ## Keyed by this row's cluster: another cluster's job with the same number has its own monitor.
     foreach ( [ "$inst:$job@{$r['cluster']}", "$inst:$job" ] as $key ) {

@@ -985,14 +985,17 @@ function prior_code_checkout( $what = 'them' ) {
 function gridctl_early_move_recovery() {
     return "gridctl moved to the new release before these jobs finished, and it can't finish them: "
          . prior_code_checkout() . ", run php uslims_jobs.php --restart as us3,"
-         . " and repeat php uslims_jobs.php --busy until it says idle. Then move both back. Close no job before that";
+         . " and repeat php uslims_jobs.php --busy until it lists only jobs it says no job monitor takes. Then move both back."
+         . " Close no other job before that";
 }
 
-## Refused instance names have no automatic recovery in this release.
-function refused_instance_job_guidance( $early = false ) {
-    return ( $early ? prior_code_checkout() . ", then " : '' )
-         . "pause the upgrade and let existing per-job monitors finish. If no monitor can finish a job, this release"
-         . " has no automatic recovery for this instance name; keep its database and remote job files for administrator recovery";
+## What becomes of a job of a refused instance name; $id is its gfac.analysis row, or null for each row.
+## $early: gridctl moved early; its recovery can't finish these jobs either.
+function refused_instance_job_guidance( $id = null, $early = false ) {
+    return "no job monitor takes jobs of an instance with this name, in 4.2.0 or in this release, and nothing imports"
+         . " their results, which stay at the cluster. As us3, php uslims_jobs.php --close-job " . ( $id === null ? '<id>' : (int) $id )
+         . " --reqid 0 removes the row, importing nothing and telling nobody"
+         . ( $early ? "; the recovery for gridctl's early move doesn't finish these jobs, so close them without waiting for it" : '' );
 }
 
 ## Instance databases whose names this release's job monitor refuses; null when unreadable.
@@ -1028,8 +1031,8 @@ function refused_instance_retire_steps( $name, $dir ) {
 function refused_instance_remedy( $name, $early = false ) {
     return "instance '$name': this release can't run an instance with this name, so the upgrade can't go on"
          . ( !$early ? " (move gridctl and common only after this is clear)" : '' )
-         . ". For its unfinished jobs, "
-         . refused_instance_job_guidance( $early ) . ". Only after its jobs and results are accounted for, "
+         . ". For its unfinished jobs, if any (each listed below with its id), "
+         . refused_instance_job_guidance( null, $early ) . ". Then "
          . refused_instance_retire_steps( $name, null )
          . "; this release has no way to rename it. Then rerun php uslims_jobs.php --busy";
 }
