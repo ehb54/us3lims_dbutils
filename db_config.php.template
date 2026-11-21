@@ -34,11 +34,17 @@ $rsync_user           = $backup_user;          # user for rsync ssh to $rsync_ho
 $rsync_path           = "/backup";
 $rsync_no_hostname    = false;                 # set to true to exclude the hostname from the rsync target path
 $rsync_no_sudo        = false;                 # set to true to not use sudo on the rsync_host 
+$rsync_local          = false;                 # set to true if $rsync_path and $rsync_add_path are on this host (e.g. a mounted backup disk)
+                                               # then no ssh is used, $rsync_host, $rsync_no_sudo and $rsync_path_sudo are ignored,
+                                               # the copies are owned by $rsync_user, $rsync_path and $rsync_add_path are left out of the rsync "add",
+                                               # and $backup_rdiff must be false
 
 ## this section is for configuring additional rsync directories
 
 $rsync_add            = false;                 # set to true to include additonal directories in the rsync
 $rsync_add_delete     = false;                 # set to true to remove files from previous rsyncs
+$rsync_add_exclude_backup_dir = true;          # set to true to leave $backup_dir and $backup_rdiff_temp out of the rsync "add" when they are under one of
+                                               # its includes, as the main rsync already copies the dumps
 $rsync_add_path       = "/backup/sys";         # path for the rsync_add's - can not be the same as $rsync_path nor a path under $rsync_path
 $rsync_path_sudo      = false;                 # set to true if --rsync-path='sudo rsync' is needed. requires rsync host user to allow sudo
 
@@ -46,6 +52,9 @@ $rsync_path_sudo      = false;                 # set to true if --rsync-path='su
 $rsync_add_includes   = [ '/etc', '/home' ];                         
 
 ## directories to exclude from the rsync "add"
+## rsync anchors a leading '/' at the parent of each include, not at the filesystem root (at the include itself if it ends in '/'):
+## for include '/home', '/home/us3/lims/database/utils' works, but for include '/home/us3/lims/database/utils' its dbupgrade
+## subdirectory must be written '/utils/dbupgrade', as '/home/us3/lims/database/utils/dbupgrade' silently matches nothing
 $rsync_add_excludes   = [ '/home/us3/lims/database/utils', '/home/ehb' ];
 
 ## this section needed for httpd config domain updates
