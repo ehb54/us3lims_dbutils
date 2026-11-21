@@ -101,9 +101,9 @@ the tools ask (the backup tool and stage2 ask y/n). The blocks call `command cp`
    `read -rsp 'MariaDB root password: ' DBPW; export DBPW`, and `unset DBPW` after. Run the
    `ALTER TABLE` it prints with `mysql -u root -p -e '<the statement>'`.
 9. Finish as `--apply` prints at its end: uncomment the LIMS cron lines you commented out in
-   step 1, except the gridctl lines `--apply` retired (the others, such as
-   `cluster_status.php` and the nightly backup, stay off until you do, and a later run of the
-   roles' play leaves them off too), then start the services as us3.
+   step 1, except any leftover `gridctl.php`, `gridctl_pro.php` or `gridctl_dev.php` lines `--apply`
+   removed (the others, such as `cluster_status.php` and the nightly backup, stay off until you do,
+   and a later run of the roles' play leaves them off too), then start the services as us3.
 10. Validate: restart the web server, confirm the host is actually serving again, and test
     (log in, submit a job, check queue_viewer.php) before considering the host upgraded.
 
@@ -223,9 +223,9 @@ the new release. Run it the way "Upgrading a host" says, from the same root logi
    `~us3/lims/etc/config/instances/`. Move dbupgrade's export files (`dbupgrade/export-*`) aside
    before a next attempt, whose stage1 refuses while they are there.
 7. Uncomment the LIMS cron lines you commented out in step 1 here and in step 1 of "Upgrading
-   a host", including the gridctl lines in us3's crontab that step 4 put back still commented,
-   and remove the dispatch heartbeat line if step 9 of the upgrade added one (the old gridctl
-   doesn't have it). Then start the old release's services with
+   a host"; in us3's crontab, which step 4 restored, uncomment only the entries that were active
+   before step 1, and remove the dispatch heartbeat line if step 9 of the upgrade added one (the
+   old gridctl doesn't have it). Then start the old release's services with
    `systemctl restart us3-listen` (a plain start does nothing: the unit stays active after
    `services.php stop`), or `php services.php start` as us3 on a host without that unit. Start
    the web server. Test as in step 10 of "Upgrading a host": log in, submit a job, and watch it
@@ -276,7 +276,7 @@ the new release. Run it the way "Upgrading a host" says, from the same root logi
      3. deactivates cluster entries the Slurm code cannot submit to (metascheduler entries, and anything whose submittype is not slurm), or with --convert-http converts the national HPC entries left over from Airavata (active or not) to the template's SSH shape -- conversion never activates an entry or its status probe, deliberately -- then sets the global_config.php settings the new code requires (both stall timers 0, tenant scope, local cluster, env_script_lines per cluster, and single_node with maxproc <= ppn <= CPUs on one-node appliances)
      4. records the host key for each active cluster and any cluster named with --activate that isn't active yet, and checks ssh for us3 and the web account (the PHP-FPM pool user); authorizes an account's own key too, but only for the host's own local cluster -- a remote cluster still needs that account's key created if missing and authorized for login by hand, which --activate's own message says when it applies
      5. creates the shared circuit-breaker directory, the shared ssh-control directory, elog.txt and its HMAC key (shared from the start so a split web/us3 account host does not depend on whichever account touches them first), the gfac.runtime_prediction table the runtime-advisory pilot uses if it is ever turned on -- including, for a pilot table created without prediction_cluster/prediction_cluster_source, the additive column migration (runtime_pilot_table_add_prediction_cluster.sql) those two columns need ; it no longer creates the retired job-count selector's tables (metascheduler_decision, cluster_status_nudge), and an existing decision table is kept as history
-     6. removes the gridctl cron entries from the crontabs (us3's, /etc/crontab, /etc/cron.d), under gridctl.php and the gridctl_pro/dev names before it, since each job's jobmonitor now carries it to a terminal state
+     6. removes any leftover entries for the retired gridctl.php, gridctl_pro.php and gridctl_dev.php from us3's crontab, /etc/crontab and /etc/cron.d. Hosts normally have none: per-job monitors already manage jobs. These names remain in the cleanup matcher only so a stale entry cannot call a removed script.
      7. installs the util/csp policy as Report-Only in Apache (lims-csp.conf) unless a policy is already configured; enforcing it is a later step
      8. verifies the result, including that every active cluster passes the submission sizing gate rather than refusing every job
      9. per instance: migrates people_audit.created_at to UTC if not already done, using the running config.php (or overlay) each instance already connects with -- idempotent, so a host dbupgrade/stage1+stage2 already migrated is reported 'ok' here, not migrated again; creates the dispatch tables; checks that the instance has every table, column and enum value us3.sql defines, and if not, FAILs it, naming stage1 and stage2, and loads no procedures there; loads the release's stored procedures. Host-level: the dbinst base (dbinst-base.v1.php) and `instances/` under `~us3/lims/etc/config` that newinst needs to make an instance, made from the instances' and newinst's configs as the roles make them, when the host has none (with no instance yet, dbinst's contract comes from a temporary clone at db_config.php's dbinst entry); db_config.php's `$repo_branches` dbinst entry, set to the branch or tag the instances run, since newinst clones a new instance from it; the gfac dispatch tables and gfac.analysis.HPCAnalysisRequestID. The idle check refuses a host with any row in gfac.analysis, since a finished cleanup deletes its row; a row without a request that reaches this step is listed and kept, and no monitor acts on it

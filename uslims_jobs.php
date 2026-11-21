@@ -304,7 +304,7 @@ if ( $busy_check ) {
         count( active_dispatchers() ),
         ## Only before listen-config.php is converted: afterwards such a database is no 4.2.0 instance in flight.
         [ 'early' => gridctl_moved_early( $us3bin ), 'refused' => ( $listen_config_version ?? 0 ) < 2 ? (array) $refused : [],
-          'controller' => is_file( "$us3bin/gridctl_pro.php" ), 'legacy' => ( $listen_config_version ?? 0 ) < 2 ] );
+          'legacy' => ( $listen_config_version ?? 0 ) < 2 ] );
     foreach ( $busy_notes as $note ) {
         echo "note: $note\n";
     }
@@ -321,7 +321,7 @@ if ( $close_job !== false ) {
         function ( $to, $subject, $body ) {
             return mail( $to, $subject, $body );
         }, (string) ( ( $global_site_admin_email ?? '' ) ?: ( $admin_email ?? '' ) ),
-        [ 'early' => gridctl_moved_early( $us3bin ), 'controller' => is_file( "$us3bin/gridctl_pro.php" ),
+        [ 'early' => gridctl_moved_early( $us3bin ),
           'legacy' => ( $listen_config_version ?? 0 ) < 2, 'db' => (string) $db ] );
     echo implode( "\n", $close[ 1 ] ) . "\n";
     exit( !$close[ 0 ] ? 1 : ( ( $close[ 2 ] ?? true ) ? 0 : 3 ) );
@@ -778,7 +778,7 @@ function jobs_row_request( $db_handle, array $row, $legacy = false ) {
 ## which ended the whole pass, so every row after it went without a monitor.
 function jobs_restart_skip_reason( array $row, $reqid, $legacy = false ) {
     if ( !jobs_monitor_accepts_instance( (string) $row[ 'us3_db' ] ) ) {
-        return "this release's monitor refuses the instance name; php uslims_jobs.php --busy says what to do";
+        return "no job monitor takes this instance name; php uslims_jobs.php --busy says what to do";
     }
     if ( $reqid === "unknown" ) {
         return array_key_exists( 'HPCAnalysisRequestID', $row )
@@ -804,7 +804,7 @@ function jobs_monitor_accepts_instance( $inst ) {
 }
 
 ## No monitor is sure to import this row's results: an instance name jobmonitor.php refuses, or an Airavata
-## job, whose monitor only imports while its service answers. --restart comes first for those, as --busy says.
+## job, whose monitor only imports while its service answers.
 function jobs_monitor_cannot_import( $inst, $job ) {
     return (bool) preg_match( '/US3-A/i', $job ) || !jobs_monitor_accepts_instance( $inst );
 }
@@ -950,11 +950,9 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
     $delete = function () use ( $link, $gdb, $id ) {
         return mysqli_query( $link, "DELETE FROM $gdb.analysis WHERE id = " . (int) $id ); // NOSONAR $gdb is validated above
     };
-    ## Both can still import it: closing would fail a job whose results may exist.
+    ## Preserve results that may still exist when this release cannot monitor the instance.
     if ( $reqid !== 0 && !jobs_monitor_accepts_instance( $inst ) && jobs_database_exists( $link, $inst ) ) {
-        return [ false, [ "job $job in $inst is not closed here: this release's monitor refuses the instance name, and 4.2.0's"
-            . " controller imports its jobs: " . legacy_controller_command( $host[ 'controller' ] ?? true ) . "."
-            . " --reqid 0 removes only the row, importing nothing and telling nobody" ] ];
+        return [ false, [ "job $job in $inst is not closed here: " . refused_instance_job_guidance( $id, !empty( $host[ 'early' ] ) ) ] ];
     }
     if ( $reqid !== 0 && !empty( $host[ 'early' ] ) ) {
         return [ false, [ "job $job in $inst is not closed here. " . gridctl_early_move_recovery() . "."
@@ -1098,9 +1096,8 @@ function jobs_close_row( $link, $gdb, $id, $reqid, array $monitors, callable $ma
 function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines, $dispatchers = 0, array $host = [] ) {
     $busy  = [];
     $early = !empty( $host[ 'early' ] );
-    $controller = $host[ 'controller' ] ?? true;
     foreach ( $host[ 'refused' ] ?? [] as $name ) {
-        $busy[] = refused_instance_remedy( $name, $controller );
+        $busy[] = refused_instance_remedy( $name, $early );
     }
     if ( $dispatchers ) {
         $busy[] = "$dispatchers dispatchone.php running";
@@ -1124,7 +1121,7 @@ function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines, $d
         }
         foreach ( $analysis[ 'rows' ] ?? [] as $r ) {
             $busy[] = "  id {$r['id']}: job {$r['gfacID']} in {$r['us3_db']} on {$r['cluster']}, {$r['status']}: "
-                    . jobs_busy_row_action( $r, $monitors, $early, $controller, !empty( $host[ 'legacy' ] ) );
+                    . jobs_busy_row_action( $r, $monitors, $early, !empty( $host[ 'legacy' ] ) );
         }
         $more = $analysis[ 'unfinished' ] - count( $analysis[ 'rows' ] ?? [] );
         if ( isset( $analysis[ 'rows' ] ) && $more > 0 ) {
@@ -1138,11 +1135,11 @@ function jobs_busy_report( $analysis, array $monitors, array $dispatch_lines, $d
 }
 
 ## What finishes one listed gfac.analysis row.
-function jobs_busy_row_action( array $r, array $monitors, $early, $controller = true, $legacy = false ) {
+function jobs_busy_row_action( array $r, array $monitors, $early, $legacy = false ) {
     $inst = (string) $r[ 'us3_db' ];
     $job  = (string) $r[ 'gfacID' ];
     if ( !jobs_monitor_accepts_instance( $inst ) ) {
-        return "this release's monitor refuses this instance name; 4.2.0's controller imports it: " . legacy_controller_command( $controller );
+        return refused_instance_job_guidance( $r[ 'id' ], $early );
     }
     ## Keyed by this row's cluster: another cluster's job with the same number has its own monitor.
     foreach ( [ "$inst:$job@{$r['cluster']}", "$inst:$job" ] as $key ) {
