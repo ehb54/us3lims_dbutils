@@ -287,12 +287,26 @@ if ( $dispatch_tables ) {
 ## export all GRANTS
 # also dump the grant table in the form of a script to re-establish
 # be sure to edit and remove problematic ones, i.e., root
+## Every account in mysql.user is either in the file or named as not exported. An account that
+## cannot be exported does not stop the data backup or its rsync; it is reported in the file, the
+## log and the summary, and the run then ends with a non-zero exit status.
+$grants_report = "";
 {
     $db = "GRANTS";
     $dumpfile = "uslims3_$db-dump-$date.sql";
     echo "starting: exporting GRANTS to $dumpfile\n";
-    $cmd = "(mysql --defaults-file=$myconf -B -N -u root -e \"SELECT DISTINCT CONCAT( 'SHOW GRANTS FOR ''', user, '''@''', host, ''';') AS query FROM mysql.user\" | mysql --defaults-file=$myconf -u root | sed 's/\(GRANT .*\)/\\1;/;s/^\(Grants for .*\)/## \\1 ##/;/##/{x;p;x;}' > $dumpfile) 2>> $logf";
-    backup_rsync_run_cmd( $cmd );
+    $grants_failed = export_grants( $db_handle, $dumpfile );
+    if ( !file_exists( $dumpfile ) ) {
+        backup_rsync_failure( "Error exporting '$dumpfile' terminating\n" . implode( "\n", $grants_failed ) );
+    }
+    if ( count( $grants_failed ) ) {
+        $grants_report =
+            "ERROR: the GRANTS export $dumpfile is incomplete; a restore from it would not recreate:\n"
+            . implode( "\n", $grants_failed ) . "\n"
+            ;
+        file_put_contents( $logf, $grants_report, FILE_APPEND );
+        echo $grants_report;
+    }
     echo "complete: exporting $db to $dumpfile\n";
     $cdumpfile = "$dumpfile.$compressext";
     echo "starting: compressing $dumpfile with $compresswith\n";
@@ -595,6 +609,11 @@ Rsync destination  %s:%s
     } else {
        $emaillog = "$backup_logs/summary-email-$date.txt";
     }
+    if ( strlen( $grants_report ) ) {
+       $summary_report = $grants_report . echoline( "=", 80, false ) . $summary_report;
+       $subject = "backup summary GRANTS EXPORT ERRORS" . ( strlen( $df_report ) ? " and DF WARNINGS" : "" ) . " for $backup_host";
+       $emaillog = "$backup_logs/summary-ERRORS-email-$date.txt";
+    }
 
     file_put_contents( $emaillog, echoline( "=", 80, false ) . $subject . "\n" . echoline( "=", 80, false ) . $summary_report );
     run_cmd( "sudo chown $backup_user:$backup_user $emaillog", false );
@@ -611,4 +630,79 @@ Rsync destination  %s:%s
     } else {
         echo "reports emailed to $backup_email_address\n";
     }
+}
+
+## A GRANTS export that left accounts out fails the run, once everything else is done.
+if ( strlen( $grants_report ) ) {
+    error_exit( $grants_report . "The rest of the backup completed." );
+}
+
+## Writes $dumpfile as a script that re-establishes every account in mysql.user: per account a
+## "## Grants for user@host ##" header, CREATE USER IF NOT EXISTS (so a restore also makes the
+## accounts that have no password) and its SHOW GRANTS lines. An account that cannot be read does
+## not stop the others; it is named at the top of the file. Returns one line per account (or step)
+## that could not be exported, so an empty array means every account is in the file.
+function export_grants( $db_handle, $dumpfile ) {
+    $failed = [];
+    $blocks = "";
+    $res = export_grants_query( $db_handle, "SELECT user, host, is_role FROM mysql.user ORDER BY host, user", $error );
+    if ( !$res ) {
+        $failed[] = "could not list the accounts in mysql.user: $error";
+    } else {
+        $accounts = [];
+        while ( $row = mysqli_fetch_row( $res ) ) {
+            $accounts[] = $row;
+        }
+        foreach ( $accounts as list( $acct_user, $acct_host, $is_role ) ) {
+            $u = mysqli_real_escape_string( $db_handle, $acct_user );
+            $h = mysqli_real_escape_string( $db_handle, $acct_host );
+            if ( $is_role == 'Y' ) {
+                $acct   = "'$u'";
+                $create = "CREATE ROLE IF NOT EXISTS $acct";
+            } else {
+                $acct = "'$u'@'$h'";
+                $cres = export_grants_query( $db_handle, "SHOW CREATE USER $acct", $error );
+                if ( !$cres || !( $crow = mysqli_fetch_row( $cres ) ) ) {
+                    $failed[] = "$acct: SHOW CREATE USER: $error";
+                    continue;
+                }
+                $create = preg_replace( '/^CREATE USER /', 'CREATE USER IF NOT EXISTS ', $crow[ 0 ] );
+            }
+            $gres = export_grants_query( $db_handle, "SHOW GRANTS FOR $acct", $error );
+            if ( !$gres ) {
+                $failed[] = "$acct: SHOW GRANTS: $error";
+                continue;
+            }
+            $header = mysqli_fetch_field( $gres )->name;
+            $lines  = [ $create ];
+            while ( $grow = mysqli_fetch_row( $gres ) ) {
+                $lines[] = $grow[ 0 ];
+            }
+            $blocks .= "\n## $header ##\n" . implode( ";\n", $lines ) . ";\n";
+        }
+    }
+    $head = "";
+    foreach ( $failed as $f ) {
+        $head .= "## NOT EXPORTED: $f\n";
+    }
+    if ( file_put_contents( $dumpfile, $head . $blocks ) === false ) {
+        $failed[] = "could not write $dumpfile";
+    }
+    return $failed;
+}
+
+## mysqli_query that reports an error as false plus $error, under PHP 7 (a warning, suppressed
+## here since the caller reports it) and PHP 8.1+ (an exception by default) alike.
+function export_grants_query( $db_handle, $query, &$error ) {
+    $error = "";
+    try {
+        $res = @mysqli_query( $db_handle, $query );
+    } catch ( mysqli_sql_exception $e ) {
+        $error = "(" . $e->getCode() . ") " . $e->getMessage();
+        return false;
+    }
+    if ( !$res ) {
+        $error = "(" . mysqli_errno( $db_handle ) . ") " . mysqli_error( $db_handle );
+    }
+    return $res;
 }
