@@ -62,6 +62,7 @@ if ( count( $u_argv ) ) {
 }    
             
 include "utility.php";
+require_once "$hdir/grants_export.php";
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
@@ -287,12 +288,26 @@ if ( $dispatch_tables ) {
 ## export all GRANTS
 # also dump the grant table in the form of a script to re-establish
 # be sure to edit and remove problematic ones, i.e., root
+## Every account in mysql.user is either in the file or named as not exported. An account that
+## cannot be exported does not stop the data backup or its rsync; it is reported in the file, the
+## log and the summary, and the run then ends with a non-zero exit status.
+$grants_report = "";
 {
     $db = "GRANTS";
     $dumpfile = "uslims3_$db-dump-$date.sql";
     echo "starting: exporting GRANTS to $dumpfile\n";
-    $cmd = "(mysql --defaults-file=$myconf -B -N -u root -e \"SELECT DISTINCT CONCAT( 'SHOW GRANTS FOR ''', user, '''@''', host, ''';') AS query FROM mysql.user\" | mysql --defaults-file=$myconf -u root | sed 's/\(GRANT .*\)/\\1;/;s/^\(Grants for .*\)/## \\1 ##/;/##/{x;p;x;}' > $dumpfile) 2>> $logf";
-    backup_rsync_run_cmd( $cmd );
+    $grants_failed = export_grants( $db_handle, $dumpfile );
+    if ( !file_exists( $dumpfile ) ) {
+        backup_rsync_failure( "Error exporting '$dumpfile' terminating\n" . implode( "\n", $grants_failed ) );
+    }
+    if ( count( $grants_failed ) ) {
+        $grants_report =
+            "ERROR: the GRANTS export $dumpfile is incomplete; a restore from it would not recreate:\n"
+            . implode( "\n", $grants_failed ) . "\n"
+            ;
+        file_put_contents( $logf, $grants_report, FILE_APPEND );
+        echo $grants_report;
+    }
     echo "complete: exporting $db to $dumpfile\n";
     $cdumpfile = "$dumpfile.$compressext";
     echo "starting: compressing $dumpfile with $compresswith\n";
@@ -595,6 +610,11 @@ Rsync destination  %s:%s
     } else {
        $emaillog = "$backup_logs/summary-email-$date.txt";
     }
+    if ( strlen( $grants_report ) ) {
+       $summary_report = $grants_report . echoline( "=", 80, false ) . $summary_report;
+       $subject = "backup summary GRANTS EXPORT ERRORS" . ( strlen( $df_report ) ? " and DF WARNINGS" : "" ) . " for $backup_host";
+       $emaillog = "$backup_logs/summary-ERRORS-email-$date.txt";
+    }
 
     file_put_contents( $emaillog, echoline( "=", 80, false ) . $subject . "\n" . echoline( "=", 80, false ) . $summary_report );
     run_cmd( "sudo chown $backup_user:$backup_user $emaillog", false );
@@ -611,4 +631,9 @@ Rsync destination  %s:%s
     } else {
         echo "reports emailed to $backup_email_address\n";
     }
+}
+
+## A GRANTS export that left accounts out fails the run, once everything else is done.
+if ( strlen( $grants_report ) ) {
+    error_exit( $grants_report . "The rest of the backup completed." );
 }

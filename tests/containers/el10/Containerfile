@@ -1,0 +1,5 @@
+# EL10 LIMS hosts: OL10 AppStream MariaDB 10.11 and PHP 8.3 (tests/run.sh)
+FROM docker.io/library/oraclelinux:10
+RUN dnf -y install mariadb-server mariadb php-cli php-mysqlnd procps-ng util-linux \
+ && dnf clean all
+USER mysql
