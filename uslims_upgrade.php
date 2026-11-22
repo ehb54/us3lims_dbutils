@@ -1200,6 +1200,19 @@ function template_cluster( $name, &$why = null ) {
     return $entries[ $name ];
 }
 
+## The inactive 'http' entries --convert-http still has to convert: not active, and not one the
+## active-entry loop already deactivated and reported. Pure.
+function inactive_http_entries( array $clusters, array $active, array $handled ) {
+    $names = [];
+    foreach ( $clusters as $name => $c ) {
+        if ( is_array( $c ) && !isset( $active[ $name ] ) && !isset( $handled[ $name ] )
+             && strtolower( (string) ( $c[ 'submittype' ] ?? '' ) ) === 'http' ) {
+            $names[] = (string) $name;
+        }
+    }
+    return $names;
+}
+
 ## The cluster_config.php probes that are on for a cluster whose global_config.php entry is,
 ## or after this run will be, inactive. cluster_status.php probes whatever is on there,
 ## so such a probe keeps reporting a cluster nobody can submit to. Pure.
@@ -2395,6 +2408,7 @@ if ( $configured_breaker !== '' ) {
 }
 
 $managed = [];     ## PHP assignments for the managed block, in order
+$handled_http = []; ## active 'http' entries step 3's first loop already reported
 $clusters = is_array( $gc[ 'cluster_details' ] ?? null ) ? $gc[ 'cluster_details' ] : [];
 $active   = array_filter( $clusters, function ( $c ) { return is_array( $c ) && ( $c[ 'active' ] ?? false ); } );
 
@@ -2480,6 +2494,7 @@ foreach ( $active as $name => $c ) {
                             . reason( $tpl_why ) . ", so there is nothing to convert it to" );
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'active\' ] = false;';
             unset( $active[ $name ] );
+            $handled_http[ $name ] = true;
             continue;
         }
         $changed = [];
@@ -2539,14 +2554,8 @@ foreach ( $active as $name => $c ) {
 ## of them. Same conversion, minus the active-entry bookkeeping (there is no
 ## 'active' flag to turn off, and nothing here turns one on).
 if ( $convert_http ) {
-    foreach ( $clusters as $name => $c ) {
-        if ( isset( $active[ $name ] ) || !is_array( $c ) ) {
-            continue;
-        }
-        $is_http = isset( $c[ 'submittype' ] ) && strtolower( (string) $c[ 'submittype' ] ) === 'http';
-        if ( !$is_http ) {
-            continue;
-        }
+    foreach ( inactive_http_entries( $clusters, $active, $handled_http ) as $name ) {
+        $c = $clusters[ $name ];
         $want = template_cluster( $name, $tpl_why );
         if ( $want === null ) {
             report( 'note', "inactive cluster '$name' is an 'http' entry and " . reason( $tpl_why )
