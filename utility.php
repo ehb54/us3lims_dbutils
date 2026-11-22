@@ -634,42 +634,135 @@ function lims_database_server( $link ) {
 
 ## Join database membership to existing paths; never drop a database because its files
 ## are missing. The scanner remains responsible for single-instance and overlay resolution.
+## A config that cannot be read is only a problem when a database is left without one.
 function reconcile_lims_instances( array $databases, array $configs, array $paths, $wwwpath ) {
     $result = [ 'databases' => $databases, 'configs' => [], 'paths' => [], 'dirs' => [],
-                'notes' => [], 'errors' => [], 'ignored_dirs' => [] ];
+                'notes' => [], 'errors' => [], 'ignored_dirs' => [], 'unmapped' => [], 'problem_dirs' => [] ];
     $seen = [];
+    $unread = [];
+    $own_unread = [];
     foreach ( $configs as $label => $cfg ) {
+        $dir = rtrim( $wwwpath, '/' ) . '/uslims3' . ( $label === 'default' ? '' : "/$label" );
+        if ( isset( $cfg[ 'endpoint_error' ] ) ) {
+            ## Possibly a live instance on another server: never skipped on a note.
+            $result[ 'errors' ][] = "$label: " . $cfg[ 'endpoint_error' ] . '; correct the configuration before upgrading';
+            $result[ 'problem_dirs' ][] = $dir;
+            continue;
+        }
+        if ( isset( $cfg[ 'error' ] ) && in_array( (string) $label, $databases, true ) ) {
+            ## Named for a tenant database: that tenant's own docroot, never a leftover.
+            $result[ 'errors' ][] = "$label: " . $cfg[ 'error' ] . "; $label is a tenant database, so this is its docroot; restore or correct its config before upgrading";
+            $result[ 'problem_dirs' ][] = $dir;
+            $own_unread[ $label ] = true;
+            continue;
+        }
         if ( isset( $cfg[ 'error' ] ) ) {
-            $result[ 'errors' ][] = "$label: " . $cfg[ 'error' ];
+            $unread[ $label ] = $cfg[ 'error' ];
+            $result[ 'ignored_dirs' ][] = $dir;
+            $result[ 'notes' ][] = "$label: " . $cfg[ 'error' ] . "; not used as a tenant, files left untouched";
             continue;
         }
         $db = (string) $cfg[ 'dbname' ];
         if ( !in_array( $db, $databases, true ) ) {
-            $result[ 'ignored_dirs' ][] = rtrim( $wwwpath, '/' ) . '/uslims3' . ( $label === 'default' ? '' : "/$label" );
+            $result[ 'ignored_dirs' ][] = $dir;
             $result[ 'notes' ][] = "$label: config names '$db', which is not a tenant database on the inventory server; skipped, files left untouched";
             continue;
         }
         if ( isset( $seen[ $db ] ) ) {
             $result[ 'errors' ][] = "$db: multiple instance configs ($seen[$db], $label); resolve the duplicate mapping before upgrading";
+            $result[ 'problem_dirs' ][] = $dir;
             continue;
         }
         $seen[ $db ] = $label;
         $result[ 'configs' ][ $label ] = $cfg;
         $result[ 'paths' ][ $label ] = $paths[ $label ];
-        $result[ 'dirs' ][ $label ] = rtrim( $wwwpath, '/' ) . '/uslims3' . ( $label === 'default' ? '' : "/$label" );
+        $result[ 'dirs' ][ $label ] = $dir;
     }
-    foreach ( array_diff( $databases, array_keys( $seen ) ) as $db ) {
-        $result[ 'errors' ][] = "$db: database exists but no readable instance config maps to it under $wwwpath/uslims3; restore or correct its docroot/config before upgrading";
+    ## A database whose own docroot config could not be read is not upgraded from any other copy.
+    foreach ( array_keys( $own_unread ) as $db ) {
+        if ( isset( $seen[ $db ] ) ) {
+            $mapped = $seen[ $db ];
+            unset( $result[ 'configs' ][ $mapped ], $result[ 'paths' ][ $mapped ], $result[ 'dirs' ][ $mapped ] );
+            $result[ 'problem_dirs' ][] = rtrim( $wwwpath, '/' ) . '/uslims3' . ( $mapped === 'default' ? '' : "/$mapped" );
+        }
     }
+    foreach ( array_diff( $databases, array_keys( $seen ), array_keys( $own_unread ) ) as $db ) {
+        $why = "$db: database exists but no readable instance config maps to it under $wwwpath/uslims3";
+        if ( $unread ) {
+            $list = [];
+            foreach ( $unread as $label => $error ) { $list[] = "$label ($error)"; }
+            $why .= '; configs that could not be read: ' . implode( ', ', $list );
+        }
+        $result[ 'errors' ][] = "$why; restore or correct its docroot/config before upgrading";
+        $result[ 'unmapped' ][] = $db;
+        $result[ 'problem_dirs' ][] = rtrim( $wwwpath, '/' ) . "/uslims3/$db";
+        foreach ( array_keys( $unread ) as $label ) {
+            $result[ 'problem_dirs' ][] = rtrim( $wwwpath, '/' ) . '/uslims3' . ( $label === 'default' ? '' : "/$label" );
+        }
+    }
+    $result[ 'problem_dirs' ] = array_values( array_unique( $result[ 'problem_dirs' ] ) );
     return $result;
 }
 
+## [ host, port ] of a mysqli host string ("host" or "host:port"); port 3306 when absent.
+function lims_db_endpoint( $host ) {
+    $host = strtolower( trim( (string) $host ) );
+    $port = 3306;
+    if ( preg_match( '/^\[(.*)\](?::(\d+))?$/', $host, $m ) ) {
+        $host = $m[ 1 ];
+        $port = isset( $m[ 2 ] ) ? (int) $m[ 2 ] : 3306;
+    } elseif ( substr_count( $host, ':' ) === 1 ) {
+        list( $host, $p ) = explode( ':', $host );
+        $port = (int) $p;
+    }
+    return [ $host, $port ];
+}
+
+function lims_db_host_is_local( $host ) {
+    if ( in_array( $host, [ 'localhost', 'localhost.localdomain', '127.0.0.1', '::1' ], true ) ) {
+        return true;
+    }
+    $self = strtolower( (string) gethostname() );
+    if ( $host === $self || strpos( $self, "$host." ) === 0 ) {
+        return true;
+    }
+    $ip = gethostbyname( $host );
+    return $ip !== $host && ( strpos( $ip, '127.' ) === 0 || $ip === gethostbyname( $self ) );
+}
+
+## Same port, and the same name, the same address, or both this host: the same endpoint, no login needed.
+function lims_same_db_endpoint( $a, $b ) {
+    list( $ha, $pa ) = lims_db_endpoint( $a );
+    list( $hb, $pb ) = lims_db_endpoint( $b );
+    if ( $pa !== $pb ) {
+        return false;
+    }
+    if ( $ha === $hb || ( lims_db_host_is_local( $ha ) && lims_db_host_is_local( $hb ) ) ) {
+        return true;
+    }
+    $ia = gethostbyname( $ha );
+    return filter_var( $ia, FILTER_VALIDATE_IP ) && $ia === gethostbyname( $hb );
+}
+
 ## Read one host inventory using the existing dbutils account. No grants, prompts or writes.
-## The database endpoint is explicit; differently spelled config endpoints must be shown
-## to reach the same server, rather than treating an unreachable remote DB as deleted.
+## A config naming another endpoint is checked with that config's own account, never
+## db_config.php's, rather than treating an unreachable remote DB as deleted.
 function lims_instance_inventory( $wwwpath, $us3_home, $db_config ) {
+    ## Failures are reported in the result, whatever the caller's mysqli report mode.
+    $driver = new mysqli_driver();
+    $report_mode = $driver->report_mode;
+    mysqli_report( MYSQLI_REPORT_OFF );
+    try {
+        return lims_instance_inventory_read( $wwwpath, $us3_home, $db_config );
+    } finally {
+        mysqli_report( $report_mode );
+    }
+}
+
+function lims_instance_inventory_read( $wwwpath, $us3_home, $db_config ) {
     $empty = [ 'databases' => [], 'configs' => [], 'paths' => [], 'dirs' => [],
-               'host_configs' => [], 'host_dirs' => [], 'notes' => [], 'errors' => [], 'ignored_dirs' => [] ];
+               'host_configs' => [], 'host_dirs' => [], 'notes' => [], 'errors' => [], 'ignored_dirs' => [],
+               'unmapped' => [], 'problem_dirs' => [], 'membership_known' => false ];
     $login = config_vars( $db_config );
     if ( !isset( $login[ 'dbhost' ], $login[ 'user' ], $login[ 'passwd' ] ) ) {
         $empty[ 'errors' ][] = "cannot read inventory credentials from $db_config; use the existing dbutils configuration";
@@ -677,7 +770,8 @@ function lims_instance_inventory( $wwwpath, $us3_home, $db_config ) {
     }
     $link = @mysqli_connect( $login[ 'dbhost' ], $login[ 'user' ], $login[ 'passwd' ] );
     if ( !$link ) {
-        $empty[ 'errors' ][] = "cannot connect to the inventory server from $db_config; instance membership is unknown";
+        $empty[ 'errors' ][] = "cannot connect to the inventory server " . $login[ 'dbhost' ] . " from $db_config ("
+                             . mysqli_connect_error() . "); instance membership is unknown";
         return $empty;
     }
     try {
@@ -693,20 +787,23 @@ function lims_instance_inventory( $wwwpath, $us3_home, $db_config ) {
         $configs = discover_lims_instance_configs( $wwwpath, $us3_home, $paths, $host_configs );
         $server = lims_database_server( $link );
         foreach ( $configs as $label => &$cfg ) {
-            if ( isset( $cfg[ 'error' ] ) || $cfg[ 'dbhost' ] === $login[ 'dbhost' ] ) {
+            if ( isset( $cfg[ 'error' ] ) || lims_same_db_endpoint( $cfg[ 'dbhost' ], $login[ 'dbhost' ] ) ) {
                 continue;
             }
-            $other = @mysqli_connect( $cfg[ 'dbhost' ], $login[ 'user' ], $login[ 'passwd' ] );
+            $other = @mysqli_connect( $cfg[ 'dbhost' ], $cfg[ 'dbusername' ], $cfg[ 'dbpasswd' ] );
+            $why = $other ? '' : mysqli_connect_error();
             $same = $other && $server !== null && lims_database_server( $other ) === $server;
             if ( $other ) {
                 mysqli_close( $other );
             }
             if ( !$same ) {
-                $cfg = [ 'error' => 'config database endpoint cannot be verified as the inventory server; correct the configuration before upgrading' ];
+                $cfg = [ 'endpoint_error' => "config database endpoint " . $cfg[ 'dbhost' ] . " cannot be verified as the inventory server "
+                                  . $login[ 'dbhost' ] . ( $why !== '' ? " ($why)" : ' (a different server answered)' ) ];
             }
         }
         unset( $cfg );
         $result = reconcile_lims_instances( $databases, $configs, $paths, $wwwpath );
+        $result[ 'membership_known' ] = true;
         $result[ 'host_configs' ] = $host_configs;
         $result[ 'host_dirs' ] = [];
         foreach ( $host_configs as $label => $entry ) {

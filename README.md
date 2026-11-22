@@ -25,8 +25,9 @@ the tools ask (the backup tool and stage2 ask y/n). The blocks call `command cp`
 2. Check each checkout for local changes as root: `php uslims_git_info.php` (`--diff-report`
    shows them). Before resolving them, record as root each checkout's commit, branch and local
    changes, staged and not, and this repo's `db_config.php`, which "Backing out a failed upgrade"
-   puts back. This finds the checkouts where `uslims_git_info.php` does, following symlinks as it
-   does:
+   puts back. `uslims_git_info.php` also reports any instance inventory problem that would stop
+   `uslims_upgrade.php` (see "Instance discovery during upgrades" below). This finds the
+   checkouts where `uslims_git_info.php` does, following symlinks as it does:
 
    ```
    mkdir -p ~us3/lims/etc/pre-upgrade-changes
@@ -120,6 +121,33 @@ previous one, or several releases behind at once: every step in `uslims_upgrade.
 checks the host's own current state and decides whether it has anything to do, rather
 than assuming a specific starting point. A host several releases behind just sees more
 `todo`s in one `--apply`, not a different tool.
+
+### Instance discovery during upgrades
+
+`uslims_upgrade.php`, `migrate_people_audit_utc.php` (without `--db-*`), `uslims_git_info.php`,
+`uslims_domain_info.php` and `uslims_clusters.php` find the instances by matching the tenant
+databases to the instance configs under `uslims3/`. The database list comes from
+`db_config.php`'s account (the roles configure root), which needs global `SHOW DATABASES` or
+`ALL PRIVILEGES`; a partial view is not taken to mean a database was deleted. Each instance's
+own config supplies the credentials for its migrations. No new grants or password prompts.
+
+`uslims_upgrade.php` refuses before step 0, changing nothing, when:
+- a tenant database has no readable config that names it;
+- two configs name the same database;
+- a config names a database server other than `db_config.php`'s and cannot be shown to be the
+  same server with that config's own account. Spellings of this host's own server on the same
+  port (`localhost`, `127.0.0.1`, the host name) count as the same server.
+  A leftover config that names another server this way also stops the upgrade (it may be a live
+  instance whose database is elsewhere); move it out of `uslims3/` if it is retired.
+- a config that cannot be read sits in a directory named for a tenant database.
+
+A leftover docroot is reported as a note and left untouched: its config names a database that
+does not exist, its config cannot be read (a retired overlay instance, for example), or it has
+only `VERSION` or loader files. It is not migrated and is not used for base or branch
+selection. `uslims_git_info.php` lists every checkout and reports inventory problems in every
+mode; `--update-pull` updates the others and leaves the checkouts concerned alone. With no
+tenants, the base-contract fallback is kept. Backup/export membership comes from
+`existing_dbs()` and does not depend on website files.
 
 ## Backing out a failed upgrade
 
@@ -351,33 +379,9 @@ the new release. Run it the way "Upgrading a host" says, from the same root logi
     - the dispatch tables (dispatch_request, dispatch_attempt, dispatch_event) are defined once in us3_sql's us3_dispatch.sql, which us3.sql loads and uslims_upgrade.php applies in place, and dbmigrate exports them even when its schema rev predates them
     - converts each dbinstance's people_audit.created_at to UTC from the zone the original exporting host actually wrote those rows in, captured by stage1 into a per-dbinstance timezone file and carried across the export/import round trip -- falls back to the stage2 connection's own session time zone for a package made before this file existed, once per dbinstance -- each row's created_at_utc flag travels with the data, so a later re-import does not shift already-correct rows again; a named zone always converts row-by-row in PHP (DateTimeZone), since CONVERT_TZ() returns NULL without the server's time zone tables -- no zone tables and no privilege on mysql.time_zone_name required
     - a row actually written during the repeated local hour when clocks fall back (e.g. 1:30am occurring twice) is ambiguous by nature; accepted, since the original data carries no way to tell the two occurrences apart. Which occurrence a conversion resolves it to depends on the path, and is not uniform across zones: confirmed directly (MariaDB, named zone 'America/Chicago', west of UTC) CONVERT_TZ() resolves it to daylight time (the first occurrence), not standard, so a row genuinely written during the standard-time occurrence converts up to 60 minutes off. The default zone, 'SYSTEM', resolves the same ambiguous hour the other way on that same host (confirmed directly: a server with its OS zone set to 'America/Chicago' reads @@system_time_zone as 'CDT' but CONVERT_TZ(..., 'SYSTEM', '+00:00') against the repeated 01:30 applies the -6h CST offset, not -5h CDT) -- so for SYSTEM there, it is the daylight-time occurrence that converts up to 60 minutes off instead. A named zone east of UTC does not necessarily follow 'America/Chicago''s pattern either: PHP's own DateTime (the path a named zone actually takes -- see above) resolves 'Europe/Berlin''s repeated hour (its clocks fall back in October) to standard time (the second occurrence), confirmed directly, the opposite of 'America/Chicago''s CONVERT_TZ result. It is a real, accepted gap either way, just not a single, predictable direction
-  - uslims_upgrade.php's step 9 runs this same people_audit UTC migration in place, against every LIMS instance already running on the host, using each instance's own config.php -- no new credentials
+  - uslims_upgrade.php's step 9 runs this same people_audit UTC migration in place, against every LIMS instance on the host (found as "Instance discovery during upgrades" describes), using each instance's own config.php for the migration
   - step 9 also loads the release's stored procedures (us3_procedures.sql) into each instance whose procedures are not this release's, with the instance's own account; _dbutils_procedures_checksum() in the instance records the release's checksum and a fingerprint of the routines as loaded, so a later change to them (a rollback) is reloaded
   - migrate_people_audit_utc.php runs the migration by itself, with none of uslims_upgrade.php's or stage2's other machinery: for a host already upgraded in-place before step 9 existed, or to fix one dbinstance by hand
- 
-
-
-### Instance discovery during upgrades
-
-The upgrade, automatic `migrate_people_audit_utc.php` discovery and
-`uslims_git_info.php` reconcile the database list with the host's existing
-instance configs before using tenant checkouts. They use the existing
-`db_config.php` account (the roles configure root), which must have global
-`SHOW DATABASES` or `ALL PRIVILEGES`; a partial account view is not evidence
-that a database was deleted. No new grants or password prompts are added.
-
-A leftover config whose database is absent is reported and excluded from
-tenant migrations, base-template selection and branch selection; its files
-are left untouched. A database with missing/unreadable web config, an ambiguous
-config mapping, or an unverified different database endpoint is an explicit
-preflight failure. Correct the files/configuration and rerun. `VERSION` and
-loader files do not determine whether a tenant exists.
-
-Single-instance roots and base/overlay configs keep their existing resolution.
-Webinfo/newinst `newus3` configs remain host components. With no tenants, the
-existing base-contract fallback is retained. Database backup/export membership
-still comes from `existing_dbs()` and does not depend on website files. The
-standalone audit migration's explicit database-target options remain available.
 
 ## Tests
 

@@ -139,17 +139,12 @@ $targets = $explicit_given
          : $inventory[ 'configs' ];
 
 if ( !$targets ) {
-    echo "no LIMS instance found under $wwwpath/uslims3; nothing to migrate\n";
+    echo "no tenant databases on the inventory server; nothing to migrate\n";
     exit( 0 );
 }
 
 $failures = 0;
 foreach ( $targets as $label => $cfg ) {
-    if ( isset( $cfg[ 'error' ] ) ) {
-        echo "[note] $label: {$cfg['error']}; convert people_audit by hand\n";
-        continue;
-    }
-
     ## Checked here, not left to migrate_people_audit_created_at_to_utc()'s
     ## own sql_identifier_or_die(): that one is fatal, which in discovery
     ## mode would stop this loop over one instance's malformed config and

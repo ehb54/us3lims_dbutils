@@ -377,17 +377,31 @@ if ( !$quiet && !file_exists( $rev_cache ) ) {
     echo "Rev# cache will be created by cloning each of the known repos into " . sys_get_temp_dir() . "/${rev_cache}XXXXXX\n";
 }
 
+## --update-pull leaves alone the checkouts an inventory problem concerns; with membership
+## unknown, that is every instance checkout under uslims3/.
+function inventory_blocks_update( $dir, $inventory, $wwwpath ) {
+    if ( !$inventory ) {
+        return false;
+    }
+    foreach ( $inventory[ 'problem_dirs' ] as $problem ) {
+        if ( $dir === $problem || strpos( $dir, "$problem/" ) === 0 ) {
+            return true;
+        }
+    }
+    return !$inventory[ 'membership_known' ] && strpos( $dir, rtrim( $wwwpath, '/' ) . '/uslims3/' ) === 0;
+}
+
 # update known repos
 
 if ( !$no_db ) {
     mysqli_report( MYSQLI_REPORT_OFF );
     $inventory = lims_instance_inventory( $wwwpath, $us3home, $use_config_file );
-    foreach ( $inventory[ 'notes' ] as $note ) { echo "[note] $note\n"; }
-    foreach ( $inventory[ 'errors' ] as $error ) { echo "[FAIL] $error\n"; }
-    if ( $inventory[ 'errors' ] ) {
-        error_exit( 'instance inventory is incomplete; no repositories were updated' );
-    }
-    foreach ( $inventory[ 'dirs' ] as $dir ) {
+    ## Reported in every mode; --summary keeps its CSV on stdout.
+    $inventory_out = $summary ? STDERR : STDOUT;
+    foreach ( $inventory[ 'notes' ] as $note ) { fwrite( $inventory_out, "[note] $note\n" ); }
+    foreach ( $inventory[ 'errors' ] as $error ) { fwrite( $inventory_out, "[inventory] $error\n" ); }
+    ## A database without a usable config is still listed at its expected path, as before.
+    foreach ( array_merge( $inventory[ 'dirs' ], $inventory[ 'problem_dirs' ] ) as $dir ) {
         $known_repos[ $dir ] = [
             "use" => "lims"
             ,"git" =>
@@ -419,7 +433,7 @@ foreach ( $reposearchpaths as $v ) {
 }
 
 foreach ( $repodirs as $k => $v ) {
-    foreach ( $inventory[ 'ignored_dirs' ] ?? [] as $ignored_dir ) {
+    foreach ( array_diff( $inventory[ 'ignored_dirs' ] ?? [], $inventory[ 'problem_dirs' ] ?? [] ) as $ignored_dir ) {
         if ( $v === $ignored_dir || strpos( $v, $ignored_dir . '/' ) === 0 ) {
             unset( $repodirs[ $k ] );
         }
@@ -619,7 +633,14 @@ if ( $update_pull ) {
     $local_changes_repos = 0;
     $missing_repos       = 0;
     $repos_to_update     = [];
+    $inventory_skipped   = [];
     foreach ( $repos as $k => $v ) {
+        if ( inventory_blocks_update( $k, $inventory ?? null, $wwwpath ) ) {
+            if ( $v->{ 'remote' } != "missing" ) {
+                $inventory_skipped[] = $k;
+            }
+            continue;
+        }
         if ( $v->{ 'remote' } != "missing" ) {
             if ( $update_repo_use == "all" ||
                  $v->{'use'} == $update_repo_use ) {
@@ -639,6 +660,9 @@ if ( $update_pull ) {
 
     if ( $missing_repos ) {
         $notes .= "NOTICE: $missing_repos missing repo(s) will not be updated\n";
+    }
+    if ( $inventory_skipped ) {
+        $notes .= "NOTICE: not updated because of the instance inventory problems above: " . implode( ' ', $inventory_skipped ) . "\n";
     }
 
     foreach ( $repos_to_update as $k ) {
@@ -667,7 +691,15 @@ if ( $update_pull ) {
     }
 }
 
+if ( !empty( $inventory[ 'errors' ] ) ) {
+    $notes .= "NOTICE: the instance inventory has " . count( $inventory[ 'errors' ] ) . " problem(s), listed above\n";
+}
+
 if ( strlen( $notes ) ) {
     echoline();
     echo $notes;
+}
+
+if ( !empty( $inventory_skipped ) ) {
+    exit( 1 );
 }

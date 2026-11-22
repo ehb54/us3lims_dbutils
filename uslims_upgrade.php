@@ -40,6 +40,12 @@ an [input] is open and nothing failed, 1 when a check failed, and 0 otherwise; i
 is "SUMMARY failures=N pending=N input=N changes=N instance_failures=N", the last counting the
 failures that concern one instance only (step 9).
 
+Before step 0 it matches the tenant databases (db_config.php's account, which needs global
+SHOW DATABASES) to the instance configs under uslims3/, and refuses, changing nothing, when a
+database has no readable config, two configs name one database, or a config names a server it
+cannot show is this one. A leftover docroot without a database is a note and is left alone.
+README.md's "Instance discovery during upgrades" has the rules.
+
 The last step runs dbinst's tools/check_installation.php and reports each failure it finds (an
 unedited CHANGE-ME placeholder, a missing overlay) as a note; it changes nothing.
 
@@ -4117,11 +4123,6 @@ if ( !$instance_configs ) {
             $failed_instances[] = $instance_mark[ 0 ];
         }
         $instance_mark = [ $label, $failures ];
-        if ( isset( $cfg[ 'error' ] ) ) {
-            report( 'note', "$label: " . reason( $cfg[ 'error' ] ) . "; convert people_audit by hand" );
-            continue;
-        }
-
         $context = [
             'label'         => $label,
             'cfg'           => $cfg,
@@ -4153,7 +4154,7 @@ if ( !$instance_configs ) {
             report( 'FAIL', "$label: '{$cfg['dbname']}' is not a usable database name, so its people_audit conversion,"
                           . " dispatch tables and procedures are skipped. "
                           . "This release can't run an instance with this name, and has no way to rename it: "
-                          . refused_instance_retire_steps( $cfg[ 'dbname' ], "$wwwpath/uslims3/$label" ) . ". Then rerun" );
+                          . refused_instance_retire_steps( $cfg[ 'dbname' ], $inventory[ 'dirs' ][ $label ] ) . ". Then rerun" );
             continue;
         }
 
