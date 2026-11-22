@@ -4,6 +4,10 @@
 
 $STDERR = STDERR;
 
+## Failed mysqli calls return false here, as PHP 7.4 does by default, and the code checks for that.
+## PHP 8.1+ throws mysqli_sql_exception by default instead, which would skip those checks.
+mysqli_report( MYSQLI_REPORT_OFF );
+
 ## This host's real IANA zone name (e.g. 'America/Chicago'), for a caller
 ## that read MySQL's own @@session.time_zone and got back the literal
 ## string 'SYSTEM' -- which means "whatever this host's OS zone is" and
@@ -531,15 +535,33 @@ function is_admin( $must_be_root = true, $as_user = "" ) {
 
 $db_handle = NULL;
 
+## Whether the connection still answers. mysqli_ping() is deprecated in PHP 8.4;
+## a trivial query tells the same on PHP 7.4 through 8.4, in any mysqli_report() mode.
+function db_alive( $db_handle ) {
+    if ( !( $db_handle instanceof mysqli ) ) {
+        return false;
+    }
+    try {
+        $res = @mysqli_query( $db_handle, "SELECT 1" );
+    } catch ( mysqli_sql_exception $e ) {
+        return false;
+    }
+    if ( $res instanceof mysqli_result ) {
+        mysqli_free_result( $res );
+        return true;
+    }
+    return false;
+}
+
 function check_db( $sleep_seconds = 30 ) {
     global $db_handle;
         
-    while ( !mysqli_ping( $db_handle ) ) {
+    while ( !db_alive( $db_handle ) ) {
         write_logld( "mysql server has gone away" );
         sleep( $sleep_seconds );
         write_logl( "attempting to reconnect" );
         open_db();
-        if ( mysqli_ping( $db_handle ) ) {
+        if ( db_alive( $db_handle ) ) {
             write_logl( "reconnected - success" );
         }            
     }
