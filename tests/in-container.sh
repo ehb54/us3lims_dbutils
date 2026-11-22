@@ -2,14 +2,17 @@
 # Run by tests/run.sh inside a test container. Starts two throwaway MariaDB servers, source and
 # target, both with skip-name-resolve as config-lims-database sets it, then tests/grants_test.php.
 # The source gets an account at a host name before a restart, so that the server ignores it, as
-# on hosts that older roles set up.
+# on hosts that older roles set up. It runs as the image's user, mysql: root's database account
+# has no password, so the tests log in as it over the socket.
 set -u
 BIN=$(ls /usr/libexec/mariadbd /usr/libexec/mysqld 2>/dev/null | head -1)
 INIT=$(command -v mariadb-install-db || command -v mysql_install_db)
+INIT_OPTS=""   # 10.4+ makes root's account socket-only unless told otherwise; 10.3 has no such option
+$INIT --help 2>/dev/null | grep -q auth-root-authentication-method && INIT_OPTS="--auth-root-authentication-method=normal"
 declare -A PID
 start() { # $1 name, $2 port
     local d=/var/tmp/$1 i
-    setpriv --reuid=mysql --regid=mysql --init-groups $BIN --no-defaults --datadir=$d --socket=$d.sock \
+    $BIN --no-defaults --datadir=$d --socket=$d.sock \
         --port=$2 --skip-name-resolve --log-error=$d.err &
     PID[$1]=$!
     for i in $(seq 1 60); do
@@ -20,8 +23,8 @@ start() { # $1 name, $2 port
 }
 stop() { kill ${PID[$1]}; wait ${PID[$1]}; }
 for s in source target; do
-    mkdir -p /var/tmp/$s && chown mysql:mysql /var/tmp/$s
-    $INIT --user=mysql --datadir=/var/tmp/$s > /var/tmp/$s.init 2>&1 || { echo "init $s failed"; tail /var/tmp/$s.init; exit 1; }
+    mkdir -p /var/tmp/$s
+    $INIT $INIT_OPTS --datadir=/var/tmp/$s > /var/tmp/$s.init 2>&1 || { echo "init $s failed"; tail /var/tmp/$s.init; exit 1; }
 done
 start source 3306
 mysql --no-defaults -S /var/tmp/source.sock -u root \

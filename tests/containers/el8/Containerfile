@@ -3,3 +3,4 @@ FROM docker.io/library/oraclelinux:8
 RUN dnf -y module enable php:7.4 \
  && dnf -y install mariadb-server mariadb php-cli php-mysqlnd procps-ng util-linux \
  && dnf clean all
+USER mysql
