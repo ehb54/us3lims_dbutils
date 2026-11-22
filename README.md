@@ -139,13 +139,17 @@ own config supplies the credentials for its migrations. No new grants or passwor
   port (`localhost`, `127.0.0.1`, the host name) count as the same server.
   A leftover config that names another server this way also stops the upgrade (it may be a live
   instance whose database is elsewhere); move it out of `uslims3/` if it is retired.
-- a config that cannot be read sits in a directory named for a tenant database.
+- a config that cannot be read may be a live docroot: it is the `uslims3/` root config, its
+  directory is named for a tenant database, its text names one, or its name is a variant of a
+  mapped docroot's (`foo` next to `foo.bak`). No other copy stands in for it; an unreadable
+  root config holds back every instance until it is fixed.
 
 A leftover docroot is reported as a note and left untouched: its config names a database that
-does not exist, its config cannot be read (a retired overlay instance, for example), or it has
-only `VERSION` or loader files. It is not migrated and is not used for base or branch
+does not exist, its config cannot be read and nothing ties it to a tenant database (a retired
+overlay instance, for example), or it has only `VERSION` or loader files. It is not migrated and is not used for base or branch
 selection. `uslims_git_info.php` lists every checkout and reports inventory problems in every
-mode; `--update-pull` updates the others and leaves the checkouts concerned alone. With no
+mode; `--update-pull` and `--update-branch` update the others and leave the checkouts
+concerned alone. With no
 tenants, the base-contract fallback is kept. Backup/export membership comes from
 `existing_dbs()` and does not depend on website files.
 
@@ -351,7 +355,7 @@ the new release. Run it the way "Upgrading a host" says, from the same root logi
      - extracts metadata, then you can edit, for example to manually remove dbinstance or adjust metadata
      - optionally extracts named databases (see --help for usage details)
    - ```php stage2_export_databases.php dbhost```
-     - extracts databases, config.phps and packages with metadata in a tar file
+     - extracts databases, each instance's config (its overlay for a migrated instance, found as "Instance discovery during upgrades" describes; kept for reference, stage3 writes the new config) and packages with metadata in a tar file
      - optionally renames databases (see --help for usage details)
    - copy the ```export-full-dbhost.tar``` file to the server to import
      - can also be used in-place in combination with renaming

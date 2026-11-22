@@ -597,10 +597,16 @@ if ( $diff_report ) {
     echoline( "=" );
 }    
 
+$inventory_skipped = [];
 if ( $update_branch ) {
     $updated     = 0;
     $tot_differs = 0;
     foreach ( $repos as $k => $v ) {
+        if ( $v->{'branchdiffers'} && $v->{'remote'} != "missing" && inventory_blocks_update( $k, $inventory ?? null, $wwwpath ) ) {
+            $inventory_skipped[] = $k;
+            $warnings .= "WARNING: repo in $k branch not updated because of the instance inventory problems above\n";
+            continue;
+        }
         if ( $v->{'branchdiffers'} ) {
             $tot_differs++;
             if ( $v->{'local_changes'} ) {
@@ -633,7 +639,6 @@ if ( $update_pull ) {
     $local_changes_repos = 0;
     $missing_repos       = 0;
     $repos_to_update     = [];
-    $inventory_skipped   = [];
     foreach ( $repos as $k => $v ) {
         if ( inventory_blocks_update( $k, $inventory ?? null, $wwwpath ) ) {
             if ( $v->{ 'remote' } != "missing" ) {

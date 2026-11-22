@@ -634,74 +634,109 @@ function lims_database_server( $link ) {
 
 ## Join database membership to existing paths; never drop a database because its files
 ## are missing. The scanner remains responsible for single-instance and overlay resolution.
-## A config that cannot be read is only a problem when a database is left without one.
+## A config that cannot be read is a leftover (a note) only when nothing ties it to a live database.
 function reconcile_lims_instances( array $databases, array $configs, array $paths, $wwwpath ) {
     $result = [ 'databases' => $databases, 'configs' => [], 'paths' => [], 'dirs' => [],
                 'notes' => [], 'errors' => [], 'ignored_dirs' => [], 'unmapped' => [], 'problem_dirs' => [] ];
+    $docroot = function ( $label ) use ( $wwwpath ) {
+        return rtrim( $wwwpath, '/' ) . '/uslims3' . ( $label === 'default' ? '' : "/$label" );
+    };
     $seen = [];
     $unread = [];
-    $own_unread = [];
     foreach ( $configs as $label => $cfg ) {
-        $dir = rtrim( $wwwpath, '/' ) . '/uslims3' . ( $label === 'default' ? '' : "/$label" );
+        $label = (string) $label;
         if ( isset( $cfg[ 'endpoint_error' ] ) ) {
             ## Possibly a live instance on another server: never skipped on a note.
-            $result[ 'errors' ][] = "$label: " . $cfg[ 'endpoint_error' ] . '; correct the configuration before upgrading';
-            $result[ 'problem_dirs' ][] = $dir;
-            continue;
-        }
-        if ( isset( $cfg[ 'error' ] ) && in_array( (string) $label, $databases, true ) ) {
-            ## Named for a tenant database: that tenant's own docroot, never a leftover.
-            $result[ 'errors' ][] = "$label: " . $cfg[ 'error' ] . "; $label is a tenant database, so this is its docroot; restore or correct its config before upgrading";
-            $result[ 'problem_dirs' ][] = $dir;
-            $own_unread[ $label ] = true;
+            $result[ 'errors' ][] = "$label: " . $cfg[ 'endpoint_error' ] . '; correct the configuration, or move the directory out of uslims3/ if it is retired';
+            $result[ 'problem_dirs' ][] = $docroot( $label );
             continue;
         }
         if ( isset( $cfg[ 'error' ] ) ) {
             $unread[ $label ] = $cfg[ 'error' ];
-            $result[ 'ignored_dirs' ][] = $dir;
-            $result[ 'notes' ][] = "$label: " . $cfg[ 'error' ] . "; not used as a tenant, files left untouched";
             continue;
         }
         $db = (string) $cfg[ 'dbname' ];
         if ( !in_array( $db, $databases, true ) ) {
-            $result[ 'ignored_dirs' ][] = $dir;
+            $result[ 'ignored_dirs' ][] = $docroot( $label );
             $result[ 'notes' ][] = "$label: config names '$db', which is not a tenant database on the inventory server; skipped, files left untouched";
             continue;
         }
         if ( isset( $seen[ $db ] ) ) {
             $result[ 'errors' ][] = "$db: multiple instance configs ($seen[$db], $label); resolve the duplicate mapping before upgrading";
-            $result[ 'problem_dirs' ][] = $dir;
+            $result[ 'problem_dirs' ][] = $docroot( $label );
             continue;
         }
         $seen[ $db ] = $label;
         $result[ 'configs' ][ $label ] = $cfg;
         $result[ 'paths' ][ $label ] = $paths[ $label ];
-        $result[ 'dirs' ][ $label ] = $dir;
+        $result[ 'dirs' ][ $label ] = $docroot( $label );
     }
-    ## A database whose own docroot config could not be read is not upgraded from any other copy.
-    foreach ( array_keys( $own_unread ) as $db ) {
-        if ( isset( $seen[ $db ] ) ) {
-            $mapped = $seen[ $db ];
-            unset( $result[ 'configs' ][ $mapped ], $result[ 'paths' ][ $mapped ], $result[ 'dirs' ][ $mapped ] );
-            $result[ 'problem_dirs' ][] = rtrim( $wwwpath, '/' ) . '/uslims3' . ( $mapped === 'default' ? '' : "/$mapped" );
+    $leftover = [];
+    $claimed = [];
+    foreach ( $unread as $label => $error ) {
+        $why = unreadable_config_claims( $label, $docroot( $label ) . '/config.php', $databases, $seen );
+        if ( $why === null ) {
+            $leftover[ $label ] = $error;
+            $result[ 'ignored_dirs' ][] = $docroot( $label );
+            $result[ 'notes' ][] = "$label: $error; not used as a tenant, files left untouched";
+            continue;
+        }
+        ## Possibly a live docroot: no other copy may stand in for it.
+        $result[ 'errors' ][] = "$label: $error; $why[1], so it may be a live docroot; restore or correct its config, or move it out of uslims3/ if it is retired";
+        $result[ 'problem_dirs' ][] = $docroot( $label );
+        foreach ( $why[ 0 ] as $db ) {
+            $claimed[ $db ] = true;
+            if ( isset( $seen[ $db ] ) ) {
+                $mapped = $seen[ $db ];
+                unset( $result[ 'configs' ][ $mapped ], $result[ 'paths' ][ $mapped ], $result[ 'dirs' ][ $mapped ] );
+                $result[ 'problem_dirs' ][] = $docroot( $mapped );
+            }
         }
     }
-    foreach ( array_diff( $databases, array_keys( $seen ), array_keys( $own_unread ) ) as $db ) {
+    foreach ( array_diff( $databases, array_keys( $seen ), array_keys( $claimed ) ) as $db ) {
         $why = "$db: database exists but no readable instance config maps to it under $wwwpath/uslims3";
-        if ( $unread ) {
+        if ( $leftover ) {
             $list = [];
-            foreach ( $unread as $label => $error ) { $list[] = "$label ($error)"; }
+            foreach ( $leftover as $label => $error ) { $list[] = "$label ($error)"; }
             $why .= '; configs that could not be read: ' . implode( ', ', $list );
         }
         $result[ 'errors' ][] = "$why; restore or correct its docroot/config before upgrading";
         $result[ 'unmapped' ][] = $db;
         $result[ 'problem_dirs' ][] = rtrim( $wwwpath, '/' ) . "/uslims3/$db";
-        foreach ( array_keys( $unread ) as $label ) {
-            $result[ 'problem_dirs' ][] = rtrim( $wwwpath, '/' ) . '/uslims3' . ( $label === 'default' ? '' : "/$label" );
+        foreach ( array_keys( $leftover ) as $label ) {
+            $result[ 'problem_dirs' ][] = $docroot( $label );
         }
     }
     $result[ 'problem_dirs' ] = array_values( array_unique( $result[ 'problem_dirs' ] ) );
     return $result;
+}
+
+## What ties an unreadable config to a live database: [ [ database, ... ], reason ], or null for none.
+## $seen maps each database to the label of the readable config that names it.
+function unreadable_config_claims( $label, $file, array $databases, array $seen ) {
+    if ( $label === 'default' ) {
+        ## Which tenant it serves can't be told, so every mapped instance waits for it.
+        return [ array_keys( $seen ), 'it is the uslims3/ root config' ];
+    }
+    if ( in_array( $label, $databases, true ) ) {
+        return [ [ $label ], "$label is a tenant database" ];
+    }
+    $text = @file_get_contents( $file );
+    if ( $text !== false ) {
+        foreach ( $databases as $db ) {
+            if ( preg_match( '/(?<![A-Za-z0-9_])' . preg_quote( $db, '/' ) . '(?![A-Za-z0-9_])/', $text ) ) {
+                return [ [ $db ], "it names tenant database $db" ];
+            }
+        }
+    }
+    foreach ( $seen as $db => $mapped ) {
+        $mapped = (string) $mapped;
+        if ( strpos( $mapped, $label ) === 0 && strspn( substr( $mapped, strlen( $label ), 1 ), '._-' ) === 1
+             || strpos( $label, $mapped ) === 0 && strspn( substr( $label, strlen( $mapped ), 1 ), '._-' ) === 1 ) {
+            return [ [ $db ], "its name is a variant of $mapped, which maps $db" ];
+        }
+    }
+    return null;
 }
 
 ## [ host, port ] of a mysqli host string ("host" or "host:port"); port 3306 when absent.
