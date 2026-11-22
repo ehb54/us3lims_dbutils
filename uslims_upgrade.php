@@ -2566,6 +2566,19 @@ foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
     }
 }
 
+## The command, run as us3, that lists an entry's Slurm nodes for step 3's sizing. Asks for the
+## effective analysis CPUs per node, not sinfo's configured count: with core specialization
+## Slurm already withholds the reserve. The host's own cluster and any other local entry (a
+## -gamc variant) query this host's Slurm: step 4 records no host key for a local entry.
+function sizing_node_query( $name, array $c, $host_cluster ) {
+    $query = 'scontrol -o show node';
+    if ( $name === $host_cluster || cluster_entry_is_local( $c[ 'localhost' ] ?? false ) ) {
+        return $query;
+    }
+    $login = $c[ 'login' ] ?? ( 'us3@' . ( $c[ 'name' ] ?? '' ) );
+    return 'ssh -n -o BatchMode=yes -o ConnectTimeout=15 ' . escapeshellarg( $login ) . ' ' . escapeshellarg( $query );
+}
+
 ## One-node appliances: resource sizing needs single_node to keep a job on one node,
 ## and no more tasks per node or per job than the node has CPUs. Excluding
 ## pools here too -- sinfo is queried against a real host below, and a pool
@@ -2574,16 +2587,8 @@ foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
     if ( empty( $c[ 'single_node' ] ) && !cluster_entry_is_local( $c[ 'localhost' ] ?? false ) && empty( $c[ 'fixed_capacity' ] ) ) {
         continue;
     }
-    $login = $c[ 'login' ] ?? ( 'us3@' . ( $c[ 'name' ] ?? '' ) );
     $queue = $c[ 'queue' ] ?? '';
-    ## The effective analysis CPUs per node, not sinfo's configured count:
-    ## with core specialization Slurm already withholds the reserve.
-    $query = 'scontrol -o show node';
-    ## The host's own Slurm is queried locally: SSH to it is only set up in step 4.
-    if ( $name !== $host_cluster ) {
-        $query = 'ssh -n -o BatchMode=yes -o ConnectTimeout=15 ' . escapeshellarg( $login ) . ' ' . escapeshellarg( $query );
-    }
-    $rc    = run_as( 'us3', $query, $node_out, $node_err );
+    $rc    = run_as( 'us3', sizing_node_query( $name, $c, $host_cluster ), $node_out, $node_err );
     $nodes = [];
     foreach ( scontrol_partition_nodes( $node_out, $queue ) as $node => $fields ) {
         $effective = effective_node_cpus( $fields );
