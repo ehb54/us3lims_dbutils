@@ -355,3 +355,7 @@ the new release. Run it the way "Upgrading a host" says, from the same root logi
   - step 9 also loads the release's stored procedures (us3_procedures.sql) into each instance whose procedures are not this release's, with the instance's own account; _dbutils_procedures_checksum() in the instance records the release's checksum and a fingerprint of the routines as loaded, so a later change to them (a rollback) is reloaded
   - migrate_people_audit_utc.php runs the migration by itself, with none of uslims_upgrade.php's or stage2's other machinery: for a host already upgraded in-place before step 9 existed, or to fix one dbinstance by hand
  
+
+## Tests
+
+`tests/run.sh` runs regression tests in throwaway containers (docker or podman), on OL8 with MariaDB 10.3 and PHP 7.4 and on OL10 with MariaDB 10.11 and PHP 8.3. They never touch a real server. See `tests/README.md`.
