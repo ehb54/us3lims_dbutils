@@ -25,3 +25,12 @@ The container starts two servers with `skip-name-resolve`, as config-lims-databa
   - a syntax error whose server message quotes the password is reported by its number only;
   - with a password policy that rejects every password, each grant is reported as error 1819;
   - neither report holds any part of a password.
+
+## upgrade_log_test.sh
+
+Runs as root in the same images. It builds a stack of 4.3.0 checkouts whose gridctl has no bootstrap, so `uslims_upgrade.php` passes step 0's version check and then stops. The tests check that:
+
+- step 0 names each checkout's commit, marks one with modified tracked files, and says when a checkout is not a git repository;
+- `--check` creates no backup directory;
+- `--apply` keeps `report-<time>-pid<pid>.log` (mode 600, owned by the sudo user) in its backup directory, named after that directory, with the command, the OS, PHP and MariaDB versions, step 0's lines, the error that stopped it, and how the run ended;
+- an `--apply` that its check pass refuses creates nothing.

@@ -138,7 +138,8 @@ ones it created; move dbupgrade/export-* aside before a next attempt; then resta
 Every file this script rewrites, appends to or removes is copied first, once per run, into one
 directory per run, ~us3/lims/etc/uslims_upgrade-backup-<time>-pid<pid>, named when it is first
 used and again at the end. Every file it creates is listed in that directory's created.txt,
-except those item 3 lets stay. To
+except those item 3 lets stay. Every --apply makes that directory and keeps its full report
+there as report-<time>-pid<pid>.log: software versions, each checkout's commit, every step, and how it ended. To
 roll back, with the services stopped, use only the directories newer than
 pre-upgrade-checkouts.txt; for each file, the oldest of them that names it decides,
 except db_config.php, which the backout put back from pre-upgrade-db_config.php:
@@ -449,7 +450,83 @@ $declined    = 0;
 ## so a dry run still creates nothing.
 $backup_prefix = "$us3_home/lims/etc/uslims_upgrade-backup";
 
+## Every --apply keeps its full report, check pass included, in its backup directory, named
+## report-<time>-pid<pid>.log after that directory so a copy taken elsewhere still names its run.
+if ( $apply ) {
+    $apply_log_path = ensure_backup_dir() . '/report-'
+                    . substr( basename( $util_backup_dir ), strlen( basename( $backup_prefix ) ) + 1 ) . '.log';
+    ## Created 0600, not chmod'ed after: the backup directory is world-readable.
+    $old_umask = umask( 077 );
+    $apply_log = @fopen( $apply_log_path, 'x' );
+    umask( $old_umask );
+    if ( $apply_log === false ) {
+        error_exit( "could not create $apply_log_path; nothing was changed" );
+    }
+    ## Owned by the operator who ran sudo, so they can read it without sudo.
+    $operator = getenv( 'SUDO_USER' );
+    if ( $operator !== false && $operator !== '' && posix_getpwnam( $operator ) ) {
+        @chown( $apply_log_path, $operator );
+    }
+    $util_error_log = $apply_log;
+    fwrite( $apply_log, apply_log_header( $argv ) );
+    if ( isset( $check ) ) {
+        fwrite( $apply_log, "\n---- check pass ----\n" . $check[ 0 ] . "\n"
+                            . ( $check[ 1 ] !== '' ? $check[ 1 ] . "\n" : '' ) . "---- apply ----\n" );
+    }
+    ob_start( function ( $buffer ) use ( $apply_log ) {
+        fwrite( $apply_log, $buffer );
+        return $buffer;
+    }, 1 );
+    register_shutdown_function( 'apply_log_close' );
+}
+
 ## ------------------------------------------------------------- helpers
+
+## When, where, how and with what software this --apply ran.
+function apply_log_header( array $argv ) {
+    $os = @parse_ini_file( '/etc/os-release' );
+    $first_line = function ( $cmd ) {
+        $out = trim( (string) shell_exec( "$cmd 2>/dev/null" ) );
+        return $out === '' ? 'not found' : strtok( $out, "\n" );
+    };
+    return "uslims_upgrade.php --apply\n"
+         . 'started:  ' . gmdate( 'Y-m-d H:i:s' ) . " UTC\n"
+         . 'host:     ' . php_uname( 'n' ) . "\n"
+         . 'operator: ' . ( getenv( 'SUDO_USER' ) ?: ( posix_getpwuid( posix_geteuid() )['name'] ?? '?' ) ) . "\n"
+         . 'command:  ' . implode( ' ', array_map( 'escapeshellarg', $argv ) ) . "\n"
+         . 'backups:  ' . $GLOBALS[ 'util_backup_dir' ] . "\n"
+         . 'os:       ' . ( $os[ 'PRETTY_NAME' ] ?? php_uname( 's' ) ) . ', kernel ' . php_uname( 'r' ) . "\n"
+         . 'php:      ' . PHP_VERSION . "\n"
+         . 'mariadb:  ' . $first_line( 'mysql --version' ) . "\n"
+         . 'apache:   ' . $first_line( '( httpd -v || apache2 -v ) | head -1' ) . "\n"
+         . 'slurm:    ' . $first_line( 'sinfo --version' ) . "\n";
+}
+
+## A line for the log only, such as an answer typed at a prompt, which readline does not echo through PHP.
+function apply_log_line( $line ) {
+    global $apply_log;
+    if ( isset( $apply_log ) && is_resource( $apply_log ) ) {
+        fwrite( $apply_log, "$line\n" );
+    }
+}
+
+## Flushes the output into the log and records how the run ended, including an error_exit() or a fatal error.
+function apply_log_close() {
+    global $apply_log, $apply_exit_code;
+    while ( ob_get_level() ) {
+        ob_end_flush();
+    }
+    if ( !is_resource( $apply_log ) ) {
+        return;
+    }
+    $error = error_get_last();
+    if ( $error && in_array( $error[ 'type' ], [ E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR ], true ) ) {
+        fwrite( $apply_log, "PHP fatal error: {$error['message']} in {$error['file']}:{$error['line']}\n" );
+    }
+    fwrite( $apply_log, "\nended:    " . gmdate( 'Y-m-d H:i:s' ) . " UTC, exit "
+                        . ( isset( $apply_exit_code ) ? $apply_exit_code : '255 (stopped before the end)' ) . "\n" );
+    fclose( $apply_log );
+}
 
 function step( $title ) {
     echo "\n";
@@ -693,6 +770,7 @@ function ask_yn( $question, $hint = 'rerun with --yes to accept' ) {
         }
         $answer = strtolower( trim( $answer ) );
         if ( $answer === 'y' || $answer === 'n' ) {
+            apply_log_line( "$question (y or n) : $answer" );
             return $answer === 'y';
         }
     }
@@ -1449,6 +1527,21 @@ function repo_version( $dir ) {
     return $text === '' ? null : $text;
 }
 
+## " (<commit>)", or " (<commit>, modified)" when tracked files differ from it: on a dev host
+## every checkout's VERSION reads the same, so the commit is what identifies the code.
+function repo_commit( $dir ) {
+    ## --no-optional-locks: run as root, a plain status could rewrite a us3 checkout's index.
+    $git    = 'git --no-optional-locks -c safe.directory=* -C ' . escapeshellarg( $dir );
+    ## An instance copied into webinfo's tree would otherwise report webinfo's commit.
+    $top    = trim( (string) shell_exec( "$git rev-parse --show-toplevel 2>/dev/null" ) );
+    if ( $top === '' || realpath( $top ) !== realpath( $dir ) ) {
+        return ' (not a git checkout)';
+    }
+    $commit   = trim( (string) shell_exec( "$git rev-parse --short HEAD 2>/dev/null" ) );
+    $modified = trim( (string) shell_exec( "$git status --porcelain --untracked-files=no 2>/dev/null" ) ) !== '';
+    return " ($commit" . ( $modified ? ', modified' : '' ) . ')';
+}
+
 ## "4.3.0-dev" is the 4.3.0 contract, but version_compare() ranks a -dev suffix
 ## below the release, so compare the numeric part only.
 function version_at_least( $version, $minimum ) {
@@ -1508,14 +1601,15 @@ function stale_checkout_remedy( array $dirs, $db_config ) {
 $stale = [];
 foreach ( $stack as $label => $dir ) {
     $version = repo_version( $dir );
+    $commit  = repo_commit( $dir );
     if ( $version === null ) {
         report( 'FAIL', "$label ($dir) has no readable VERSION; cannot tell which release is deployed" );
         $stale[] = $label;
     } elseif ( !version_at_least( $version, $required_version ) ) {
-        report( 'FAIL', "$label ($dir) is $version" );
+        report( 'FAIL', "$label ($dir) is $version$commit" );
         $stale[] = $label;
     } else {
-        report( 'ok', "$label is $version" );
+        report( 'ok', "$label is $version$commit" );
     }
 }
 if ( $stale ) {
@@ -4271,4 +4365,8 @@ if ( $apply && !$failures && !$needs_input && !$declined ) {
 }
 ## See upgrade_exit_code(). The summary line is for callers that read --check's outcome.
 echo "SUMMARY failures=$failures pending=$pending input=$needs_input changes=$changes instance_failures=$instance_failures\n";
-exit( upgrade_exit_code( $apply, $failures, $needs_input, $declined ) );
+$apply_exit_code = upgrade_exit_code( $apply, $failures, $needs_input, $declined );
+if ( $apply ) {
+    echo "Report of this run: $apply_log_path\n";
+}
+exit( $apply_exit_code );

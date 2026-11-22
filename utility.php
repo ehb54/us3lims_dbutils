@@ -212,9 +212,13 @@ function run_cmd( $cmd, $die_if_exit = true, $array_result = false ) {
     return $res;
 }
 
+## $util_error_log, when a script sets it to an open stream, gets a copy of the message.
 function error_exit( $msg ) {
-    global $STDERR;
+    global $STDERR, $util_error_log;
     fwrite( $STDERR, "$msg\nTerminating due to errors.\n" );
+    if ( isset( $util_error_log ) && is_resource( $util_error_log ) ) {
+        fwrite( $util_error_log, "$msg\nTerminating due to errors.\n" );
+    }
     exit(-1);
 }
 

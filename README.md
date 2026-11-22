@@ -215,6 +215,7 @@ the new release. Run it the way "Upgrading a host" says, from the same root logi
    | `us3.crontab` | us3's crontab: `crontab -u us3 us3.crontab` |
    | `crontab`, any other cron file | `/etc/crontab`, or `/etc/cron.d/<name>` |
    | `lims-common-alias.conf` | `/etc/httpd/conf.d/`, or `/etc/apache2/conf-available/` then `a2enconf lims-common-alias` on Debian |
+| `report-<time>-pid<pid>.log` | nothing: it is that run's report (versions, commits, every step, how it ended) |
 5. Nothing else in Apache needs undoing: step 4 removed the confs `--apply` installed and put
    back one it replaced or removed. The web server starts again in step 7.
 6. What else `--apply` made can stay, since a release before 4.3.0 doesn't use it or, for

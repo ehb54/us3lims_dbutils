@@ -1,6 +1,6 @@
 #!/bin/bash
-# Regression tests for the GRANTS export (grants_export.php) and the instance grants
-# (instance_grants.php), in throwaway containers (ultrascan-tickets#1290):
+# Regression tests for the GRANTS export (grants_export.php), the instance grants
+# (instance_grants.php) and uslims_upgrade.php's --apply log, in throwaway containers:
 #   el8:  OL8,  MariaDB 10.3,  PHP 7.4
 #   el10: OL10, MariaDB 10.11, PHP 8.3
 # usage: tests/run.sh [el8|el10]...      (default: both)
@@ -19,6 +19,7 @@ for p in "$@"; do
         echo "FAIL $p: image build"; rc=1; continue
     fi
     $ENGINE run --rm --security-opt label=disable -v "$PWD":/repo:ro $img bash /repo/tests/in-container.sh || rc=1
+    $ENGINE run --rm --security-opt label=disable --user root -v "$PWD":/repo:ro $img bash /repo/tests/upgrade_log_test.sh || rc=1
 done
 [ $rc = 0 ] && echo "all passed" || echo "FAILURES"
 exit $rc
