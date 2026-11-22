@@ -202,6 +202,10 @@ Options
                                or its cluster_config.php probe, deliberately: only --activate
                                does, once its env_script_lines are supplied and ssh to it
                                succeeds -- only the cluster can say what those are.
+--remove-retired             : remove the cluster entries that are inactive and have no entry in
+                               global_config.php.template, which nothing can activate again, from
+                               global_config.php, with their probes from cluster_config.php. Without
+                               it they are only listed.
 --www path                   : web root (default $wwwpath)
 --web-user name              : account the web code runs as (default: the PHP-FPM pool user, else apache, else www-data)
 --env cluster=lines          : env_script_lines for a cluster ('' for none); sets or changes it; repeatable
@@ -267,6 +271,7 @@ $local_cluster = null;
 $single_tenant = null;
 $site_admin_email = null;
 $convert_http  = false;
+$remove_retired = false;
 $activate_want = [];
 $advisory_source     = null;
 $advisory_off        = false;
@@ -293,6 +298,9 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             break;
         case "--convert-http":
             $convert_http = true;
+            break;
+        case "--remove-retired":
+            $remove_retired = true;
             break;
         case "--www":
             $wwwpath = rtrim( opt_value( $u_argv, $opt ), '/' );
@@ -1175,6 +1183,130 @@ function template_cluster( $name, &$why = null ) {
     }
     $why = '';
     return $entries[ $name ];
+}
+
+## The cluster_config.php probes that are on for a cluster whose global_config.php entry is,
+## or after this run will be, inactive. cluster_status.php probes whatever is on there,
+## so such a probe keeps reporting a cluster nobody can submit to. Pure.
+function probes_to_turn_off( array $probes, array $clusters, array $final_active ) {
+    $off = [];
+    foreach ( $probes as $name => $probe ) {
+        if ( is_array( $probe ) && !empty( $probe[ 'active' ] )
+             && is_array( $clusters[ $name ] ?? null ) && !isset( $final_active[ $name ] ) ) {
+            $off[] = (string) $name;
+        }
+    }
+    return $off;
+}
+
+## The entries that are, or after this run will be, inactive and that $in_template says the
+## template does not have: nothing can convert or activate them again. Pure.
+function retired_cluster_entries( array $clusters, array $final_active, callable $in_template ) {
+    $retired = [];
+    foreach ( $clusters as $name => $c ) {
+        if ( is_array( $c ) && !isset( $final_active[ $name ] ) && !$in_template( (string) $name ) ) {
+            $retired[] = (string) $name;
+        }
+    }
+    return $retired;
+}
+
+## $text with the entries $names taken out of the array literal assigned to $var (each with
+## the comma that separates it from its neighbour), and every top-level "$var[ 'name' ]...;"
+## statement for them removed. $removed lists the names whose literal entry was found. Pure.
+function remove_array_entries( $text, $var, array $names, &$removed = null ) {
+    $removed = [];
+    $tokens  = token_get_all( $text );
+    $count   = count( $tokens );
+    $want    = array_flip( $names );
+    $drop    = [];
+    $tx      = function ( $i ) use ( $tokens ) { return is_array( $tokens[ $i ] ) ? $tokens[ $i ][ 1 ] : $tokens[ $i ]; };
+    $blank   = function ( $i ) use ( $tokens ) {
+        return is_array( $tokens[ $i ] ) && in_array( $tokens[ $i ][ 0 ], [ T_WHITESPACE, T_COMMENT, T_DOC_COMMENT ], true );
+    };
+    $next    = function ( $i ) use ( $count, $blank ) { for ( $i++; $i < $count && $blank( $i ); $i++ ); return $i; };
+    $prev    = function ( $i ) use ( $blank ) { for ( $i--; $i >= 0 && $blank( $i ); $i-- ); return $i; };
+    $closing = function ( $i ) use ( $count, $tx ) {
+        $depth = 0;
+        for ( ; $i < $count; $i++ ) {
+            $t = $tx( $i );
+            if ( $t === '[' || $t === '(' ) { $depth++; }
+            if ( $t === ']' || $t === ')' ) { if ( --$depth === 0 ) { return $i; } }
+        }
+        return null;
+    };
+    $name_at = function ( $i ) use ( $tokens ) {
+        return is_array( $tokens[ $i ] ) && $tokens[ $i ][ 0 ] === T_CONSTANT_ENCAPSED_STRING
+            ? stripcslashes( substr( $tokens[ $i ][ 1 ], 1, -1 ) ) : null;
+    };
+    $depth = 0;
+    for ( $i = 0; $i < $count; $i++ ) {
+        $t = $tx( $i );
+        if ( $t === '[' || $t === '(' ) { $depth++; continue; }
+        if ( $t === ']' || $t === ')' ) { $depth--; continue; }
+        if ( $depth !== 0 || !is_array( $tokens[ $i ] ) || $tokens[ $i ][ 0 ] !== T_VARIABLE || $t !== "\$$var" ) {
+            continue;
+        }
+        $j = $next( $i );
+        if ( $j < $count && $tx( $j ) === '=' ) {
+            ## The literal itself: drop the named top-level entries.
+            $open = $next( $j );
+            if ( $open >= $count || !in_array( $tx( $open ), [ '[', 'array' ], true ) ) { continue; }
+            if ( $tx( $open ) === 'array' ) { $open = $next( $open ); }
+            $close = $closing( $open );
+            if ( $close === null ) { continue; }
+            $inner = 0;
+            for ( $k = $open + 1; $k < $close; $k++ ) {
+                $u = $tx( $k );
+                if ( $u === '[' || $u === '(' ) { $inner++; continue; }
+                if ( $u === ']' || $u === ')' ) { $inner--; continue; }
+                $key = $inner === 0 ? $name_at( $k ) : null;
+                if ( $key === null || !isset( $want[ $key ] ) ) { continue; }
+                $arrow = $next( $k );
+                if ( $arrow >= $close || !is_array( $tokens[ $arrow ] ) || $tokens[ $arrow ][ 0 ] !== T_DOUBLE_ARROW ) { continue; }
+                $value = $next( $arrow );
+                if ( $tx( $value ) === 'array' ) { $value = $next( $value ); }
+                $end = in_array( $tx( $value ), [ '[', '(' ], true ) ? $closing( $value ) : null;
+                if ( $end === null ) { continue; }
+                $before = $prev( $k );
+                if ( $tx( $before ) === ',' ) {
+                    $from = $before;
+                } else {
+                    $from  = $k;
+                    $after = $next( $end );
+                    if ( $after < $close && $tx( $after ) === ',' ) { $end = $after; }
+                }
+                for ( $d = $from; $d <= $end; $d++ ) { $drop[ $d ] = true; }
+                $removed[] = $key;
+                $k = $end;
+            }
+            $i = $close;
+            continue;
+        }
+        if ( $j < $count && $tx( $j ) === '[' ) {
+            ## A later "$var[ 'name' ]... = ...;" for a removed entry.
+            $key = $name_at( $next( $j ) );
+            if ( $key === null || !isset( $want[ $key ] ) ) { continue; }
+            $end = $i;
+            for ( $level = 0; $end < $count; $end++ ) {
+                $u = $tx( $end );
+                if ( $u === '[' || $u === '(' ) { $level++; }
+                if ( $u === ']' || $u === ')' ) { $level--; }
+                if ( $u === ';' && $level === 0 ) { break; }
+            }
+            if ( $end + 1 < $count && is_array( $tokens[ $end + 1 ] ) && $tokens[ $end + 1 ][ 0 ] === T_WHITESPACE ) {
+                $end++;
+            }
+            for ( $d = $i; $d <= $end; $d++ ) { $drop[ $d ] = true; }
+            $i = $end;
+        }
+    }
+    $out = '';
+    for ( $i = 0; $i < $count; $i++ ) {
+        if ( !isset( $drop[ $i ] ) ) { $out .= $tx( $i ); }
+    }
+    $removed = array_values( array_unique( $removed ) );
+    return $out;
 }
 
 ## What still stands between a converted entry and activation. env_script_lines is
@@ -2887,6 +3019,83 @@ if ( $activated ) {
                                 . backup_path( $cluster_config ) . ")" );
             }
         }
+    }
+}
+
+## Probes and entries for clusters that are off. $active no longer holds what this run
+## deactivates or converts, and $activated is what it turns on.
+$final_active = $active;
+foreach ( $activated as $name ) {
+    $final_active[ $name ] = true;
+}
+$cluster_config = "$us3bin/cluster_config.php";
+$probes = [];
+if ( is_file( $cluster_config ) ) {
+    $cc_vars = config_vars( $cluster_config, $cc_why );
+    if ( !is_array( $cc_vars[ 'cluster_configuration' ] ?? null ) ) {
+        report( 'note', "could not read $cluster_config (" . reason( $cc_why ) . "), so its probes were not checked" );
+    } else {
+        $probes = $cc_vars[ 'cluster_configuration' ];
+    }
+}
+$retired = retired_cluster_entries( $clusters, $final_active, function ( $name ) {
+    return template_cluster( $name ) !== null;
+} );
+if ( $retired && !$remove_retired ) {
+    report( 'note', "inactive cluster entries with no template entry, which nothing can activate again: "
+                    . implode( ', ', $retired ) . "; --remove-retired removes them and their probes" );
+}
+$removing = $remove_retired ? $retired : [];
+$probes_off = array_values( array_diff( probes_to_turn_off( $probes, $clusters, $final_active ), $removing ) );
+if ( $probes_off ) {
+    report( 'todo', "turn off the status probe in $cluster_config for " . implode( ', ', $probes_off )
+                    . ": its cluster entry is inactive, so nothing can submit to it" );
+} elseif ( $probes ) {
+    report( 'ok', "no status probe is on for an inactive cluster" );
+}
+if ( $removing ) {
+    report( 'todo', "remove the retired cluster entries " . implode( ', ', $removing ) . " from $global_config"
+                    . ( array_intersect( $removing, array_keys( $probes ) ) ? " and their probes from $cluster_config" : '' ) );
+}
+
+## Each rewrite is checked by loading it: the array must be exactly the old one minus what was
+## meant to change, or nothing is written.
+function rewrite_cluster_array( $file, $var, $text, array $expected ) {
+    $tmp = tempnam( sys_get_temp_dir(), 'us3up' );
+    if ( $tmp === false || file_put_contents( $tmp, $text ) === false ) {
+        error_exit( "could not stage the new $file" );
+    }
+    $vars = config_vars( $tmp, $why );
+    @unlink( $tmp );
+    if ( !is_array( $vars[ $var ] ?? null ) || json_encode( $vars[ $var ] ) !== json_encode( $expected ) ) {
+        fatal( "the rewritten $file would not hold exactly the intended \$$var (" . reason( $why ?: 'other entries differ' )
+               . "); it was left as it is" );
+    }
+    write_file( $file, $text );
+}
+if ( $apply && ( $probes_off || $removing ) ) {
+    if ( $removing && confirm( "Remove " . implode( ', ', $removing ) . " from $global_config?" ) ) {
+        $now  = config_vars( $global_config );
+        $text = remove_array_entries( (string) file_get_contents( $global_config ), 'cluster_details', $removing, $found );
+        rewrite_cluster_array( $global_config, 'cluster_details', $text,
+                               array_diff_key( $now[ 'cluster_details' ] ?? [], array_flip( $removing ) ) );
+        report( 'done', "$global_config: removed " . implode( ', ', $removing )
+                        . " (original in " . backup_path( $global_config ) . ")" );
+    }
+    $probe_drop = array_values( array_intersect( $removing, array_keys( $probes ) ) );
+    if ( ( $probes_off || $probe_drop ) && is_file( $cluster_config )
+         && confirm( "Update the status probes in $cluster_config?" ) ) {
+        $text = remove_array_entries( (string) file_get_contents( $cluster_config ), 'cluster_configuration', $probe_drop );
+        foreach ( $probes_off as $name ) {
+            $text = preg_replace( '/(' . preg_quote( "'$name'", '/' ) . '\s*=>\s*\[)([^\]]*?)(\x27active\x27\s*=>\s*)true/s',
+                                  '${1}${2}${3}false', $text, 1 );
+        }
+        $expected = array_diff_key( $probes, array_flip( $probe_drop ) );
+        foreach ( $probes_off as $name ) {
+            $expected[ $name ][ 'active' ] = false;
+        }
+        rewrite_cluster_array( $cluster_config, 'cluster_configuration', $text, $expected );
+        report( 'done', "$cluster_config updated (original in " . backup_path( $cluster_config ) . ")" );
     }
 }
 
