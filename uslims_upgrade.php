@@ -1199,6 +1199,18 @@ function probes_to_turn_off( array $probes, array $clusters, array $final_active
     return $off;
 }
 
+## The gfac.cluster_status rows of clusters with no active probe once this run is done. Nothing
+## refreshes such a row, and dbinst logs a stale-row warning for it on every page load. Pure.
+function status_rows_to_drop( array $row_clusters, array $probes_after ) {
+    $drop = [];
+    foreach ( $row_clusters as $name ) {
+        if ( empty( $probes_after[ $name ][ 'active' ] ) ) {
+            $drop[] = (string) $name;
+        }
+    }
+    return $drop;
+}
+
 ## The entries that are, or after this run will be, inactive and that $in_template says the
 ## template does not have: nothing can convert or activate them again. Pure.
 function retired_cluster_entries( array $clusters, array $final_active, callable $in_template ) {
@@ -3058,6 +3070,23 @@ if ( $removing ) {
                     . ( array_intersect( $removing, array_keys( $probes ) ) ? " and their probes from $cluster_config" : '' ) );
 }
 
+$probe_drop   = array_values( array_intersect( $removing, array_keys( $probes ) ) );
+$probes_after = array_diff_key( $probes, array_flip( $probe_drop ) );
+foreach ( $probes_off as $name ) {
+    $probes_after[ $name ][ 'active' ] = false;
+}
+$status_rows = [];
+if ( $probes && ( $res = mysqli_query( $gdb, "SELECT cluster FROM cluster_status ORDER BY cluster" ) ) ) {
+    foreach ( mysqli_fetch_all( $res ) as $row ) {
+        $status_rows[] = $row[ 0 ];
+    }
+}
+$rows_drop = $probes ? status_rows_to_drop( $status_rows, $probes_after ) : [];
+if ( $rows_drop ) {
+    report( 'todo', "delete the gfac.cluster_status rows of " . implode( ', ', $rows_drop )
+                    . ": no probe refreshes them, and dbinst logs each as stale on every page load" );
+}
+
 ## Each rewrite is checked by loading it: the array must be exactly the old one minus what was
 ## meant to change, or nothing is written.
 function rewrite_cluster_array( $file, $var, $text, array $expected ) {
@@ -3082,7 +3111,6 @@ if ( $apply && ( $probes_off || $removing ) ) {
         report( 'done', "$global_config: removed " . implode( ', ', $removing )
                         . " (original in " . backup_path( $global_config ) . ")" );
     }
-    $probe_drop = array_values( array_intersect( $removing, array_keys( $probes ) ) );
     if ( ( $probes_off || $probe_drop ) && is_file( $cluster_config )
          && confirm( "Update the status probes in $cluster_config?" ) ) {
         $text = remove_array_entries( (string) file_get_contents( $cluster_config ), 'cluster_configuration', $probe_drop );
@@ -3090,12 +3118,20 @@ if ( $apply && ( $probes_off || $removing ) ) {
             $text = preg_replace( '/(' . preg_quote( "'$name'", '/' ) . '\s*=>\s*\[)([^\]]*?)(\x27active\x27\s*=>\s*)true/s',
                                   '${1}${2}${3}false', $text, 1 );
         }
-        $expected = array_diff_key( $probes, array_flip( $probe_drop ) );
-        foreach ( $probes_off as $name ) {
-            $expected[ $name ][ 'active' ] = false;
-        }
-        rewrite_cluster_array( $cluster_config, 'cluster_configuration', $text, $expected );
+        rewrite_cluster_array( $cluster_config, 'cluster_configuration', $text, $probes_after );
         report( 'done', "$cluster_config updated (original in " . backup_path( $cluster_config ) . ")" );
+    }
+}
+if ( $apply && $rows_drop && confirm( "Delete those gfac.cluster_status rows?" ) ) {
+    $list = implode( ',', array_map( function ( $n ) use ( $gdb ) {
+        return "'" . mysqli_real_escape_string( $gdb, $n ) . "'";
+    }, $rows_drop ) );
+    if ( mysqli_query( $gdb, "DELETE FROM cluster_status WHERE cluster IN ($list)" ) ) {
+        $changes++;
+        report( 'done', "deleted the gfac.cluster_status rows of " . implode( ', ', $rows_drop ) );
+    } else {
+        report( 'note', "could not delete the gfac.cluster_status rows of " . implode( ', ', $rows_drop )
+                        . ": " . reason( mysqli_error( $gdb ) ) );
     }
 }
 
