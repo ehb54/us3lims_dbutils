@@ -309,7 +309,7 @@ the new release. Run it the way "Upgrading a host" says, from the same root logi
 ### backups/rsync
  - uslims_daily_backup.php
    - creates sql.gz for all dbinsts
-   - exports every account's grants (uslims3_GRANTS-dump-*.sql.gz: CREATE USER IF NOT EXISTS plus its GRANTs per account; edit out root before loading it); an account it cannot export is named in that file, the log and the summary, and the run exits non-zero after the rest of the backup completes
+   - exports every account's grants (uslims3_GRANTS-dump-*.sql.gz: every account and role first, as CREATE USER or CREATE ROLE IF NOT EXISTS, then each one's GRANTs, then the default roles, so the file loads in order; PUBLIC's grants without creating it; edit out root before loading it); an account it cannot export is named in that file, the log and the summary, and the run exits non-zero after the rest of the backup completes
    - optionally calls uslims_daily_rsync.php
    - optionally sends email report with statistics
  - uslims_daily_rsync.php
