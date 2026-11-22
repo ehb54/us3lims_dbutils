@@ -73,6 +73,13 @@ else
     [ "$(ls $ETC/uslims_upgrade-backup-*/report-*.log | sort -u | wc -l)" = 2 ] && ok "a second --apply keeps a second, separate log" || bad "a second --apply keeps a second, separate log"
 fi
 
+# --status only reports, so it refuses --apply before anything is created.
+rm -rf $ETC/uslims_upgrade-backup-*
+php $UP --status --apply --web-user us3 > /var/tmp/status.out 2>&1
+rc=$?
+[ $rc != 0 ] && grep -q "cannot be combined with --apply" /var/tmp/status.out && [ -z "$(ls -d $ETC/uslims_upgrade-backup-* 2>/dev/null)" ] \
+    && ok "--status --apply is refused and creates nothing" || bad "--status --apply is refused and creates nothing (exit $rc)"
+
 # With the check pass, a refused --apply changes nothing and so keeps no log either.
 rm -rf $ETC/uslims_upgrade-backup-*
 php $UP --apply --web-user us3 > /var/tmp/apply2.out 2>&1

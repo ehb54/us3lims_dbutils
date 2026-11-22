@@ -488,6 +488,8 @@ function backup_file( $filename ) {
         backup_dir_init();
     }
     run_cmd( "cp $filename $util_backup_dir" );
+    ## Config copies hold database passwords: readable by root only.
+    chmod( "$util_backup_dir/" . basename( $filename ), 0600 );
     echo "Original $filename backed up in to $util_backup_dir\n";
 }
 

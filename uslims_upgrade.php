@@ -190,6 +190,9 @@ Options
 
 --help                       : print this information and exit
 --check                      : dry run: report what would change, change nothing
+--status                     : --check on a running host: step 1's idle checks are reported as
+                               [busy] instead of stopping the run, so an upgraded host can be
+                               checked for what is still open without stopping it
 --apply                      : make the changes (each changed file is backed up first)
 --yes                        : no longer needed: --apply makes the changes --check lists
                                without asking. Settings with no value to propose are reported
@@ -271,6 +274,7 @@ $local_cluster = null;
 $single_tenant = null;
 $site_admin_email = null;
 $convert_http  = false;
+$status_mode   = false;
 $remove_retired = false;
 $activate_want = [];
 $advisory_source     = null;
@@ -286,6 +290,9 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
         case "--check":
             ## The default already, but an operator has to be able to ask for it:
             ## a bare invocation prints the help rather than running anything.
+            break;
+        case "--status":
+            $status_mode = true;
             break;
         case "--apply":
             $apply = true;
@@ -388,6 +395,10 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
 
 if ( count( $u_argv ) ) {
     error_exit( $notes );
+}
+
+if ( $status_mode && $apply ) {
+    error_exit( "--status only reports; it cannot be combined with --apply" );
 }
 
 if ( !is_admin() ) {
@@ -546,7 +557,11 @@ function step( $title ) {
 ## todo, and separately toward $needs_input, which is the only thing that can still
 ## be outstanding after --apply: every other todo is applied on the way past.
 function report( $status, $msg ) {
-    global $failures, $pending, $needs_input;
+    global $failures, $pending, $needs_input, $preflight_informational;
+    ## --status: a running host is expected, so step 1's FAILs are only reported.
+    if ( $status === 'FAIL' && !empty( $preflight_informational ) ) {
+        $status = 'busy';
+    }
     if ( $status === 'FAIL' ) {
         $failures++;
     } elseif ( $status === 'todo' ) {
@@ -743,7 +758,7 @@ function backup_append_target( $path, $label ) {
 
     $dest = ensure_backup_dir() . '/' . $label;
 
-    return $append_backups[ $path ] = @copy( $path, $dest ) ? $dest : '';
+    return $append_backups[ $path ] = ( @copy( $path, $dest ) && chmod( $dest, 0600 ) ) ? $dest : '';
 }
 
 ## capture() and config_vars() now live in utility.php: migrate_people_audit_utc.php
@@ -1870,6 +1885,7 @@ function unprobed_active_clusters( $final_clusters, $probes ) {
 ## state an operator can actually confirm. Nothing is changed before all of these
 ## pass: a busy host is refused with every instance untouched.
 step( "1. Preflight: the host must be idle" );
+$preflight_informational = $status_mode;
 
 if ( !is_file( $listen_config ) ) {
     error_exit( "cannot read $listen_config: no such file" );
@@ -2332,7 +2348,10 @@ if ( $live_crons ) {
     report( 'ok', "no LIMS cron entry is active" );
 }
 
-if ( $busy ) {
+$preflight_informational = false;
+if ( $busy && $status_mode ) {
+    report( 'note', "--status: the host is running (" . implode( '; ', $busy ) . "); continuing read-only" );
+} elseif ( $busy ) {
     error_exit( "the host is not idle (" . implode( '; ', $busy ) . ").\n"
                 . "php uslims_jobs.php --busy lists each job and what to do."
                 . " Quiet it down and rerun. Nothing was changed" );
