@@ -1319,11 +1319,14 @@ function local_default_partition() {
 }
 
 ## The entries that are, or after this run will be, inactive and that $in_template says the
-## template does not have: nothing can convert or activate them again. Pure.
-function retired_cluster_entries( array $clusters, array $final_active, callable $in_template ) {
+## template does not have: nothing can convert or activate them again. $file_clusters is the
+## --cluster-values file's entries, or null on a run without it, when every entry it wrote counts
+## as still wanted. Pure.
+function retired_cluster_entries( array $clusters, array $final_active, callable $in_template, $file_clusters = null ) {
     $retired = [];
     foreach ( $clusters as $name => $c ) {
-        if ( is_array( $c ) && !isset( $final_active[ $name ] ) && !$in_template( (string) $name ) ) {
+        $from_file = $file_clusters === null ? !empty( $c[ 'from_cluster_values' ] ) : isset( $file_clusters[ $name ] );
+        if ( is_array( $c ) && !isset( $final_active[ $name ] ) && !$from_file && !$in_template( (string) $name ) ) {
             $retired[] = (string) $name;
         }
     }
@@ -1563,7 +1566,8 @@ function cluster_values_load( $path, &$errors = null, $owner = 0 ) {
 function cluster_values_entry( array $want, $have ) {
     $have  = is_array( $have ) ? $have : [];
     $slurm = strtolower( (string) ( $have[ 'submittype' ] ?? 'slurm' ) ) === 'slurm';
-    $entry = [ 'active' => $slurm && !empty( $have[ 'active' ] ) ] + $want;
+    ## from_cluster_values: --remove-retired leaves it alone on a run without the file.
+    $entry = [ 'active' => $slurm && !empty( $have[ 'active' ] ), 'from_cluster_values' => true ] + $want;
     if ( isset( $have[ 'prediction_cluster_name' ] ) ) {
         $entry[ 'prediction_cluster_name' ] = $have[ 'prediction_cluster_name' ];
     }
@@ -3456,9 +3460,8 @@ foreach ( duplicate_cluster_entries( $here, local_default_partition() ) as $same
                     . " of this host's Slurm; keep one and remove the others from $global_config" );
 }
 $retired = retired_cluster_entries( $clusters, $final_active, function ( $name ) {
-    global $cluster_values;
-    return template_cluster( $name ) !== null || isset( $cluster_values[ 'clusters' ][ $name ] );
-} );
+    return template_cluster( $name ) !== null;
+}, $cluster_values_file === null ? null : $cluster_values[ 'clusters' ] );
 if ( $retired && !$remove_retired ) {
     report( 'note', "inactive cluster entries with no template entry, which nothing can activate again: "
                     . implode( ', ', $retired ) . "; --remove-retired removes them and their probes" );
