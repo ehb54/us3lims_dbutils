@@ -205,10 +205,10 @@ Options
                                or its cluster_config.php probe, deliberately: only --activate
                                does, once its env_script_lines are supplied and ssh to it
                                succeeds -- only the cluster can say what those are.
---remove-retired             : remove the cluster entries that are inactive and have no entry in
-                               global_config.php.template, which nothing can activate again, from
-                               global_config.php, with their probes from cluster_config.php. Without
-                               it they are only listed.
+--remove-retired             : remove the inactive cluster entries that are left over from Airavata or
+                               another scheduler, or were dropped from the --cluster-values file, and have
+                               no entry in global_config.php.template, with their probes from
+                               cluster_config.php. Without it they are only listed.
 --www path                   : web root (default $wwwpath)
 --web-user name              : account the web code runs as (default: the PHP-FPM pool user, else apache, else www-data)
 --env cluster=lines          : env_script_lines for a cluster ('' for none); sets or changes it; repeatable
@@ -582,11 +582,7 @@ function step( $title ) {
 ## todo, and separately toward $needs_input, which is the only thing that can still
 ## be outstanding after --apply: every other todo is applied on the way past.
 function report( $status, $msg ) {
-    global $failures, $pending, $needs_input, $preflight_informational;
-    ## --status: a running host is expected, so step 1's FAILs are only reported.
-    if ( $status === 'FAIL' && !empty( $preflight_informational ) ) {
-        $status = 'busy';
-    }
+    global $failures, $pending, $needs_input;
     if ( $status === 'FAIL' ) {
         $failures++;
     } elseif ( $status === 'todo' ) {
@@ -596,6 +592,12 @@ function report( $status, $msg ) {
         $needs_input++;
     }
     printf( "  [%-5s] %s\n", $status, $msg );
+}
+
+## A step 1 FAIL that only says the host is in use: under --status a running host is expected.
+function report_in_use( $msg ) {
+    global $status_mode;
+    report( !empty( $status_mode ) ? 'busy' : 'FAIL', $msg );
 }
 
 ## An [input] that --apply asks for at a terminal ($asked_on_apply) is a todo in the check pass an
@@ -1245,7 +1247,8 @@ function probes_to_turn_off( array $probes, array $clusters, array $final_active
     $off = [];
     foreach ( $probes as $name => $probe ) {
         if ( is_array( $probe ) && !empty( $probe[ 'active' ] )
-             && is_array( $clusters[ $name ] ?? null ) && !isset( $final_active[ $name ] ) ) {
+             && is_array( $clusters[ $name ] ?? null ) && array_key_exists( 'active', $clusters[ $name ] )
+             && !isset( $final_active[ $name ] ) ) {
             $off[] = (string) $name;
         }
     }
@@ -1318,15 +1321,20 @@ function local_default_partition() {
     return null;
 }
 
-## The entries that are, or after this run will be, inactive and that $in_template says the
-## template does not have: nothing can convert or activate them again. $file_clusters is the
+## The inactive entries left over from Airavata or another scheduler that $in_template says the
+## template does not have: nothing can convert them. A site's own Slurm entry is not one, nor is an
+## entry with no 'active' key, which the web code treats as active. $file_clusters is the
 ## --cluster-values file's entries, or null on a run without it, when every entry it wrote counts
 ## as still wanted. Pure.
 function retired_cluster_entries( array $clusters, array $final_active, callable $in_template, $file_clusters = null ) {
     $retired = [];
     foreach ( $clusters as $name => $c ) {
-        $from_file = $file_clusters === null ? !empty( $c[ 'from_cluster_values' ] ) : isset( $file_clusters[ $name ] );
-        if ( is_array( $c ) && !isset( $final_active[ $name ] ) && !$from_file && !$in_template( (string) $name ) ) {
+        if ( !is_array( $c ) || isset( $final_active[ $name ] ) || !array_key_exists( 'active', $c ) ) {
+            continue;
+        }
+        $leftover = !empty( $c[ 'airavata' ] ) || strtolower( (string) ( $c[ 'submittype' ] ?? 'slurm' ) ) !== 'slurm';
+        $dropped  = $file_clusters !== null && !empty( $c[ 'from_cluster_values' ] ) && !isset( $file_clusters[ $name ] );
+        if ( ( $leftover || $dropped ) && !$in_template( (string) $name ) ) {
             $retired[] = (string) $name;
         }
     }
@@ -1408,9 +1416,15 @@ function remove_array_entries( $text, $var, array $names, &$removed = null ) {
             continue;
         }
         if ( $j < $count && $tx( $j ) === '[' ) {
-            ## A later "$var[ 'name' ]... = ...;" for a removed entry.
+            ## A later "$var[ 'name' ]... = ...;" for a removed entry: a whole statement, not a read of it
+            ## or the body of an if without braces.
             $key = $name_at( $next( $j ) );
             if ( $key === null || !isset( $want[ $key ] ) ) { continue; }
+            $before = $prev( $i );
+            $starts = $before < 0 || in_array( $tx( $before ), [ ';', '{', '}' ], true )
+                      || ( is_array( $tokens[ $before ] ) && $tokens[ $before ][ 0 ] === T_OPEN_TAG );
+            for ( $after = $j; $after < $count && $tx( $after ) === '['; $after = $next( $closing( $after ) ) );
+            if ( !$starts || $after >= $count || $tx( $after ) !== '=' ) { continue; }
             $end = $i;
             for ( $level = 0; $end < $count; $end++ ) {
                 $u = $tx( $end );
@@ -1445,6 +1459,13 @@ function cluster_value_rules() {
     };
     $env      = function ( $v ) {
         return is_string( $v ) && strpbrk( $v, "\r\0" ) === false;
+    };
+    ## The limits are common's remote_exec's, which refuses anything else.
+    $overrides = function ( $v ) {
+        $limits = [ 'connect_timeout_seconds' => 300, 'command_timeout_seconds' => 3600, 'copy_timeout_seconds' => 86400 ];
+        return is_array( $v ) && $v && !array_filter( array_keys( $v ), function ( $key ) use ( $v, $limits ) {
+            return !isset( $limits[ $key ] ) || !is_int( $v[ $key ] ) || $v[ $key ] < 1 || $v[ $key ] > $limits[ $key ];
+        } );
     };
     $number   = function ( $v ) { return ( is_int( $v ) || is_float( $v ) ) && $v > 0; };
     return [
@@ -1481,7 +1502,7 @@ function cluster_value_rules() {
         'procs_per_mgroup'       => $int_from( 1 ),
         'sbatch_timeout_seconds' => $int_from( 1 ),
         'cg_time_multiplier'     => $number,
-        'remote_exec_overrides'  => 'is_array',
+        'remote_exec_overrides'  => $overrides,
     ];
 }
 
@@ -1502,7 +1523,7 @@ function cluster_values_errors( $doc ) {
         $errors[] = "unknown section '$other'";
     }
     foreach ( $sections as $section => list( $allowed, $required ) ) {
-        $entries = $doc[ $section ] ?? [];
+        $entries = array_key_exists( $section, $doc ) ? $doc[ $section ] : [];
         if ( !is_array( $entries ) ) {
             $errors[] = "'$section' is not an object";
             continue;
@@ -1615,6 +1636,51 @@ function replace_cluster_entries( $text, array $entries ) {
     return managed_block_text( remove_array_entries( $text, 'cluster_details', array_map( 'strval', array_keys( $entries ) ) ), $lines );
 }
 
+## The variables a config file's $text defines, read from a temporary copy with __DIR__ and
+## __FILE__ standing for $file, so an include beside it still resolves.
+function config_text_vars( $file, $text, &$why = null ) {
+    $copy = '';
+    foreach ( token_get_all( $text ) as $token ) {
+        $id    = is_array( $token ) ? $token[ 0 ] : null;
+        $copy .= $id === T_DIR ? var_export( dirname( $file ), true )
+               : ( $id === T_FILE ? var_export( $file, true ) : ( is_array( $token ) ? $token[ 1 ] : $token ) );
+    }
+    $tmp = tempnam( sys_get_temp_dir(), 'us3up' );
+    if ( $tmp === false || file_put_contents( $tmp, $copy ) === false ) {
+        $why = 'no temporary copy could be written';
+        return null;
+    }
+    $vars = config_vars( $tmp, $why );
+    @unlink( $tmp );
+    return $vars;
+}
+
+## Why $new must not replace $old in $file: loaded, it has to define the same variables, with $var
+## holding exactly $expected. Empty when it may.
+function rewrite_problem( $file, $old, $new, $var, array $expected ) {
+    $before = config_text_vars( $file, $old, $why );
+    $after  = config_text_vars( $file, $new, $why_new );
+    if ( !is_array( $before ) || !is_array( $after ) ) {
+        return 'it could not be loaded: ' . reason( is_array( $before ) ? $why_new : $why );
+    }
+    $before[ $var ] = $expected;
+    $differ = [];
+    foreach ( array_keys( $before + $after ) as $name ) {
+        if ( json_encode( $before[ $name ] ?? null ) !== json_encode( $after[ $name ] ?? null ) ) {
+            $differ[] = "\$$name";
+        }
+    }
+    return $differ ? 'it would not leave ' . implode( ', ', $differ ) . ' as intended' : '';
+}
+
+## Assignments that turn the named clusters' status probes on or off. A block line, not an edit of
+## the entry: sites write their entries in many forms. Pure.
+function probe_lines( array $names, $on ) {
+    return array_map( function ( $name ) use ( $on ) {
+        return '$cluster_configuration[ ' . var_export( (string) $name, true ) . " ][ 'active' ] = " . ( $on ? 'true' : 'false' ) . ';';
+    }, $names );
+}
+
 ## The names a cluster entry on this host may use for it.
 function this_host_names( $node ) {
     $node = strtolower( $node );
@@ -1626,7 +1692,9 @@ function cluster_values_misplaced( array $values, array $clusters, $host_cluster
     $errors = [];
     foreach ( $values[ 'clusters' ] as $name => $entry ) {
         $have = $clusters[ $name ] ?? null;
-        if ( (string) $name === (string) $host_cluster || entry_reaches_this_host( $entry, $this_host )
+        if ( is_metascheduler_pool_entry( $have ) ) {
+            $errors[] = "$name is a metascheduler pool on this host, not a cluster";
+        } elseif ( (string) $name === (string) $host_cluster || entry_reaches_this_host( $entry, $this_host )
              || ( is_array( $have ) && !empty( $have[ 'active' ] ) && entry_reaches_this_host( $have, $this_host ) ) ) {
             $errors[] = "$name is this host's own cluster: its env_script_lines, maxtime and usemaxtime go in 'local'";
         }
@@ -1643,7 +1711,10 @@ function cluster_values_misplaced( array $values, array $clusters, $host_cluster
 
 ## Whether a config value is one of the template's placeholders.
 function placeholder_value( $value ) {
-    return is_string( $value ) && stripos( $value, 'TODO' ) !== false;
+    if ( is_array( $value ) ) {
+        return count( array_filter( $value, 'placeholder_value' ) ) > 0;
+    }
+    return is_string( $value ) && preg_match( '/\bTODO\b/', $value ) === 1;
 }
 
 ## The template's values conversion writes over a host's entry: those that differ, except 'active',
@@ -1670,7 +1741,7 @@ function conversion_blockers( $want, $have ) {
     $env      = (string) ( $final[ 'env_script_lines' ] ?? '' );
     if ( trim( $env ) === '' ) {
         $blockers[] = "env_script_lines is empty, so no modules would be loaded";
-    } elseif ( stripos( $env, 'TODO' ) !== false ) {
+    } elseif ( placeholder_value( $env ) ) {
         $blockers[] = "env_script_lines still carries the template's TODO; ask the cluster"
                       . " for its module lines";
     }
@@ -2000,7 +2071,7 @@ function reason( $text ) {
 ## reason() for an ssh failure: ssh names the account it tried, which stays out of the report. Pure.
 function ssh_reason( $text, $login ) {
     $account = explode( '@', (string) $login )[ 0 ];
-    return reason( str_replace( [ (string) $login, "$account@" ], [ 'its login', '' ], (string) $text ) );
+    return reason( str_replace( [ (string) $login, "$account@", " for $account" ], [ 'its login', '', ' for its login' ], (string) $text ) );
 }
 
 ## ------------------------------------------------------------- 0. stack code
@@ -2027,7 +2098,7 @@ function repo_version( $dir ) {
 ## every checkout's VERSION reads the same, so the commit is what identifies the code.
 function repo_commit( $dir ) {
     ## --no-optional-locks: run as root, a plain status could rewrite a us3 checkout's index.
-    $git    = 'git --no-optional-locks -c safe.directory=* -C ' . escapeshellarg( $dir );
+    $git    = 'git --no-optional-locks -c core.fsmonitor=false -c safe.directory=* -C ' . escapeshellarg( $dir );
     ## An instance copied into webinfo's tree would otherwise report webinfo's commit.
     $top    = trim( (string) shell_exec( "$git rev-parse --show-toplevel 2>/dev/null" ) );
     if ( $top === '' || realpath( $top ) !== realpath( $dir ) ) {
@@ -2222,7 +2293,6 @@ function unprobed_active_clusters( $final_clusters, $probes ) {
 ## state an operator can actually confirm. Nothing is changed before all of these
 ## pass: a busy host is refused with every instance untouched.
 step( "1. Preflight: the host must be idle" );
-$preflight_informational = $status_mode;
 
 if ( !is_file( $listen_config ) ) {
     error_exit( "cannot read $listen_config: no such file" );
@@ -2268,7 +2338,7 @@ if ( $listeners === null ) {
            . " listen-config.php is still the pre-upgrade format, which the new"
            . " code refuses. Stopping the services before pulling the new code"
            . " avoids this entirely)";
-    report( 'FAIL', "a gridctl service is still running (pid "
+    report_in_use( "a gridctl service is still running (pid "
                     . implode( ', ', array_keys( $listeners ) ) . "); stop it with: $how" );
     $busy[] = 'gridctl service running';
 } else {
@@ -2332,7 +2402,7 @@ if ( $jm_error !== '' ) {
     $busy[] = 'jobmonitors unreadable';
 } elseif ( $monitors ) {
     foreach ( $monitors as $pid => $jm ) {
-        report( 'FAIL', "jobmonitor pid $pid is still running for job {$jm['gfacID']} ({$jm['db']})" );
+        report_in_use( "jobmonitor pid $pid is still running for job {$jm['gfacID']} ({$jm['db']})" );
     }
     $busy[] = count( $monitors ) . ' jobmonitor(s) running';
 } else {
@@ -2342,7 +2412,7 @@ if ( $jm_error !== '' ) {
 ## -- analysis binaries. A job running outside Slurm's view still writes results.
 $analysis = processes( '#^\s*(\d+)\s+/opt/ultrascan3/bin/#' );
 if ( $analysis ) {
-    report( 'FAIL', "an UltraScan binary is running from /opt/ultrascan3/bin (pid "
+    report_in_use( "an UltraScan binary is running from /opt/ultrascan3/bin (pid "
                     . implode( ', ', array_keys( $analysis ) ) . ")" );
     $busy[] = 'analysis binary running';
 } elseif ( $analysis !== null ) {
@@ -2404,7 +2474,7 @@ if ( $row === null ) {
         $busy[] = "$stranded job(s) not finished";
     }
     if ( $unfinished ) {
-        report( 'FAIL', "$unfinished job(s) in gfac.analysis are not in a terminal status; "
+        report_in_use( "$unfinished job(s) in gfac.analysis are not in a terminal status; "
                         . ( gridctl_moved_early( $us3bin ) ? gridctl_early_move_recovery() . ". php uslims_jobs.php --busy lists each and what to do, then rerun"
                             : "php uslims_jobs.php --busy lists each and what to do, then rerun" ) );
         $busy[] = "$unfinished unfinished job(s)";
@@ -2421,7 +2491,7 @@ if ( $dispatch_link ) {
 }
 if ( $dispatch_busy ) {
     foreach ( $dispatch_busy as $line ) {
-        report( 'FAIL', "$line; let the dispatch worker settle them or cancel them on the dispatch dashboard, then rerun."
+        report_in_use( "$line; let the dispatch worker settle them or cancel them on the dispatch dashboard, then rerun."
                         . " A submission held as uncertain only settles by Resolve or Close on the dashboard, with the services running" );
     }
     $busy[] = 'dispatch work in flight';
@@ -2432,7 +2502,7 @@ if ( $dispatch_busy ) {
 ## -- cleanup claims. A live claim means a cleanup is mid-import.
 $claims = cleanup_claims( $us3_home );
 if ( $claims ) {
-    report( 'FAIL', count( $claims ) . " job(s) hold a cleanup claim: " . implode( ', ', $claims ) );
+    report_in_use( count( $claims ) . " job(s) hold a cleanup claim: " . implode( ', ', $claims ) );
     $busy[] = 'cleanup claim held';
 } else {
     report( 'ok', "no job holds a cleanup claim" );
@@ -2457,7 +2527,7 @@ if ( $sq_rc !== 0 ) {
         $busy[] = 'squeue failed';
     } elseif ( trim( $q_out ) !== '' ) {
         $jobs = count( array_filter( explode( "\n", trim( $q_out ) ) ) );
-        report( 'FAIL', "$jobs us3 job(s) are still in the local Slurm queue" );
+        report_in_use( "$jobs us3 job(s) are still in the local Slurm queue" );
         $busy[] = "$jobs job(s) queued";
     } else {
         report( 'ok', "us3's local Slurm queue is empty" );
@@ -2499,7 +2569,7 @@ if ( $sq_rc !== 0 ) {
                 report( 'note', count( $working ) . " node(s) running work, on a shared cluster where that"
                                 . " may not be us3's: " . implode( ', ', $working ) );
             } else {
-                report( 'FAIL', count( $working ) . " node(s) still running work: "
+                report_in_use( count( $working ) . " node(s) still running work: "
                                 . implode( ', ', $working )
                                 . " (on a shared, multi-tenant host, pass --single-tenant no to"
                                 . " downgrade this to a note)" );
@@ -2537,7 +2607,7 @@ if ( !$res ) {
     }
     $others = other_db_connections( $processlist_rows );
     if ( $others ) {
-        report( 'FAIL', count( $others ) . " active database connection(s): "
+        report_in_use( count( $others ) . " active database connection(s): "
                         . implode( ', ', $others ) );
         $busy[] = 'database in use';
     } elseif ( !$has_process_priv ) {
@@ -2664,7 +2734,7 @@ if ( $who_rc !== 0 ) {
                         . " terminal could not be identified, so one of them may be this one: "
                         . implode( ', ', $sessions ) );
     } elseif ( $sessions ) {
-        report( 'FAIL', count( $sessions ) . " other login session(s): "
+        report_in_use( count( $sessions ) . " other login session(s): "
                         . implode( ', ', $sessions ) );
         $busy[] = 'other users logged in';
     } else {
@@ -2677,7 +2747,7 @@ if ( $who_rc !== 0 ) {
 $live_crons = lims_cron_blocking( live_lims_crontabs(), $cron_jobs_elsewhere_ok );
 if ( $live_crons ) {
     foreach ( $live_crons as $where => $lines ) {
-        report( 'FAIL', "$where still has " . count( $lines ) . " active LIMS cron entr"
+        report_in_use( "$where still has " . count( $lines ) . " active LIMS cron entr"
                         . ( count( $lines ) === 1 ? 'y' : 'ies' ) . ": " . reason( implode( ' | ', $lines ) ) );
     }
     $busy[] = 'LIMS cron entries active';
@@ -2685,7 +2755,6 @@ if ( $live_crons ) {
     report( 'ok', "no LIMS cron entry is active" );
 }
 
-$preflight_informational = false;
 if ( $busy && $status_mode ) {
     report( 'note', "--status: the host is running (" . implode( '; ', $busy ) . "); continuing read-only" );
 } elseif ( $busy ) {
@@ -2769,9 +2838,17 @@ if ( $cluster_values_file !== null ) {
         $replace[ $name ] = $entry;
     }
     $after = array_diff_key( $clusters, $replace ) + $replace;
+    $gc_text = (string) file_get_contents( $global_config );
+    if ( $replace ) {
+        $gc_new  = replace_cluster_entries( $gc_text, $replace );
+        $problem = rewrite_problem( $global_config, $gc_text, $gc_new, 'cluster_details', $after );
+        if ( $problem !== '' ) {
+            error_exit( "$global_config cannot take the cluster values: $problem. Nothing in it was changed" );
+        }
+        $gc_text = $gc_new;
+    }
     if ( $replace && $apply && confirm( "Write those clusters to $global_config?" ) ) {
-        rewrite_cluster_array( $global_config, 'cluster_details',
-                               replace_cluster_entries( (string) file_get_contents( $global_config ), $replace ), $after );
+        write_file( $global_config, $gc_text );
         report( 'done', "$global_config updated (original in " . backup_path( $global_config ) . ")" );
     }
     $clusters = $after;
@@ -2784,6 +2861,13 @@ if ( $cluster_values_file !== null ) {
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ ' . var_export( $key, true ) . ' ] = '
                        . php_value( $value ) . ';';
             $clusters[ $name ][ $key ] = $value;
+        }
+        ## An active entry's are set with every other active cluster's, below.
+        $lines = cluster_env_script_lines( $name, $values_host, $entry[ 'env_script_lines' ] );
+        if ( empty( $clusters[ $name ][ 'active' ] ) && ( $clusters[ $name ][ 'env_script_lines' ] ?? null ) !== $lines ) {
+            report( 'todo', "set env_script_lines for $name from the cluster values file" );
+            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = ' . php_string( $lines ) . ';';
+            $clusters[ $name ][ 'env_script_lines' ] = $lines;
         }
     }
     $gc[ 'cluster_details' ] = $clusters;
@@ -3100,7 +3184,7 @@ foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
         if ( $launcher !== $c[ 'env_script_lines' ] ) {
             report( 'todo', $launcher !== $lines
                 ? "add the Slurm launcher settings to env_script_lines for $name, so MPICH ranks stay in the job's allocation"
-                : "change env_script_lines for $name (--env)" );
+                : "change env_script_lines for $name (" . ( isset( $env_values[ $name ] ) ? '--env' : 'the cluster values file' ) . ")" );
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = ' . php_string( $launcher ) . ';';
         } else {
             report( 'ok', "$name has env_script_lines" );
@@ -3166,21 +3250,22 @@ foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
         continue;
     }
     $cpus = reset( $nodes );
-    if ( !array_key_exists( 'single_node', $c ) ) {
-        report( 'todo', "set single_node for $name (its queue has one node)" );
-        $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'single_node\' ] = true;';
-    }
     ## Sizing itself is single_node_sizing() (pure, unit-tested); see its
     ## docblock for why ppn/maxproc are set to the CPU count outright,
     ## raising or lowering, rather than only ever capped at it.
     $want = single_node_sizing( $c, $cpus );
-    if ( isset( $cluster_values[ 'clusters' ][ $name ] ) ) {
+    ## A --cluster-values entry is sized by its file, on a run without the file too.
+    if ( isset( $cluster_values[ 'clusters' ][ $name ] ) || !empty( $c[ 'from_cluster_values' ] ) ) {
         $off = array_keys( array_filter( $want, function ( $v, $k ) use ( $c ) { return (int) ( $c[ $k ] ?? 0 ) !== $v; }, ARRAY_FILTER_USE_BOTH ) );
         if ( $off ) {
             report( 'note', "$name has one node with $cpus effective CPUs, which its " . implode( ', ', $off )
                             . " do not match; correct the cluster values file" );
         }
         continue;
+    }
+    if ( !array_key_exists( 'single_node', $c ) ) {
+        report( 'todo', "set single_node for $name (its queue has one node)" );
+        $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'single_node\' ] = true;';
     }
     foreach ( $want as $key => $value ) {
         $now = isset( $c[ $key ] ) ? (int) $c[ $key ] : null;
@@ -3248,7 +3333,7 @@ foreach ( $activate_want as $name ) {
         report( 'input', "--activate: '$name' has no env_script_lines yet (pass --env $name=...)" );
         continue;
     }
-    if ( stripos( $env, 'TODO' ) !== false ) {
+    if ( placeholder_value( $env ) ) {
         report( 'input', "--activate: '$name' still carries the template's env_script_lines TODO;"
                         . " ask the cluster for its module lines (--env $name=...)" );
         continue;
@@ -3414,23 +3499,18 @@ if ( $activated ) {
         report( 'note', "no $cluster_config, so no status probe could be activated for "
                         . implode( ', ', $activated ) );
     } else {
-        $cc_text = (string) file_get_contents( $cluster_config );
-        $turned  = [];
-        $absent  = [];
+        $cc_text   = (string) file_get_contents( $cluster_config );
+        $cc_probes = config_vars( $cluster_config )[ 'cluster_configuration' ] ?? [];
+        $turned    = [];
+        $absent    = [];
         foreach ( $activated as $name ) {
-            ## Only this entry's own 'active' line: the match is anchored on the key
-            ## and stops at the end of its array literal.
-            $pattern = '/(' . preg_quote( "'$name'", '/' ) . '\s*=>\s*\[)([^\]]*?)(\x27active\x27\s*=>\s*)false/s';
-            if ( !preg_match( '/' . preg_quote( "'$name'", '/' ) . '\s*=>\s*\[/', $cc_text ) ) {
+            if ( !is_array( $cc_probes[ $name ] ?? null ) ) {
                 $absent[] = $name;
-                continue;
-            }
-            $replaced = preg_replace( $pattern, '${1}${2}${3}true', $cc_text, 1, $count );
-            if ( $replaced !== null && $count ) {
-                $cc_text  = $replaced;
+            } elseif ( empty( $cc_probes[ $name ][ 'active' ] ) ) {
                 $turned[] = $name;
             }
         }
+        $cc_text = managed_block_text( $cc_text, probe_lines( $turned, true ) );
         if ( $absent ) {
             report( 'note', "$cluster_config has no entry for " . implode( ', ', $absent )
                             . "; add one from " . basename( $cluster_config ) . ".template"
@@ -3478,8 +3558,14 @@ foreach ( duplicate_cluster_entries( $here, local_default_partition() ) as $same
 $retired = retired_cluster_entries( $clusters, $final_active, function ( $name ) {
     return template_cluster( $name ) !== null;
 }, $cluster_values_file === null ? null : $cluster_values[ 'clusters' ] );
+if ( template_cluster( '', $tpl_why ) === null && $tpl_why !== "the template has no '' entry" ) {
+    if ( $remove_retired ) {
+        report( 'input', "--remove-retired: $tpl_why, so which entries it lacks is not known" );
+    }
+    $retired = [];
+}
 if ( $retired && !$remove_retired ) {
-    report( 'note', "inactive cluster entries with no template entry, which nothing can activate again: "
+    report( 'note', "inactive cluster entries with no template entry, left over from Airavata, another scheduler or the cluster values file: "
                     . implode( ', ', $retired ) . "; --remove-retired removes them and their probes" );
 }
 $removing = $remove_retired ? $retired : [];
@@ -3512,40 +3598,42 @@ if ( $rows_drop ) {
                     . ": no probe refreshes them, and dbinst logs each as stale on every page load" );
 }
 
-## Each rewrite is checked by loading it: the array must be exactly the old one minus what was
-## meant to change, or nothing is written.
-function rewrite_cluster_array( $file, $var, $text, array $expected ) {
-    $tmp = tempnam( sys_get_temp_dir(), 'us3up' );
-    if ( $tmp === false || file_put_contents( $tmp, $text ) === false ) {
-        error_exit( "could not stage the new $file" );
-    }
-    $vars = config_vars( $tmp, $why );
-    @unlink( $tmp );
-    if ( !is_array( $vars[ $var ] ?? null ) || json_encode( $vars[ $var ] ) !== json_encode( $expected ) ) {
-        fatal( "the rewritten $file would not hold exactly the intended \$$var (" . reason( $why ?: 'other entries differ' )
-               . "); it was left as it is" );
-    }
-    write_file( $file, $text );
+## What each file becomes, checked in the check pass too, so --apply does not find out halfway.
+$gc_text  = (string) file_get_contents( $global_config );
+if ( !$apply && $cluster_values_file !== null && $replace ) {
+    $gc_text = replace_cluster_entries( $gc_text, $replace );
 }
-if ( $apply && ( $probes_off || $removing ) ) {
-    if ( $removing && confirm( "Remove " . implode( ', ', $removing ) . " from $global_config?" ) ) {
-        $now  = config_vars( $global_config );
-        $text = remove_array_entries( (string) file_get_contents( $global_config ), 'cluster_details', $removing, $found );
-        rewrite_cluster_array( $global_config, 'cluster_details', $text,
-                               array_diff_key( $now[ 'cluster_details' ] ?? [], array_flip( $removing ) ) );
-        report( 'done', "$global_config: removed " . implode( ', ', $removing )
-                        . " (original in " . backup_path( $global_config ) . ")" );
-    }
-    if ( ( $probes_off || $probe_drop ) && is_file( $cluster_config )
-         && confirm( "Update the status probes in $cluster_config?" ) ) {
-        $text = remove_array_entries( (string) file_get_contents( $cluster_config ), 'cluster_configuration', $probe_drop );
-        foreach ( $probes_off as $name ) {
-            $text = preg_replace( '/(' . preg_quote( "'$name'", '/' ) . '\s*=>\s*\[)([^\]]*?)(\x27active\x27\s*=>\s*)true/s',
-                                  '${1}${2}${3}false', $text, 1 );
-        }
-        rewrite_cluster_array( $cluster_config, 'cluster_configuration', $text, $probes_after );
-        report( 'done', "$cluster_config updated (original in " . backup_path( $cluster_config ) . ")" );
-    }
+if ( !$apply && $managed ) {
+    $gc_text = managed_block_text( $gc_text, $managed );
+}
+$gc_new   = remove_array_entries( $gc_text, 'cluster_details', $removing );
+$cc_text  = is_file( $cluster_config ) ? (string) file_get_contents( $cluster_config ) : '';
+$cc_off   = array_values( array_diff( $probes_off, $activated ) );
+$cc_new   = remove_array_entries( $cc_text, 'cluster_configuration', $probe_drop );
+$cc_new   = $cc_off ? managed_block_text( $cc_new, probe_lines( $cc_off, false ) ) : $cc_new;
+$gc_now   = $removing ? ( config_text_vars( $global_config, $gc_text )[ 'cluster_details' ] ?? [] ) : [];
+$problems = [];
+if ( $removing ) {
+    $problems[ $global_config ] = rewrite_problem( $global_config, $gc_text, $gc_new, 'cluster_details',
+                                                   array_diff_key( $gc_now, array_flip( $removing ) ) );
+}
+if ( $cc_off || $probe_drop ) {
+    $problems[ $cluster_config ] = rewrite_problem( $cluster_config, $cc_text, $cc_new, 'cluster_configuration', $probes_after );
+}
+foreach ( array_filter( $problems ) as $file => $problem ) {
+    report( 'FAIL', "$file was left as it is: $problem. Make the changes above in it by hand" );
+}
+if ( $apply && $removing && $problems[ $global_config ] === '' && confirm( "Remove " . implode( ', ', $removing ) . " from $global_config?" ) ) {
+    write_file( $global_config, $gc_new );
+    report( 'done', "$global_config: removed " . implode( ', ', $removing ) . " (original in " . backup_path( $global_config ) . ")" );
+}
+if ( $apply && ( $cc_off || $probe_drop ) && $problems[ $cluster_config ] === ''
+     && confirm( "Update the status probes in $cluster_config?" ) ) {
+    write_file( $cluster_config, $cc_new );
+    report( 'done', "$cluster_config updated (original in " . backup_path( $cluster_config ) . ")" );
+}
+if ( !empty( $problems[ $cluster_config ] ) ) {
+    $rows_drop = [];   ## their probes are still on
 }
 if ( $apply && $rows_drop && confirm( "Delete those gfac.cluster_status rows?" ) ) {
     $drop_rows  = mysqli_prepare( $gdb, 'DELETE FROM cluster_status WHERE cluster = ?' );
