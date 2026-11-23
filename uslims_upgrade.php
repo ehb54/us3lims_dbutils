@@ -3538,19 +3538,20 @@ if ( $apply && ( $probes_off || $removing ) ) {
     }
 }
 if ( $apply && $rows_drop && confirm( "Delete those gfac.cluster_status rows?" ) ) {
-    $dropped = mysqli_prepare( $gdb, 'DELETE FROM cluster_status WHERE cluster = ?' );
-    foreach ( $dropped ? $rows_drop : [] as $row_cluster ) {
-        if ( !$dropped->bind_param( 's', $row_cluster ) || !$dropped->execute() ) {
-            $dropped = false;
+    $drop_rows  = mysqli_prepare( $gdb, 'DELETE FROM cluster_status WHERE cluster = ?' );
+    $drop_error = $drop_rows ? '' : mysqli_error( $gdb );
+    foreach ( $drop_rows ? $rows_drop : [] as $row_cluster ) {
+        if ( !$drop_rows->bind_param( 's', $row_cluster ) || !$drop_rows->execute() ) {
+            $drop_error = $drop_rows->error;
             break;
         }
     }
-    if ( $dropped ) {
+    if ( $drop_rows && $drop_error === '' ) {
         $changes++;
         report( 'done', "deleted the gfac.cluster_status rows of " . implode( ', ', $rows_drop ) );
     } else {
         report( 'note', "could not delete the gfac.cluster_status rows of " . implode( ', ', $rows_drop )
-                        . ": " . reason( mysqli_error( $gdb ) ) );
+                        . ": " . reason( $drop_error ) );
     }
 }
 
