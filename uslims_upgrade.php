@@ -1444,7 +1444,7 @@ function cluster_value_rules() {
                && count( array_filter( $v, 'is_string' ) ) === count( $v );
     };
     $env      = function ( $v ) {
-        return is_string( $v ) && strpbrk( $v, "\r\0" ) === false && stripos( $v, 'TODO' ) === false;
+        return is_string( $v ) && strpbrk( $v, "\r\0" ) === false;
     };
     $number   = function ( $v ) { return ( is_int( $v ) || is_float( $v ) ) && $v > 0; };
     return [
@@ -1522,7 +1522,7 @@ function cluster_values_errors( $doc ) {
             foreach ( $entry as $key => $value ) {
                 if ( !in_array( $key, $allowed, true ) ) {
                     $errors[] = "$section.$name: '$key' cannot be set here";
-                } elseif ( !call_user_func( $rules[ $key ], $value ) ) {
+                } elseif ( placeholder_value( $value ) || !call_user_func( $rules[ $key ], $value ) ) {
                     $errors[] = "$section.$name: $key has a value that is not allowed";
                 }
             }
@@ -1641,20 +1641,46 @@ function cluster_values_misplaced( array $values, array $clusters, $host_cluster
     return $errors;
 }
 
+## Whether a config value is one of the template's placeholders.
+function placeholder_value( $value ) {
+    return is_string( $value ) && stripos( $value, 'TODO' ) !== false;
+}
+
+## The template's values conversion writes over a host's entry: those that differ, except 'active',
+## which conversion never sets, and a placeholder where the host has its own value. Pure.
+function conversion_values( array $want, array $have ) {
+    $values = [];
+    foreach ( $want as $key => $value ) {
+        $own = $have[ $key ] ?? null;
+        if ( $key === 'active' || ( array_key_exists( $key, $have ) && $own === $value )
+             || ( placeholder_value( $value ) && is_string( $own ) && trim( $own ) !== '' ) ) {
+            continue;
+        }
+        $values[ $key ] = $value;
+    }
+    return $values;
+}
+
 ## What still stands between a converted entry and activation. env_script_lines is
 ## the one the cluster alone can answer: the template carries a TODO for the clusters
 ## whose module names were never confirmed.
 function conversion_blockers( $want, $have ) {
     $blockers = [];
-    $env      = (string) ( $want[ 'env_script_lines' ] ?? ( $have[ 'env_script_lines' ] ?? '' ) );
+    $final    = conversion_values( $want, (array) $have ) + (array) $have;
+    $env      = (string) ( $final[ 'env_script_lines' ] ?? '' );
     if ( trim( $env ) === '' ) {
         $blockers[] = "env_script_lines is empty, so no modules would be loaded";
     } elseif ( stripos( $env, 'TODO' ) !== false ) {
         $blockers[] = "env_script_lines still carries the template's TODO; ask the cluster"
                       . " for its module lines";
     }
-    if ( trim( (string) ( $want[ 'login' ] ?? ( $have[ 'login' ] ?? '' ) ) ) === '' ) {
+    if ( trim( (string) ( $final[ 'login' ] ?? '' ) ) === '' ) {
         $blockers[] = "no login account";
+    }
+    foreach ( [ 'login', 'workdir' ] as $key ) {
+        if ( placeholder_value( $final[ $key ] ?? '' ) ) {
+            $blockers[] = "$key still carries the template's TODO";
+        }
     }
     $blockers[] = "SSH keys and an account on the cluster stay an operator step";
     return $blockers;
@@ -2871,14 +2897,7 @@ foreach ( $active as $name => $c ) {
             continue;
         }
         $changed = [];
-        foreach ( $want as $key => $value ) {
-            ## active is handled below, deliberately: conversion never activates.
-            if ( $key === 'active' ) {
-                continue;
-            }
-            if ( array_key_exists( $key, $c ) && $c[ $key ] === $value ) {
-                continue;
-            }
+        foreach ( conversion_values( $want, $c ) as $key => $value ) {
             $changed[] = $key;
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ '
                        . var_export( $key, true ) . ' ] = ' . php_value( $value ) . ';';
@@ -2936,13 +2955,7 @@ if ( $convert_http ) {
             continue;
         }
         $changed = [];
-        foreach ( $want as $key => $value ) {
-            if ( $key === 'active' ) {
-                continue;
-            }
-            if ( array_key_exists( $key, $c ) && $c[ $key ] === $value ) {
-                continue;
-            }
+        foreach ( conversion_values( $want, $c ) as $key => $value ) {
             $changed[] = $key;
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ '
                        . var_export( $key, true ) . ' ] = ' . php_value( $value ) . ';';
@@ -3238,6 +3251,12 @@ foreach ( $activate_want as $name ) {
     if ( stripos( $env, 'TODO' ) !== false ) {
         report( 'input', "--activate: '$name' still carries the template's env_script_lines TODO;"
                         . " ask the cluster for its module lines (--env $name=...)" );
+        continue;
+    }
+    $todo = array_filter( [ 'login', 'workdir' ], function ( $key ) use ( $c ) { return placeholder_value( $c[ $key ] ?? '' ); } );
+    if ( $todo ) {
+        report( 'input', "--activate: '$name' still carries the template's TODO for " . implode( ' and ', $todo )
+                        . "; set it with --cluster-values" );
         continue;
     }
     $login = $c[ 'login' ] ?? ( 'us3@' . ( $c[ 'name' ] ?? '' ) );
