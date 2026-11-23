@@ -3207,10 +3207,6 @@ foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
 ## the very run it was converted, so only one re-run -- to let --activate
 ## see that step 4's work -- is needed before activation succeeds, down
 ## from two.
-$activate_probes = null;
-if ( $activate_want && is_file( "$us3bin/cluster_config.php" ) ) {
-    $activate_probes = config_vars( "$us3bin/cluster_config.php" )[ 'cluster_configuration' ] ?? null;
-}
 $activated = [];
 foreach ( $activate_want as $name ) {
     $c = $clusters[ $name ] ?? null;
@@ -3285,11 +3281,6 @@ foreach ( $activate_want as $name ) {
                             . "; $web_advice" );
             continue;
         }
-    }
-    if ( is_array( $activate_probes ) && trim( (string) ( $activate_probes[ $name ][ 'status' ] ?? '' ) ) === '' ) {
-        report( 'input', "--activate: '$name' has no status probe in $us3bin/cluster_config.php, so nothing would report it"
-                        . " up or down; add its entry from cluster_config.php.template, then re-run" );
-        continue;
     }
     if ( $env !== ( $c[ 'env_script_lines' ] ?? '' ) ) {
         $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = '
