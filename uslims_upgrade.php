@@ -1350,20 +1350,22 @@ function remove_array_entries( $text, $var, array $names, &$removed = null ) {
             $close = $closing( $open );
             if ( $close === null ) { continue; }
             $inner = 0;
+            $kept  = false;   ## an earlier entry stays, so a removed one takes the comma before it
             for ( $k = $open + 1; $k < $close; $k++ ) {
                 $u = $tx( $k );
                 if ( $u === '[' || $u === '(' ) { $inner++; continue; }
                 if ( $u === ']' || $u === ')' ) { $inner--; continue; }
                 $key = $inner === 0 ? $name_at( $k ) : null;
-                if ( $key === null || !isset( $want[ $key ] ) ) { continue; }
+                if ( $key === null ) { continue; }
                 $arrow = $next( $k );
                 if ( $arrow >= $close || !is_array( $tokens[ $arrow ] ) || $tokens[ $arrow ][ 0 ] !== T_DOUBLE_ARROW ) { continue; }
+                if ( !isset( $want[ $key ] ) ) { $kept = true; continue; }
                 $value = $next( $arrow );
                 if ( $tx( $value ) === 'array' ) { $value = $next( $value ); }
                 $end = in_array( $tx( $value ), [ '[', '(' ], true ) ? $closing( $value ) : null;
-                if ( $end === null ) { continue; }
+                if ( $end === null ) { $kept = true; continue; }
                 $before = $prev( $k );
-                if ( $tx( $before ) === ',' ) {
+                if ( $kept && $tx( $before ) === ',' ) {
                     $from = $before;
                 } else {
                     $from  = $k;
