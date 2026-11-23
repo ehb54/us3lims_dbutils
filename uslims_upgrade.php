@@ -1971,6 +1971,12 @@ function reason( $text ) {
     return $text === '' ? '' : ( strlen( $text ) > 200 ? substr( $text, 0, 197 ) . '...' : $text );
 }
 
+## reason() for an ssh failure: ssh names the account it tried, which stays out of the report. Pure.
+function ssh_reason( $text, $login ) {
+    $account = explode( '@', (string) $login )[ 0 ];
+    return reason( str_replace( [ (string) $login, "$account@" ], [ 'its login', '' ], (string) $text ) );
+}
+
 ## ------------------------------------------------------------- 0. stack code
 
 ## Every later step assumes the new code is already deployed: step 2 carries the
@@ -3256,10 +3262,10 @@ foreach ( $activate_want as $name ) {
         ## authorized_keys on the remote host by hand.
         $advice = $name === $host_cluster
             ? "step 4 below offers to set up the key under --apply, then re-run"
-            : "step 4 below only records $login's host key; create us3's"
-              . " key if missing and have it authorized for $login by hand, then re-run";
-        report( 'input', "--activate: '$name' does not yet ssh as us3 to $login (exit $rc): "
-                        . reason( $ssh_err !== '' ? $ssh_err : $ssh_out )
+            : "step 4 below only records its host key; create us3's"
+              . " key if missing and have it authorized for the entry's login by hand, then re-run";
+        report( 'input', "--activate: '$name' does not yet ssh as us3 to its login (exit $rc): "
+                        . ssh_reason( $ssh_err !== '' ? $ssh_err : $ssh_out, $login )
                         . "; $advice" );
         continue;
     }
@@ -3272,10 +3278,10 @@ foreach ( $activate_want as $name ) {
         if ( $web_rc !== 0 ) {
             $web_advice = $name === $host_cluster
                 ? "step 4 below offers to set up the key under --apply, then re-run"
-                : "step 4 below only records $login's host key; create $web_user's"
-                  . " key if missing and have it authorized for $login by hand, then re-run";
-            report( 'input', "--activate: '$name' does not yet ssh as $web_user to $login (exit $web_rc): "
-                            . reason( $web_ssh_err !== '' ? $web_ssh_err : $web_ssh_out )
+                : "step 4 below only records its host key; create $web_user's"
+                  . " key if missing and have it authorized for the entry's login by hand, then re-run";
+            report( 'input', "--activate: '$name' does not yet ssh as $web_user to its login (exit $web_rc): "
+                            . ssh_reason( $web_ssh_err !== '' ? $web_ssh_err : $web_ssh_out, $login )
                             . "; $web_advice" );
             continue;
         }
@@ -3290,7 +3296,7 @@ foreach ( $activate_want as $name ) {
                    . php_string( $env ) . ';';
     }
     $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'active\' ] = true;';
-    report( 'todo', "activate '$name' (env_script_lines is real, ssh to $login succeeds for us3"
+    report( 'todo', "activate '$name' (env_script_lines is real, ssh to its login succeeds for us3"
                     . ( $web_user !== 'us3' ? " and $web_user" : '' ) . "): sets active = true in"
                     . " $global_config and turns on its status probe in cluster_config.php" );
     $activated[] = $name;
@@ -3532,10 +3538,14 @@ if ( $apply && ( $probes_off || $removing ) ) {
     }
 }
 if ( $apply && $rows_drop && confirm( "Delete those gfac.cluster_status rows?" ) ) {
-    $list = implode( ',', array_map( function ( $n ) use ( $gdb ) {
-        return "'" . mysqli_real_escape_string( $gdb, $n ) . "'";
-    }, $rows_drop ) );
-    if ( mysqli_query( $gdb, "DELETE FROM cluster_status WHERE cluster IN ($list)" ) ) {
+    $dropped = mysqli_prepare( $gdb, 'DELETE FROM cluster_status WHERE cluster = ?' );
+    foreach ( $dropped ? $rows_drop : [] as $row_cluster ) {
+        if ( !$dropped->bind_param( 's', $row_cluster ) || !$dropped->execute() ) {
+            $dropped = false;
+            break;
+        }
+    }
+    if ( $dropped ) {
         $changes++;
         report( 'done', "deleted the gfac.cluster_status rows of " . implode( ', ', $rows_drop ) );
     } else {
@@ -3682,18 +3692,18 @@ foreach ( $ssh_targets as $name => $c ) {
         $ssh = "ssh -n -p $port -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes " . escapeshellarg( $login ) . " true";
         $rc  = run_as( $account, $ssh, $ssh_out, $ssh_err );
         if ( $rc !== 0 && $name === $host_cluster ) {
-            report( 'todo', "$name: authorize $account's key for $login on this host" );
+            report( 'todo', "$name: authorize $account's key for its login on this host" );
             $ssh_pending[ 'authorized key' ] = true;
-            if ( $apply && confirm( "Set up $account's SSH key for $login?" ) ) {
+            if ( $apply && confirm( "Set up $account's SSH key for $name's login?" ) ) {
                 if ( authorize_local_key( $account, $entry, explode( '@', $login )[ 0 ] ) ) {
                     $changes++;
                     $rc = run_as( $account, $ssh, $ssh_out, $ssh_err );
                     if ( $rc === 0 ) {
                         unset( $ssh_pending[ 'authorized key' ] );
                     }
-                    report( $rc === 0 ? 'done' : 'FAIL', "$name: $account's key authorized for $login" );
+                    report( $rc === 0 ? 'done' : 'FAIL', "$name: $account's key authorized for its login" );
                 } else {
-                    report( 'FAIL', "$name: could not authorize $account's key for $login" );
+                    report( 'FAIL', "$name: could not authorize $account's key for its login" );
                 }            }
         }
         if ( $rc !== 0 && $ssh_pending ) {
@@ -3701,13 +3711,13 @@ foreach ( $ssh_targets as $name => $c ) {
             ## dry run on a host that has never had the key reports the consequence
             ## of its own todos. Reported as a FAIL it made every such run exit 1,
             ## which left a genuine FAIL indistinguishable.
-            report( 'todo', "$name: $account can ssh to $login once the "
+            report( 'todo', "$name: $account can ssh to its login once the "
                             . implode( ' and ', array_keys( $ssh_pending ) ) . " above "
                             . ( count( $ssh_pending ) > 1 ? 'are' : 'is' ) . " in place" );
         } else {
-            report( $rc === 0 ? 'ok' : 'FAIL', "$name: $account can ssh to $login"
+            report( $rc === 0 ? 'ok' : 'FAIL', "$name: $account can ssh to its login"
                     . ( $rc === 0 ? '' : " (exit $rc: install the account's key, including for the host itself) "
-                                         . reason( $ssh_err !== '' ? $ssh_err : $ssh_out ) ) );
+                                         . ssh_reason( $ssh_err !== '' ? $ssh_err : $ssh_out, $login ) ) );
         }
     }
 }

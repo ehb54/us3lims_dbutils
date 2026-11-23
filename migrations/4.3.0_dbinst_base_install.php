@@ -178,7 +178,7 @@ function dbinst_base_install_from( $loader, $temporary, $apply, array $context, 
         report( 'ok', "$base_path exists" );
         ## The base's zone is every overlay instance's; a legacy instance that runs on another one
         ## changes zone when migrated, so migrate_instance_config.php refuses it.
-        $base_zone = ( @include $base_path )[ 'values' ][ 'timezone' ] ?? null;
+        $base_zone = config_vars( $base_path )[ 'timezone' ] ?? null;
         $zones     = array_unique( array_filter( array_map( function ( $c ) {
             return is_array( $c ) ? ( $c[ 'timezone' ] ?? null ) : null;
         }, $instance_configs ) ) );
