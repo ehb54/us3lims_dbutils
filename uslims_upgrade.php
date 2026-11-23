@@ -1239,6 +1239,60 @@ function status_rows_to_drop( array $row_clusters, array $probes_after ) {
     return $drop;
 }
 
+## Whether an entry reaches this host's Slurm: marked local, or its login host is one of $this_host.
+function entry_reaches_this_host( array $c, array $this_host ) {
+    if ( cluster_entry_is_local( $c[ 'localhost' ] ?? false ) ) {
+        return true;
+    }
+    $login = (string) ( $c[ 'login' ] ?? ( 'us3@' . ( $c[ 'name' ] ?? '' ) ) );
+    $at = strrpos( $login, '@' );
+    return in_array( strtolower( $at === false ? $login : substr( $login, $at + 1 ) ), $this_host, true );
+}
+
+## The active Slurm entries, other than pools, that reach this host. Pure.
+function this_host_cluster_entries( array $clusters, array $final_active, array $this_host ) {
+    $here = [];
+    foreach ( array_keys( $final_active ) as $name ) {
+        $c = $clusters[ $name ] ?? null;
+        if ( is_array( $c ) && !is_metascheduler_pool_entry( $c )
+             && strtolower( (string) ( $c[ 'submittype' ] ?? 'slurm' ) ) === 'slurm'
+             && entry_reaches_this_host( $c, $this_host ) ) {
+            $here[ (string) $name ] = $c;
+        }
+    }
+    return $here;
+}
+
+## Of this_host_cluster_entries(), those that go over ssh to this host for every submit and poll. Pure.
+function self_ssh_cluster_entries( array $here ) {
+    return array_keys( array_filter( $here, function ( $c ) {
+        return !cluster_entry_is_local( $c[ 'localhost' ] ?? false );
+    } ) );
+}
+
+## Groups of this_host_cluster_entries() that take the same jobs in the same partition: one queue
+## under two names. An unset queue is $default_partition. A -gamc entry shares its partition but
+## takes only PMG jobs, so pmgonly sets it apart. Pure.
+function duplicate_cluster_entries( array $here, $default_partition ) {
+    $groups = [];
+    foreach ( $here as $name => $c ) {
+        $queue = $c[ 'queue' ] ?? $default_partition;
+        $groups[ json_encode( [ $queue, cluster_entry_is_local( $c[ 'pmgonly' ] ?? false ) ] ) ][] = (string) $name;
+    }
+    return array_values( array_filter( $groups, function ( $g ) { return count( $g ) > 1; } ) );
+}
+
+## This host's default Slurm partition, or null when sinfo does not name one.
+function local_default_partition() {
+    list( $out, , $rc ) = capture( 'sinfo -h -o %P' );
+    foreach ( $rc === 0 ? explode( "\n", $out ) : [] as $line ) {
+        if ( substr( trim( $line ), -1 ) === '*' ) {
+            return substr( trim( $line ), 0, -1 );
+        }
+    }
+    return null;
+}
+
 ## The entries that are, or after this run will be, inactive and that $in_template says the
 ## template does not have: nothing can convert or activate them again. Pure.
 function retired_cluster_entries( array $clusters, array $final_active, callable $in_template ) {
@@ -3077,6 +3131,16 @@ if ( is_file( $cluster_config ) ) {
     } else {
         $probes = $cc_vars[ 'cluster_configuration' ];
     }
+}
+$node = strtolower( php_uname( 'n' ) );
+$here = this_host_cluster_entries( $clusters, $final_active, [ 'localhost', '127.0.0.1', '::1', $node, explode( '.', $node )[ 0 ] ] );
+foreach ( self_ssh_cluster_entries( $here ) as $name ) {
+    report( 'note', "$name reaches this host's Slurm over ssh on every submit and poll;"
+                    . " set 'localhost' => true on it, or remove it if another entry already covers its queue" );
+}
+foreach ( duplicate_cluster_entries( $here, local_default_partition() ) as $same ) {
+    report( 'note', "the active entries " . implode( ', ', $same ) . " send the same jobs to the same partition"
+                    . " of this host's Slurm; keep one and remove the others from $global_config" );
 }
 $retired = retired_cluster_entries( $clusters, $final_active, function ( $name ) {
     return template_cluster( $name ) !== null;
