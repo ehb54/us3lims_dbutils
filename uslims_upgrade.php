@@ -216,7 +216,9 @@ Options
                                'clusters' holds the complete entry of each remote cluster and replaces
                                the whole of it in global_config.php; 'local' holds only env_script_lines,
                                maxtime and usemaxtime of this host's own clusters. Never activates an
-                               entry. Reports name the keys that change, never their values.
+                               entry. Reports name the keys that change, never their values. An entry
+                               that is not as the file last left it is not changed but reported as [input].
+--overwrite-edited cluster[,cluster] : with --cluster-values, overwrite these clusters' hand edits
 --local-cluster name         : cluster used for GUI requests naming 'localhost'; sets or changes it
 --site-admin-email address   : who receives the site's submission-failure and outage notices
                                (\$global_site_admin_email); sets or changes it. Needed when listen-config.php
@@ -283,6 +285,7 @@ $status_mode   = false;
 $remove_retired = false;
 $activate_want = [];
 $cluster_values_file = null;
+$overwrite_edited    = [];   ## --cluster-values: clusters whose hand edits it may overwrite
 $advisory_source     = null;
 $advisory_off        = false;
 $prediction_clusters = [];
@@ -343,6 +346,13 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             if ( $cluster_values_file === '' ) {
                 error_exit( "--cluster-values needs a file" );
             }
+            break;
+        case "--overwrite-edited":
+            $names = array_filter( array_map( 'trim', explode( ',', (string) opt_value( $u_argv, $opt ) ) ), 'strlen' );
+            if ( !$names ) {
+                error_exit( "--overwrite-edited needs at least one cluster name" );
+            }
+            $overwrite_edited = array_merge( $overwrite_edited, array_values( $names ) );
             break;
         case "--local-cluster":
             $local_cluster = opt_value( $u_argv, $opt );
@@ -418,11 +428,19 @@ if ( !is_admin() ) {
 }
 
 $cluster_values = [ 'clusters' => [], 'local' => [] ];
+if ( $overwrite_edited && $cluster_values_file === null ) {
+    error_exit( "--overwrite-edited needs --cluster-values" );
+}
 if ( $cluster_values_file !== null ) {
     $cluster_values = cluster_values_load( $cluster_values_file, $values_errors );
     foreach ( array_keys( $env_values ) as $name ) {
         if ( isset( $cluster_values[ 'clusters' ][ $name ] ) || isset( $cluster_values[ 'local' ][ $name ] ) ) {
             $values_errors[] = "--env $name: the file already sets its env_script_lines";
+        }
+    }
+    foreach ( $values_errors ? [] : $overwrite_edited as $name ) {
+        if ( !isset( $cluster_values[ 'clusters' ][ $name ] ) && !isset( $cluster_values[ 'local' ][ $name ] ) ) {
+            $values_errors[] = "--overwrite-edited $name: the file has no such cluster";
         }
     }
     if ( $values_errors ) {
@@ -1587,12 +1605,56 @@ function cluster_values_load( $path, &$errors = null, $owner = 0 ) {
 function cluster_values_entry( array $want, $have ) {
     $have  = is_array( $have ) ? $have : [];
     $slurm = strtolower( (string) ( $have[ 'submittype' ] ?? 'slurm' ) ) === 'slurm';
-    ## from_cluster_values: --remove-retired leaves it alone on a run without the file.
-    $entry = [ 'active' => $slurm && !empty( $have[ 'active' ] ), 'from_cluster_values' => true ] + $want;
+    ## from_cluster_values: --remove-retired leaves it alone on a run without the file, and a later
+    ## run with the file sees a hand edit by it.
+    $entry = [ 'active' => $slurm && !empty( $have[ 'active' ] ),
+               'from_cluster_values' => cluster_values_fingerprint( $want ) ] + $want;
     if ( isset( $have[ 'prediction_cluster_name' ] ) ) {
         $entry[ 'prediction_cluster_name' ] = $have[ 'prediction_cluster_name' ];
     }
     return $entry;
+}
+
+## What an entry's settings are recognized by, without the keys the host decides. Pure.
+function cluster_values_fingerprint( array $entry ) {
+    unset( $entry[ 'active' ], $entry[ 'prediction_cluster_name' ], $entry[ 'from_cluster_values' ] );
+    ksort( $entry );
+    return hash( 'sha256', serialize( $entry ) );
+}
+
+## The keys of a remote entry the file would change although the entry is not as the file last
+## left it, so someone may have set them by hand. A missing entry, or an Airavata one, has nothing
+## of the site's to lose. Pure.
+function cluster_edited_keys( $have, array $want ) {
+    if ( !is_array( $have ) || strtolower( (string) ( $have[ 'submittype' ] ?? 'slurm' ) ) !== 'slurm'
+         || ( $have[ 'from_cluster_values' ] ?? null ) === cluster_values_fingerprint( $have ) ) {
+        return [];
+    }
+    $host = [ 'active' => 1, 'prediction_cluster_name' => 1, 'from_cluster_values' => 1 ];
+    return cluster_entry_changes( array_diff_key( $have, $host ), $want );
+}
+
+## The settings of a local entry that the file may hold. Pure.
+function local_values_settings( array $entry ) {
+    return array_intersect_key( $entry, [ 'env_script_lines' => 1, 'maxtime' => 1, 'usemaxtime' => 1 ] );
+}
+
+## A local entry with the file's settings and their fingerprint. Pure.
+function local_values_entry( array $have, array $want ) {
+    $entry = $want + $have;
+    $entry[ 'local_cluster_values' ] = cluster_values_fingerprint( local_values_settings( $entry ) );
+    return $entry;
+}
+
+## As cluster_edited_keys(), for a local entry: a setting it lacks is not an edit. Pure.
+function local_edited_keys( array $have, array $want ) {
+    $now = local_values_settings( $have );
+    if ( ( $have[ 'local_cluster_values' ] ?? null ) === cluster_values_fingerprint( $now ) ) {
+        return [];
+    }
+    return array_keys( array_filter( $now, function ( $v, $k ) use ( $want ) {
+        return array_key_exists( $k, $want ) && $want[ $k ] !== $v;
+    }, ARRAY_FILTER_USE_BOTH ) );
 }
 
 ## The keys whose values differ between two entries, in either direction. Pure.
@@ -1881,18 +1943,24 @@ function cluster_env_script_lines( $name, $host_cluster, $lines ) {
 function block_settings( $block ) {
     $settings = [];
     $current  = '';
+    $target   = '';   ## without whitespace, comments or a choice of quotes
+    $assigned = false;
     foreach ( token_get_all( "<?php\n$block" ) as $token ) {
         if ( is_array( $token ) && $token[ 0 ] === T_OPEN_TAG ) {
             continue;
         }
         $text = is_array( $token ) ? $token[ 1 ] : $token;
         if ( $text === ';' ) {
-            $statement = trim( $current ) . ';';
-            $target    = preg_replace( '/\s+/', '', strstr( $statement, '=', true ) );
-            $settings[ $target ] = $statement;
-            $current = '';
+            $settings[ $target ] = trim( $current ) . ';';
+            $current  = '';
+            $target   = '';
+            $assigned = false;
         } else {
             $current .= $text;
+            $assigned = $assigned || $text === '=';
+            if ( !$assigned && !( is_array( $token ) && in_array( $token[ 0 ], [ T_WHITESPACE, T_COMMENT, T_DOC_COMMENT ], true ) ) ) {
+                $target .= str_replace( '"', "'", $text );
+            }
         }
     }
     return $settings;
@@ -2825,7 +2893,18 @@ if ( $cluster_values_file !== null ) {
         error_exit( "$cluster_values_file was not used:\n  " . implode( "\n  ", $values_wrong ) );
     }
     $replace = [];
+    $held    = function ( $name, array $keys ) use ( $overwrite_edited ) {
+        if ( !$keys || in_array( (string) $name, $overwrite_edited, true ) ) {
+            return false;
+        }
+        report( 'input', "$name differs from the cluster values file in " . implode( ', ', $keys ) . " and is not as the file last"
+                         . " left it, so it may be edited by hand; put the change in the file, or pass --overwrite-edited $name" );
+        return true;
+    };
     foreach ( $cluster_values[ 'clusters' ] as $name => $want ) {
+        if ( $held( $name, cluster_edited_keys( $clusters[ $name ] ?? null, $want ) ) ) {
+            continue;
+        }
         $entry   = cluster_values_entry( $want, $clusters[ $name ] ?? null );
         $changed = cluster_entry_changes( $clusters[ $name ] ?? null, $entry );
         if ( !$changed ) {
@@ -2853,6 +2932,17 @@ if ( $cluster_values_file !== null ) {
     }
     $clusters = $after;
     foreach ( $cluster_values[ 'local' ] as $name => $entry ) {
+        $local_want = [ 'env_script_lines' => cluster_env_script_lines( $name, $values_host, $entry[ 'env_script_lines' ] ) ] + $entry;
+        if ( $held( $name, local_edited_keys( $clusters[ $name ], $local_want ) ) ) {
+            unset( $cluster_values[ 'local' ][ $name ] );   ## step 3's env_script_lines check leaves it alone too
+            continue;
+        }
+        $mark = local_values_entry( $clusters[ $name ], $local_want )[ 'local_cluster_values' ];
+        if ( ( $clusters[ $name ][ 'local_cluster_values' ] ?? null ) !== $mark ) {
+            report( 'todo', "record $name's settings from the cluster values file, so a later run can see a hand edit" );
+            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'local_cluster_values\' ] = ' . php_value( $mark ) . ';';
+            $clusters[ $name ][ 'local_cluster_values' ] = $mark;
+        }
         foreach ( array_diff_key( $entry, [ 'env_script_lines' => 1 ] ) as $key => $value ) {
             if ( array_key_exists( $key, $clusters[ $name ] ) && $clusters[ $name ][ $key ] === $value ) {
                 continue;
