@@ -215,7 +215,7 @@ Options
 --cluster-values file        : take cluster settings from a private JSON file (root-owned, 0600):
                                'clusters' holds the complete entry of each remote cluster and replaces
                                the whole of it in global_config.php; 'local' holds only env_script_lines,
-                               maxtime and usemaxtime of this host's own clusters. Never activates an
+                               maxtime, usemaxtime and tier of this host's own clusters. Never activates an
                                entry. Reports name the keys that change, never their values. An entry
                                that is not as the file last left it is not changed but reported as [input].
 --overwrite-edited cluster[,cluster] : with --cluster-values, overwrite these clusters' hand edits
@@ -1507,7 +1507,7 @@ function cluster_value_rules() {
         'constraint'             => $word,
         'reservation'            => $word,
         'sharing'                => $match( '/^(shared|exclusive)\z/' ),
-        'tier'                   => $word,
+        'tier'                   => $match( '/^(local|national)\z/' ),
         'controller'             => $word,
         'exclusive'              => 'is_bool',
         'usemaxtime'             => 'is_bool',
@@ -1535,7 +1535,7 @@ function cluster_values_errors( $doc ) {
     $sections = [
         'clusters' => [ array_keys( $rules ), [ 'name', 'login', 'workdir', 'sshport', 'queue', 'maxtime', 'ppn', 'ppbj',
                                                 'maxproc', 'env_script_lines' ] ],
-        'local'    => [ [ 'env_script_lines', 'maxtime', 'usemaxtime' ], [ 'env_script_lines' ] ],
+        'local'    => [ array_keys( local_values_settings( $rules ) ), [ 'env_script_lines' ] ],
     ];
     foreach ( array_diff( array_keys( $doc ), array_keys( $sections ) ) as $other ) {
         $errors[] = "unknown section '$other'";
@@ -1636,7 +1636,7 @@ function cluster_edited_keys( $have, array $want ) {
 
 ## The settings of a local entry that the file may hold. Pure.
 function local_values_settings( array $entry ) {
-    return array_intersect_key( $entry, [ 'env_script_lines' => 1, 'maxtime' => 1, 'usemaxtime' => 1 ] );
+    return array_intersect_key( $entry, [ 'env_script_lines' => 1, 'maxtime' => 1, 'usemaxtime' => 1, 'tier' => 1 ] );
 }
 
 ## A local entry with the file's settings and their fingerprint. Pure.
@@ -1758,7 +1758,7 @@ function cluster_values_misplaced( array $values, array $clusters, $host_cluster
             $errors[] = "$name is a metascheduler pool on this host, not a cluster";
         } elseif ( (string) $name === (string) $host_cluster || entry_reaches_this_host( $entry, $this_host )
              || ( is_array( $have ) && !empty( $have[ 'active' ] ) && entry_reaches_this_host( $have, $this_host ) ) ) {
-            $errors[] = "$name is this host's own cluster: its env_script_lines, maxtime and usemaxtime go in 'local'";
+            $errors[] = "$name is this host's own cluster: its env_script_lines, maxtime, usemaxtime and tier go in 'local'";
         }
     }
     foreach ( $values[ 'local' ] as $name => $entry ) {
