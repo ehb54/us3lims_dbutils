@@ -237,7 +237,8 @@ Options
                                turns on its cluster_config.php probe, together, once its env_script_lines
                                are real and ssh to it succeeds. Still 'http', already active, no usable
                                env_script_lines, or ssh failing are each reported and nothing is changed
-                               for that entry.
+                               for that entry. Every instance whose own cluster_config.php still hides the
+                               cluster from its submission page is reported; that list is not changed.
                                --activate checks ssh before step 4 (above, in the numbered steps), which
                                records the host key (and, for the host's own cluster, authorizes the
                                key). So the first --apply --activate for a cluster records its host
@@ -1337,6 +1338,48 @@ function local_default_partition() {
         }
     }
     return null;
+}
+
+## The cluster_config.php each LIMS instance's submission page reads, by instance: its own, else the
+## site's, else uslims3_newlims'. The first that exists is used and they are not merged. null when
+## there is none. Consistent with dbinst's lib/utility.php.
+function instance_cluster_lists( $wwwpath ) {
+    $lists = [];
+    foreach ( glob( "$wwwpath/uslims3/*/lib/utility.php" ) ?: [] as $utility ) {
+        $docroot  = dirname( dirname( $utility ) );
+        $instance = basename( $docroot );
+        if ( in_array( $instance, [ 'uslims3_newlims', 'uslims3_data' ], true ) ) {
+            continue;
+        }
+        $lists[ $instance ] = null;
+        foreach ( [ "$docroot/cluster_config.php", "$wwwpath/uslims3/cluster_config.php",
+                    "$wwwpath/uslims3/uslims3_newlims/cluster_config.php" ] as $file ) {
+            if ( is_file( $file ) ) {
+                $lists[ $instance ] = $file;
+                break;
+            }
+        }
+    }
+    return $lists;
+}
+
+## Which of $names each cluster_config.php keeps off the submission page, by file: [ file =>
+## [ 'instances' => [ ... ], 'names' => [ ... ] ] ]. $lists is instance_cluster_lists()' result and
+## $configs each file's $cluster_configuration, null when it could not be read. Pure.
+function clusters_hidden_by_lists( array $names, array $lists, array $configs ) {
+    $hidden = [];
+    foreach ( $lists as $instance => $file ) {
+        if ( $file === null || !is_array( $configs[ $file ] ?? null ) ) {
+            continue;
+        }
+        foreach ( $names as $name ) {
+            if ( empty( $configs[ $file ][ $name ][ 'active' ] ) ) {
+                $hidden[ $file ][ 'instances' ][ $instance ] = $instance;
+                $hidden[ $file ][ 'names' ][ $name ]         = $name;
+            }
+        }
+    }
+    return $hidden;
 }
 
 ## The inactive entries left over from Airavata or another scheduler that $in_template says the
@@ -3625,6 +3668,25 @@ if ( $activated ) {
 $final_active = $active;
 foreach ( $activated as $name ) {
     $final_active[ $name ] = true;
+}
+## --activate turns a cluster on for the host; each instance's own list can still hide it, on purpose
+## or because nobody turned it on there, so that list is only reported.
+$shown = array_values( array_filter( $activate_want, function ( $name ) use ( $final_active ) {
+    return isset( $final_active[ $name ] );
+} ) );
+if ( $shown ) {
+    $instance_lists   = instance_cluster_lists( $wwwpath );
+    $list_configs = [];
+    foreach ( array_unique( array_filter( $instance_lists ) ) as $file ) {
+        $list_configs[ $file ] = config_vars( $file, $list_why )[ 'cluster_configuration' ] ?? null;
+        if ( !is_array( $list_configs[ $file ] ) ) {
+            report( 'note', "could not read $file (" . reason( $list_why ) . "), so which clusters it hides was not checked" );
+        }
+    }
+    foreach ( clusters_hidden_by_lists( $shown, $instance_lists, $list_configs ) as $file => $h ) {
+        report( 'note', "the submission page of " . implode( ', ', $h[ 'instances' ] ) . " does not offer "
+                        . implode( ', ', $h[ 'names' ] ) . ": $file does not have 'active' => true there" );
+    }
 }
 $cluster_config = "$us3bin/cluster_config.php";
 $probes = [];
