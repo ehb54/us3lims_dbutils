@@ -91,8 +91,8 @@ Steps
     nothing from /opt/ultrascan3/bin, no unfinished job in gfac.analysis, no unsettled dispatch
     request in any instance, no cleanup claim,
     an empty local Slurm queue with no node running work, no other client running a
-    statement on MariaDB, nobody else logged in, and the LIMS cron entries (the dispatch
-    heartbeat check among them) commented out
+    statement on MariaDB, nobody else logged in (a user --allow-login names is listed, not
+    refused), and the LIMS cron entries (the dispatch heartbeat check among them) commented out
 2 : rewrites listen-config.php from gridctl's template, carrying the site's values
 3 : deactivates clusters the Slurm code cannot submit to, or with --convert-http converts
     the national HPC ones to SSH instead, then sets the global_config.php
@@ -211,6 +211,11 @@ Options
 --single-tenant yes|no       : yes on an appliance (one institution), no on a shared host; sets or changes it.
                                'no' also downgrades a busy sinfo node from this run's own FAIL to a note,
                                since someone else's work on a shared cluster is not this upgrade's business
+--allow-login user[,user]    : a login session of one of these users (by name, as who(1) lists it) does not
+                               stop step 1, for a login that has to stay, such as a console autologin or a
+                               monitor; step 1 still lists it, as a note. Any other user's session still fails
+                               step 1. Repeatable. LIMS_ALLOW_LOGINS in the environment (comma-separated) adds
+                               to it.
 --runtime-advisory dir|off   : turn the runtime advisory pilot on, installing each runtime_advisory_<family>.json
                                in dir (2DSA, GA, PCSA; checked by common's own loader) to ~us3/lims/etc as
                                0640, owned by us3 and the web account's primary group, or turn it off ('off'
@@ -270,6 +275,27 @@ $activate_want = [];
 $advisory_source     = null;
 $advisory_off        = false;
 $prediction_clusters = [];
+
+## The user names in a comma-separated list, or a clear error. who(1) lists a session by user
+## name and terminal; only the name is matched, so a terminal ('tty1', 'pts/2') is refused.
+function allow_login_names( $list, $source ) {
+    $names = [];
+    foreach ( explode( ',', (string) $list ) as $one ) {
+        $one = trim( $one );
+        if ( $one === '' ) {
+            continue;
+        }
+        if ( preg_match( '#[\s/:@]#', $one ) ) {
+            error_exit( "$source takes user names, as who(1) lists them, not '$one'" );
+        }
+        $names[] = $one;
+    }
+    return $names;
+}
+
+## Users whose login sessions step 1 lists as a note instead of failing on (a console autologin, a
+## monitor that has to stay logged in). LIMS_ALLOW_LOGINS adds to --allow-login; the roles' play sets both.
+$allow_logins = allow_login_names( (string) getenv( 'LIMS_ALLOW_LOGINS' ), 'LIMS_ALLOW_LOGINS' );
 
 while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
     $opt = array_shift( $u_argv );
@@ -333,6 +359,13 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                     $activate_want[] = $one;
                 }
             }
+            break;
+        case "--allow-login":
+            $names = allow_login_names( opt_value( $u_argv, $opt ), $opt );
+            if ( !$names ) {
+                error_exit( "--allow-login needs at least one user name" );
+            }
+            $allow_logins = array_merge( $allow_logins, $names );
             break;
         case "--runtime-advisory":
             $value = rtrim( (string) opt_value( $u_argv, $opt ), '/' );
@@ -2033,7 +2066,8 @@ if ( $who_rc !== 0 ) {
                         : '';
     }
 
-    $sessions = [];
+    $sessions         = [];
+    $allowed_sessions = [];
     foreach ( explode( "\n", trim( $who_out ) ) as $line ) {
         if ( !preg_match( '/^(\S+)\s+(\S+)/', trim( $line ), $m ) ) {
             continue;
@@ -2057,7 +2091,16 @@ if ( $who_rc !== 0 ) {
         if ( $invoking_user !== '' && $invoking_user !== 'root' && $m[ 1 ] === $invoking_user ) {
             continue;
         }
+        ## A user --allow-login names is still listed, but does not make the host busy.
+        if ( in_array( $m[ 1 ], $allow_logins, true ) ) {
+            $allowed_sessions[] = "{$m[1]} on {$m[2]}";
+            continue;
+        }
         $sessions[] = "{$m[1]} on {$m[2]}";
+    }
+    if ( $allowed_sessions ) {
+        report( 'note', count( $allowed_sessions ) . " login session(s) of a user --allow-login names,"
+                        . " not counted as busy: " . implode( ', ', $allowed_sessions ) );
     }
     ## Ambiguous only when NEITHER signal can tell this session apart from
     ## anyone else's: no controlling terminal (Ansible, `ssh host sudo php
@@ -2074,10 +2117,13 @@ if ( $who_rc !== 0 ) {
                         . implode( ', ', $sessions ) );
     } elseif ( $sessions ) {
         report( 'FAIL', count( $sessions ) . " other login session(s): "
-                        . implode( ', ', $sessions ) );
+                        . implode( ', ', $sessions )
+                        . " (for a login that has to stay, such as a console autologin or a monitor,"
+                        . " name its user with --allow-login)" );
         $busy[] = 'other users logged in';
     } else {
-        report( 'ok', "nobody else is logged in" );
+        report( 'ok', "nobody else is logged in"
+                      . ( $allowed_sessions ? ", besides the users --allow-login names" : '' ) );
     }
 }
 
