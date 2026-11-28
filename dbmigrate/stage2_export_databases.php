@@ -226,20 +226,30 @@ foreach ( $dbnames_used as $db => $val ) {
 }
 
 # check config.php's
-$srvdir = "/srv/www/htdocs/uslims3";
+## Each instance's config is found through the instance inventory: its docroot label need not
+## be its database name, and a migrated instance's values are in its overlay, not its shim.
+$inventory = lims_instance_inventory( "/srv/www/htdocs", exec( "ls -d ~us3" ), $use_config_file );
+$config_of = [];
+foreach ( $inventory[ 'configs' ] as $label => $cfg ) {
+    $config_of[ $cfg[ 'dbname' ] ] = $inventory[ 'paths' ][ $label ];
+}
 foreach ( $dbnames_used as $db => $val ) {
     if ( array_key_exists( $db, $db_rename ) ) {
         $to_db = $db_rename[ $db ];
     } else {
         $to_db = $db;
     }
-    $configphp = "$srvdir/$db/config.php";
     $destphp   = "export-$metadata_dbhost-$to_db-config.php";
-    if ( !file_exists( $configphp ) ) {
-        $errors = "file missing: $configphp\n";
+    if ( !isset( $config_of[ $db ] ) ) {
+        $errors .= "no readable instance config names $db under /srv/www/htdocs/uslims3\n";
+        foreach ( $inventory[ 'errors' ] as $error ) {
+            if ( !$inventory[ 'membership_known' ] || strpos( $error, $db ) !== false ) {
+                $errors .= "  instance inventory: $error\n";
+            }
+        }
     }
     if ( file_exists( $destphp ) ) {
-        $errors = "You must move or remove '$destphp'\n";
+        $errors .= "You must move or remove '$destphp'\n";
     }
 }
 
@@ -256,9 +266,9 @@ foreach ( $dbnames_used as $db => $val ) {
     } else {
         $to_db = $db;
     }
-    $configphp = "$srvdir/$db/config.php";
+    $configphp = $config_of[ $db ];
     $destphp   = "export-$metadata_dbhost-$to_db-config.php";
-    $cmd = "cp $configphp $destphp";
+    $cmd = "cp " . escapeshellarg( $configphp ) . " " . escapeshellarg( $destphp );
     run_cmd( $cmd );
     if ( !file_exists( $destphp ) ) {
         error_exit( "missing '$destphp'\n" );
