@@ -4186,6 +4186,8 @@ if ( !$instance_configs ) {
             'gfac_server'   => $dispatch_gfac_server,
             'sql_dir'       => $sql_dir,
             'backup_dir'    => $backup_dir,
+            ## Sees other accounts' sessions when gfac's account has PROCESS (step 1 notes when not).
+            'process_conn'  => $gdb,
             ## Reported once above, not again for each instance.
             'sql_missing'   => $sql_missing,
         ];

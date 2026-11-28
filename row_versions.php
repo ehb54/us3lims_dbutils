@@ -235,6 +235,28 @@ function row_version_preflight( $conn, $db, array $manifest, array $context ) {
         }
     }
 
+    ## The rest of the release's schema: an instance off it is rebuilt with stage1 and stage2, so
+    ## nothing here may change it first
+    if ( !empty( $context[ 'sql_dir' ] ) && function_exists( 'release_instance_schema' ) ) {
+        $schema = release_instance_schema( $context[ 'sql_dir' ] );
+        $missing = $schema === null ? null
+                 : instance_schema_mismatches( $conn, $db, $schema, array_merge( dispatch_tables_newer_than_schema_revs(),
+                                               row_version_added_objects(), [ 'people_audit.created_at_utc' ] ) );
+        if ( $missing === null ) {
+            $problems[] = "could not compare $db with the release's us3.sql";
+        } elseif ( $missing ) {
+            $problems[] = "$db is not on the release's schema (it lacks " . implode( ', ', array_slice( $missing, 0, 10 ) )
+                        . ( count( $missing ) > 10 ? ' and more' : '' ) . "); rebuild it with dbupgrade's stage1 and stage2";
+        }
+    }
+    foreach ( row_version_history_pairs() as $live => $history ) {
+        $a = array_values( array_diff( rv_columns( $conn, $db, $live ), array_keys( row_version_columns() ) ) );
+        $b = array_values( array_diff( rv_columns( $conn, $db, $history ), array_keys( row_version_columns() ) ) );
+        if ( $a && $b && $a !== $b ) {
+            $problems[] = "$db.$live and $db.$history do not have the same columns in the same order; their copies would fail";
+        }
+    }
+
     ## Data the migration cannot repair by itself
     foreach ( row_version_link_keys() as $t => $key ) {
         if ( !isset( $info[ $t ] ) || rv_has_primary_key( $conn, $db, $t ) ) {
@@ -256,9 +278,13 @@ function row_version_preflight( $conn, $db, array $manifest, array $context ) {
         }
     }
 
-    ## Nobody else connected to the instance
-    $others = rv_value( $conn, "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE DB = " . $q( $db )
-                             . " AND ID <> CONNECTION_ID()" );
+    ## Nobody else connected to the instance. The instance account sees only its own sessions, so
+    ## the caller's connection with PROCESS (process_conn) is used when there is one.
+    $own  = (int) rv_value( $conn, 'SELECT CONNECTION_ID()' );
+    $view = $context[ 'process_conn' ] ?? null;
+    $view = $view ?: $conn;
+    $others = rv_value( $view, "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE DB = " . $q( $db )
+                             . " AND ID <> $own AND ID <> CONNECTION_ID() AND COMMAND <> 'Daemon'" );
     if ( (int) $others > 0 ) {
         $problems[] = "$others other session(s) are connected to $db; stop every writer first";
     }
@@ -286,16 +312,17 @@ function row_version_backup_problems( $conn, $db, $backup_dir ) {
     $binary = 0;
     foreach ( array_filter( [ $backup_dir, __DIR__ ] ) as $dir ) {
         foreach ( (array) glob( rtrim( $dir, '/' ) . '/mariadb-binary-backup-*', GLOB_ONLYDIR ) as $d ) {
-            if ( preg_match( '/mariadb-binary-backup-(\d{14})$/', $d, $m ) ) {
-                $t = DateTime::createFromFormat( 'YmdHis', $m[ 1 ] );
-                $binary = max( $binary, $t ? $t->getTimestamp() : 0 );
-            }
+            ## The directory's own time, which needs no time zone, unlike the time in its name
+            $binary = max( $binary, (int) @filemtime( $d ) );
         }
     }
     $state = rv_rows( $conn, "SELECT UNIX_TIMESTAMP( MAX( UPDATE_TIME ) ),"
                            . " UNIX_TIMESTAMP( NOW() - INTERVAL ( SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS"
                            . " WHERE VARIABLE_NAME = 'UPTIME' ) SECOND )"
-                           . " FROM information_schema.TABLES WHERE TABLE_SCHEMA = " . rv_quote( $conn, $db ) );
+                           . " FROM information_schema.TABLES WHERE TABLE_SCHEMA = " . rv_quote( $conn, $db )
+                           ## Written by the upgrade's own earlier steps, which a rerun redoes after a restore
+                           . " AND TABLE_NAME NOT IN ( 'people_audit', 'dispatch_request', 'dispatch_attempt', 'dispatch_event' )"
+                           . " AND TABLE_NAME NOT LIKE '\\_dbutils\\_%'" );
     $last_write = $state && $state[ 0 ][ 0 ] !== null ? (int) $state[ 0 ][ 0 ] : null;
     $started    = $state ? (int) $state[ 0 ][ 1 ] : time();
 
@@ -354,6 +381,10 @@ function row_version_run_step( $conn, $db, $step, array $manifest, $sql_dir, cal
         }
     };
     try {
+        ## Some statements below (a multi-table DELETE with an alias) need it as the default database
+        if ( !mysqli_select_db( $conn, $db ) ) {
+            throw new RuntimeException( mysqli_error( $conn ) );
+        }
         switch ( $step ) {
         case 'link-keys':
             foreach ( row_version_link_keys() as $t => $key ) {
@@ -370,11 +401,11 @@ function row_version_run_step( $conn, $db, $step, array $manifest, $sql_dir, cal
                     ## They are put back as they were, so a reference older data left dangling does not stop it.
                     $run( 'SET SESSION foreign_key_checks = 0' );
                     $run( 'START TRANSACTION' );
-                    $run( "CREATE TEMPORARY TABLE rv_keep AS SELECT DISTINCT * FROM `$db`.`$t` WHERE ( $k ) IN"
+                    $run( "CREATE TEMPORARY TABLE `$db`.rv_keep AS SELECT DISTINCT * FROM `$db`.`$t` WHERE ( $k ) IN"
                         . " ( SELECT $k FROM `$db`.`$t` GROUP BY $k HAVING COUNT(*) > 1 )" );
-                    $run( "DELETE t FROM `$db`.`$t` t JOIN rv_keep USING ( $k )" );
-                    $run( "INSERT INTO `$db`.`$t` SELECT * FROM rv_keep" );
-                    $run( 'DROP TEMPORARY TABLE rv_keep' );
+                    $run( "DELETE t FROM `$db`.`$t` t JOIN `$db`.rv_keep USING ( $k )" );
+                    $run( "INSERT INTO `$db`.`$t` SELECT * FROM `$db`.rv_keep" );
+                    $run( "DROP TEMPORARY TABLE `$db`.rv_keep" );
                     $run( 'COMMIT' );
                     $run( 'SET SESSION foreign_key_checks = 1' );
                 }
@@ -558,4 +589,45 @@ function row_version_problems( $conn, $db, array $manifest, $with_triggers ) {
         }
     }
     return $problems;
+}
+
+## Import (dbupgrade stage2, dbmigrate stage3) into an instance built from this release's us3.sql.
+## Before the data: drop the keys an older dump's data may break (identical duplicate link rows,
+## empty or null solution GUIDs). After it: the same repairs and backfills an in-place upgrade makes,
+## which put the keys back, then every step recorded as done. [ ok, error ].
+function row_version_import_relax( $conn, $db ) {
+    foreach ( array_keys( row_version_link_keys() ) as $t ) {
+        if ( rv_has_primary_key( $conn, $db, $t ) && !mysqli_query( $conn, "ALTER TABLE `$db`.`$t` DROP PRIMARY KEY" ) ) {
+            return [ false, mysqli_error( $conn ) ];
+        }
+    }
+    if ( !mysqli_query( $conn, "ALTER TABLE `$db`.solution MODIFY solutionGUID CHAR(36) NULL, DROP INDEX IF EXISTS solutionGUID" ) ) {
+        return [ false, mysqli_error( $conn ) ];
+    }
+    return [ true, '' ];
+}
+
+function row_version_import_finish( $conn, $db, $sql_dir ) {
+    $manifest = row_version_manifest( $sql_dir );
+    if ( $manifest === null ) {
+        return [ false, "$sql_dir/us3_row_version_tables.tsv cannot be read" ];
+    }
+    foreach ( [ 'link-keys', 'solution-guid', 'report-links', 'run-reservations', 'history-stages' ] as $step ) {
+        list( $ok, $why ) = row_version_run_step( $conn, $db, $step, $manifest, $sql_dir, function () { return [ true, '' ]; } );
+        if ( !$ok ) {
+            return [ false, "$step: $why" ];
+        }
+    }
+    foreach ( array_keys( row_version_steps() ) as $step ) {
+        if ( !row_version_mark_done( $conn, $db, $step ) ) {
+            return [ false, mysqli_error( $conn ) ];
+        }
+    }
+    return [ true, '' ];
+}
+
+## The data steps, which an instance built from this release's us3.sql may still need for rows it
+## was given (an import made before row_version_import_finish() existed). Safe to repeat.
+function row_version_data_steps() {
+    return [ 'report-links', 'run-reservations', 'history-stages' ];
 }

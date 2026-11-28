@@ -216,11 +216,39 @@ check( count( preg_grep( '/already has trigger site_trigger/', $problems ) ) ===
 check( count( preg_grep( '/share GUID/', $problems ) ) === 1, "preflight: duplicate solution GUIDs refuse", implode( "\n", $problems ) );
 check( count( preg_grep( '/other session/', $problems ) ) === 1, "preflight: another session refuses", implode( "\n", $problems ) );
 mysqli_close( $other );
+## Another account's session, seen through a connection with PROCESS
+$desktop_link = mysqli_connect( 'localhost', 'root', '', 'rv_pre', 0, $sock );
+$problems = row_version_preflight( $conn, 'rv_pre', $manifest, [ 'backup_dir' => $backup_dir, 'process_conn' => $root ] );
+check( count( preg_grep( '/other session/', $problems ) ) === 1, "preflight: another account's session refuses through process_conn", implode( "\n", $problems ) );
+mysqli_close( $desktop_link );
 $before = schema_shape( 'rv_pre' );
 $reports = [];
 migration( 'instance_row_versions' )( $conn, 'rv_pre', true, context( 'rv_pre', $backup_dir ) );
 check( reports_with( 'FAIL' ) && !reports_with( 'done' ), "a failed preflight reports FAIL and changes nothing", report_text() );
 check( schema_shape( 'rv_pre' ) === $before, "the schema is untouched after a failed preflight" );
+mysqli_close( $conn );
+
+## An instance off the release's schema, or with drifted live and history columns, is left alone
+old_instance( 'rv_off' );
+take_backup( 'rv_off' );
+must( $root, "ALTER TABLE rv_off.people DROP COLUMN userNamePAM" );
+must( $root, "ALTER TABLE rv_off.autoflowHistory ADD COLUMN extra INT NULL" );
+take_backup( 'rv_off' );
+$conn = instance_link( 'rv_off' );
+$problems = row_version_preflight( $conn, 'rv_off', $manifest, [ 'backup_dir' => $backup_dir, 'sql_dir' => $sql_dir ] );
+check( count( preg_grep( '/not on the release.s schema.*people.userNamePAM/', $problems ) ) === 1, "preflight: an instance off the release's schema refuses", implode( "\n", $problems ) );
+check( count( preg_grep( '/autoflowHistory do not have the same columns/', $problems ) ) === 1, "preflight: drifted live and history columns refuse", implode( "\n", $problems ) );
+mysqli_close( $conn );
+
+## The earlier UTC migration's writes to people_audit do not make the backup look old
+old_instance( 'rv_audit' );
+take_backup( 'rv_audit' );
+must( $root, "INSERT INTO rv_audit.people_audit ( personID, action ) SELECT 2, 'x' FROM DUAL WHERE 0" );
+must( $root, "CREATE TABLE rv_audit._dbutils_people_audit_utc_migrated ( id INT )" );
+must( $root, "INSERT INTO rv_audit._dbutils_people_audit_utc_migrated VALUES ( 1 )" );
+$conn = instance_link( 'rv_audit' );
+check( !preg_grep( '/backup/', row_version_preflight( $conn, 'rv_audit', $manifest, [ 'backup_dir' => $backup_dir ] ) ),
+       "preflight: dbutils' own tables do not count as the last change" );
 mysqli_close( $conn );
 
 ## ------------------------------------------------------------------ the migration
@@ -324,7 +352,33 @@ check( $imported == $row, "imported versions and attribution kept", json_encode(
 must( $root, "INSERT INTO rv_import.lab ( labGUID, name ) VALUES ( UUID(), 'after import' )" );
 check( value( $root, "SELECT rowVersion FROM rv_import.lab WHERE name = 'after import'" ) > $row[ 'rowVersion' ], "new versions above the imported ones" );
 
-foreach ( [ 'rv_fresh', 'rv_pre', 'rv_up', 'rv_resume', 'rv_import' ] as $db ) {
+## An older instance's dump, with identical duplicate link rows and empty GUIDs, imports, and gets
+## the same repairs and backfills as in place
+old_instance( 'rv_old' );
+must( $root, "DROP DATABASE IF EXISTS rv_import2" );
+must( $root, "CREATE DATABASE rv_import2" );
+sh( "mysqldump --no-defaults -S $sock -u root --no-create-info --complete-insert --skip-triggers rv_old > /var/tmp/rv_old.sql" );
+load( $sql_dir, 'rv_import2', 'us3.sql' );
+load( $sql_dir, 'rv_import2', 'us3_procedures.sql' );
+prepare_imported_instance_schema( $root, 'rv_import2' );
+check( row_version_import_relax( $root, 'rv_import2' )[ 0 ], "row_version_import_relax" );
+foreach ( [ 'abstractCenterpiece', 'abstractRotor', 'bufferComponent', 'editedData', 'lab', 'rotor', 'rotorCalibration' ] as $t ) {
+    must( $root, "DELETE FROM rv_import2.$t" );
+}
+sh( "mysql --no-defaults -S $sock -u root rv_import2 < /var/tmp/rv_old.sql" );
+list( $ok, $why ) = row_version_import_finish( $root, 'rv_import2', $sql_dir );
+check( $ok, "row_version_import_finish", $why );
+load( $sql_dir, 'rv_import2', 'us3_counter_reset.sql' );
+load( $sql_dir, 'rv_import2', 'us3_row_version_triggers.sql' );
+check( value( $root, "SELECT COUNT(*) FROM rv_import2.protocolPerson" ) == 2, "import: identical duplicate link rows reduced to one" );
+check( value( $root, "SELECT GROUP_CONCAT( reportID, ':', COALESCE( aprofileID, '-' ) ORDER BY reportID ) FROM rv_import2.autoflowReport" ) === '11:1,12:1,13:-,14:-',
+       "import: reports linked" );
+check( value( $root, "SELECT COUNT(*) FROM rv_import2.autoflowStages WHERE reporting = 'COMPLETED'" ) == 2, "import: history runs got a stages row" );
+check( value( $root, "SELECT COUNT(*) FROM rv_import2.experimentRunReservation" ) == 2, "import: run IDs reserved" );
+check( schema_shape( 'rv_import2' ) === $fresh, "import: the instance matches the fresh install" );
+check( count( row_version_steps_done( $root, 'rv_import2' ) ) === count( $steps ), "import: every step recorded" );
+
+foreach ( [ 'rv_fresh', 'rv_pre', 'rv_up', 'rv_resume', 'rv_import', 'rv_import2', 'rv_old', 'rv_off', 'rv_audit' ] as $db ) {
     must( $root, "DROP DATABASE IF EXISTS $db" );
 }
 echo $failures ? "$failures FAILED\n" : "all passed\n";

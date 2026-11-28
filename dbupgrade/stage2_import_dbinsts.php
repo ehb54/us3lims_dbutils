@@ -73,6 +73,7 @@ and edit with appropriate values
             
 require "../utility.php";
 require_once "../instance_grants.php";
+require_once "../row_versions.php";
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
@@ -298,6 +299,11 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
         if ( !prepare_imported_instance_schema( $db_handle, $db ) ) {
             error_exit( "could not prepare $db for import: " . mysqli_error( $db_handle ) );
         }
+        ## An older dump's data may break keys this release's us3.sql has; they are put back after it.
+        list( $relaxed, $why ) = row_version_import_relax( $db_handle, $db );
+        if ( !$relaxed ) {
+            error_exit( "could not prepare $db for import: $why" );
+        }
 
         $cmds = [
     "$uncompresswith $sqldata | mysql --defaults-file=$cwd/my.cnf -u root $db"
@@ -309,6 +315,14 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
             if ( trim( $res ) != '' ) {
                 echo "command returns: $res\n";
             }
+        }
+
+        ## The repairs and backfills an in-place upgrade makes, which also put the keys back
+        check_db();
+        list( $finished, $why ) = row_version_import_finish( $db_handle, $db, $limsdbpath );
+        if ( !$finished ) {
+            error_exit( "$db: the imported data needs repair before its keys can be restored ($why). Fix those rows in $db,"
+                      . " then run uslims_upgrade.php, whose step 9 finishes its row versions" );
         }
 
         ## Then the loading order's last two steps: counters above the imported rows, then the
@@ -323,6 +337,14 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
             if ( trim( $res ) != '' ) {
                 echo "command returns: $res\n";
             }
+        }
+
+        ## Every versioned table has its columns and both triggers before they are recorded as loaded
+        $manifest = row_version_manifest( $limsdbpath );
+        $problems = $manifest === null ? [ "$limsdbpath/us3_row_version_tables.tsv cannot be read" ]
+                                       : row_version_problems( $db_handle, $db, $manifest, true );
+        if ( $problems ) {
+            error_exit( "$db: row versions incomplete after the import: " . implode( '; ', $problems ) );
         }
 
         ## So the next uslims_upgrade.php --apply does not load them again. Recorded as the instance

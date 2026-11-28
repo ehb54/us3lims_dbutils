@@ -33,6 +33,14 @@ return [
         ## An instance built from this release's us3.sql (newinst, dbupgrade, dbmigrate) needs none of the steps
         if ( !$done && row_version_schema_complete( $conn, $db, $manifest ) ) {
             if ( $apply ) {
+                ## Its rows may still need the backfills, which only add links and rows
+                foreach ( row_version_data_steps() as $step ) {
+                    list( $ok, $message ) = row_version_run_step( $conn, $db, $step, $manifest, $sql_dir, function () { return [ true, '' ]; } );
+                    if ( !$ok ) {
+                        report( 'FAIL', "$label ($db): row versions, step $step: " . reason( $message ) );
+                        return;
+                    }
+                }
                 foreach ( array_keys( row_version_steps() ) as $step ) {
                     row_version_mark_done( $conn, $db, $step );
                 }
