@@ -578,6 +578,16 @@ function open_db() {
         write_logl( "could not connect to mysql: $dbhost, $user. exiting\n" );
         exit(-1);
     }
+    set_unattended_attribution( $db_handle );
+}
+
+## Marks $link's writes to row-versioned instance tables as an unattended dbutils tool's: no person,
+## and the tool as the client. Without it, a leftover @US3_ID from a procedure call would be recorded.
+function set_unattended_attribution( $link ) {
+    $version = trim( (string) @file_get_contents( __DIR__ . '/VERSION' ) );
+    $client  = substr( 'dbutils/' . basename( $_SERVER[ 'SCRIPT_NAME' ] ?? 'dbutils', '.php' ) . ( $version !== '' ? " $version" : '' ), 0, 64 );
+    return mysqli_query( $link, "SET @US3_ACTING_ID = 0, @US3_ID = NULL, @US3_CLIENT = '" // NOSONAR the one value is escaped
+                              . mysqli_real_escape_string( $link, $client ) . "'" );
 }    
     
 ## mysqldump command for the named gfac dispatch tables (uslims_daily_backup.php).
@@ -1197,7 +1207,7 @@ function squash($array, $prefix = '') {
 ## --only-extras export filter -- without this, each of those saw a
 ## migrated dbinstance as carrying an unexpected extra table.
 function dbutils_owned_tables() {
-    return [ '_dbutils_people_audit_utc_migrated', '_dbutils_people_audit_utc_boundary' ];
+    return [ '_dbutils_people_audit_utc_migrated', '_dbutils_people_audit_utc_boundary', '_dbutils_row_versions' ];
 }
 
 ## Per-instance dispatch tables (us3_sql us3_dispatch.sql); a schema_rev#.sql
@@ -1211,7 +1221,8 @@ function dispatch_tables_newer_than_schema_revs() {
 ## created, a dump with a table its us3.sql does not define.
 function dbmigrate_export_command( $db, $dumpfile ) {
     sql_identifier_or_die( $db );
-    return "mysqldump --defaults-file=my.cnf -u root --no-create-info --complete-insert " . escapeshellarg( $db ) . " > "
+    ## No triggers: the importer loads them after the data and the counter reset.
+    return "mysqldump --defaults-file=my.cnf -u root --no-create-info --complete-insert --skip-triggers " . escapeshellarg( $db ) . " > "
          . escapeshellarg( $dumpfile );
 }
 
@@ -1404,10 +1415,28 @@ function sql_file_expanded( $dir, $file ) {
     return $missing ? null : $text;
 }
 
-## The release's stored procedures (us3_procedures.sql and the files it loads), as a checksum.
+## The release's stored procedures (us3_procedures.sql and the files it loads) and its row-version
+## triggers (us3_row_version_triggers.sql, when the checkout has it), as a checksum.
 function release_procedures_checksum( $sql_dir ) {
     $text = sql_file_expanded( $sql_dir, 'us3_procedures.sql' );
-    return $text === null ? null : hash( 'sha256', $text );
+    if ( $text === null ) {
+        return null;
+    }
+    $triggers = release_triggers_file( $sql_dir );
+    if ( $triggers !== null ) {
+        $trigger_text = @file_get_contents( $triggers );
+        if ( $trigger_text === false ) {
+            return null;
+        }
+        $text .= $trigger_text;
+    }
+    return hash( 'sha256', $text );
+}
+
+## The us3_sql checkout's row-version triggers file, or null for a checkout from before row versions.
+function release_triggers_file( $sql_dir ) {
+    $file = rtrim( $sql_dir, '/' ) . '/us3_row_version_triggers.sql';
+    return file_exists( $file ) ? $file : null;
 }
 
 ## The marker recorded in $db when its procedures were last loaded by dbutils; '' when never.
@@ -1424,13 +1453,19 @@ function instance_procedures_checksum( $conn, $db ) {
     return $row ? (string) $row[ 0 ] : '';
 }
 
-## The routines in $db as they stand (type, name, body), the marker excluded: [ "TYPE name" => body ].
+## The routines and triggers in $db as they stand (type, name, body), the marker excluded:
+## [ "TYPE name" => body ]. A trigger is keyed "TRIGGER name", with its table, timing and event.
 function instance_routines( $conn, $db ) {
     $res = schema_query( $conn, "SELECT ROUTINE_TYPE, ROUTINE_NAME, ROUTINE_DEFINITION FROM information_schema.ROUTINES"
                          . " WHERE ROUTINE_SCHEMA = ? AND ROUTINE_NAME <> '_dbutils_procedures_checksum'", $db );
     $out = [];
     while ( $res && ( $row = mysqli_fetch_row( $res ) ) ) {
         $out[ "{$row[0]} {$row[1]}" ] = (string) $row[ 2 ];
+    }
+    $res = schema_query( $conn, "SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE, ACTION_TIMING, EVENT_MANIPULATION, ACTION_STATEMENT, SQL_MODE"
+                         . " FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ?", $db );
+    while ( $res && ( $row = mysqli_fetch_row( $res ) ) ) {
+        $out[ "TRIGGER {$row[0]}" ] = "{$row[1]} {$row[2]} {$row[3]} {$row[5]}\n{$row[4]}";
     }
     ksort( $out );
     return $out;
@@ -1467,8 +1502,29 @@ function procedure_load_blocker( $log_bin, $trust_creators, $has_super ) {
          . " create functions; set log_bin_trust_function_creators=1 (SET GLOBAL and my.cnf), then rerun";
 }
 
-## Loads us3_procedures.sql into $db with the instance's own account (it holds ALL on its
-## database), then records $checksum (or what the callable $checksum returns once loaded).
+## Loads one us3_sql file into $db with the instance's own account. [ ok, error text ].
+function load_instance_sql_file( array $cfg, $sql_dir, $file, $client_options = '' ) {
+    $db = $cfg[ 'dbname' ];
+    sql_identifier_or_die( $db );
+    foreach ( [ 'dbhost', 'dbusername', 'dbpasswd' ] as $key ) {
+        if ( strpbrk( (string) $cfg[ $key ], "\r\n" ) !== false ) {
+            return [ false, "$key contains a line break; load $file into $db by hand" ];
+        }
+    }
+    $opts = tempnam( sys_get_temp_dir(), 'dbutils-my' );
+    chmod( $opts, 0600 );
+    file_put_contents( $opts, "[client]\nhost=" . $cfg[ 'dbhost' ] . "\nuser=" . $cfg[ 'dbusername' ]
+                            . "\npassword=\"" . addcslashes( (string) $cfg[ 'dbpasswd' ], '"\\' ) . "\"\n" );
+    $mysql = 'mysql --defaults-extra-file=' . escapeshellarg( $opts ) . ( $client_options !== '' ? " $client_options" : '' )
+           . ' ' . escapeshellarg( $db );
+    list( $out, $err, $rc ) = capture( 'cd ' . escapeshellarg( $sql_dir ) . " && $mysql < " . escapeshellarg( $file ) );
+    unlink( $opts );
+    return [ $rc === 0, trim( $err . ' ' . $out ) ];
+}
+
+## Loads us3_procedures.sql, then us3_row_version_triggers.sql when the checkout has it, into $db
+## with the instance's own account (it holds ALL on its database, and so is the triggers' definer),
+## then records $checksum (or what the callable $checksum returns once loaded).
 ## $client_options: extra mysql options. [ ok, error text ].
 function load_instance_procedures( array $cfg, $sql_dir, $checksum, $client_options = '' ) {
     $db = $cfg[ 'dbname' ];
@@ -1485,7 +1541,9 @@ function load_instance_procedures( array $cfg, $sql_dir, $checksum, $client_opti
                             . "\npassword=\"" . addcslashes( (string) $cfg[ 'dbpasswd' ], '"\\' ) . "\"\n" );
     $mysql = 'mysql --defaults-extra-file=' . escapeshellarg( $opts ) . ( $client_options !== '' ? " $client_options" : '' )
            . ' ' . escapeshellarg( $db );
-    list( $out, $err, $rc ) = capture( 'cd ' . escapeshellarg( $sql_dir ) . " && $mysql < us3_procedures.sql" );
+    ## Routines, then the row-version triggers, as every loader orders them
+    $triggers = release_triggers_file( $sql_dir ) !== null ? " && $mysql < us3_row_version_triggers.sql" : '';
+    list( $out, $err, $rc ) = capture( 'cd ' . escapeshellarg( $sql_dir ) . " && $mysql < us3_procedures.sql$triggers" );
     if ( $rc === 0 && is_callable( $checksum ) ) {
         $checksum = $checksum();
     }
@@ -1708,7 +1766,9 @@ function prepare_imported_instance_schema( $db_handle, $db ) {
     sql_identifier_or_die( $db );
     return create_people_audit_utc_migration_marker_table( $db_handle, $db )
         && create_people_audit_utc_boundary_table( $db_handle, $db )
-        && ensure_people_audit_utc_flag_column( $db_handle, $db );
+        && ensure_people_audit_utc_flag_column( $db_handle, $db )
+        && mysqli_query( $db_handle, "CREATE TABLE IF NOT EXISTS `$db`._dbutils_row_versions" // NOSONAR $db is validated above
+                                   . " ( step VARCHAR(64) NOT NULL PRIMARY KEY, doneAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ) ENGINE=InnoDB" );
 }
 
 ## The tables and columns a data-only dump writes to: [ table => [ column, ... ] ],

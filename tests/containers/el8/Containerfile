@@ -1,6 +1,6 @@
 # EL8 LIMS hosts: OL8 AppStream MariaDB 10.3 and PHP 7.4 (tests/run.sh)
 FROM docker.io/library/oraclelinux:8
 RUN dnf -y module enable php:7.4 \
- && dnf -y install mariadb-server mariadb php-cli php-mysqlnd procps-ng util-linux \
+ && dnf -y install mariadb-server mariadb php-cli php-json php-mysqlnd procps-ng util-linux \
  && dnf clean all
 USER mysql

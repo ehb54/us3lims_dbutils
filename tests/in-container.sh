@@ -33,4 +33,9 @@ stop source
 start source 3306
 start target 3307
 echo "MariaDB $(mysql --no-defaults -S /var/tmp/source.sock -u root -N -B -e 'SELECT VERSION()'), PHP $(php -r 'echo PHP_VERSION;')"
-SRC_SOCK=/var/tmp/source.sock DST_SOCK=/var/tmp/target.sock php /repo/tests/grants_test.php
+rc=0
+SRC_SOCK=/var/tmp/source.sock DST_SOCK=/var/tmp/target.sock php /repo/tests/grants_test.php || rc=1
+if [ -d /us3_sql ]; then
+    SRC_SOCK=/var/tmp/source.sock US3_SQL_DIR=/us3_sql US3_SQL_BASE_DIR=/us3_sql_base php /repo/tests/row_versions_test.php || rc=1
+fi
+exit $rc

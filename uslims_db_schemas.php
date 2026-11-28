@@ -268,6 +268,12 @@ if ( $compare_keep_ref_db ) {
         "cd $limsdbpath && mysql --defaults-file=$cwd/my.cnf -u root $ref_db < us3.sql"
         ,"cd $limsdbpath && mysql --defaults-file=$cwd/my.cnf -u root $ref_db < us3_procedures.sql"
         ];
+    ## The loading order: schema, routines, counter reset, then the row-version triggers
+    foreach ( [ 'us3_counter_reset.sql', 'us3_row_version_triggers.sql' ] as $file ) {
+        if ( file_exists( "$limsdbpath/$file" ) ) {
+            $cmds[] = "cd $limsdbpath && mysql --defaults-file=$cwd/my.cnf -u root $ref_db < $file";
+        }
+    }
     foreach ( $cmds as $c ) {
         debug_echo( "running: $c\n" );
         $res = run_cmd( $c );

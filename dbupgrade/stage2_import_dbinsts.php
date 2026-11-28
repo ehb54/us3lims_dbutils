@@ -73,6 +73,8 @@ and edit with appropriate values
             
 require "../utility.php";
 require_once "../instance_grants.php";
+require_once "../row_versions.php";
+$row_version_failures = [];
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
@@ -292,20 +294,16 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
                 error_exit( "db query failed : $q\ndb query error: " . mysqli_error($db_handle) );
             }
         }
-        ## So the next uslims_upgrade.php --apply does not load them again. Recorded as the instance
-        ## account, which reads the routines as that check does (a non-definer sees no bodies).
-        $inst_link = @mysqli_connect( $dbhost, $dbuser, $dbpasswd, $db );
-        if ( !$inst_link || !record_instance_procedures_marker( $inst_link, $db, $limsdbpath ) ) {
-            echo "note: could not record $db's stored procedures as this release's; the next uslims_upgrade.php --apply reloads them\n";
-        }
-        if ( $inst_link ) {
-            mysqli_close( $inst_link );
-        }
 
         # The data-only dump carries rows for objects us3.sql does not define.
         check_db();
         if ( !prepare_imported_instance_schema( $db_handle, $db ) ) {
             error_exit( "could not prepare $db for import: " . mysqli_error( $db_handle ) );
+        }
+        ## An older dump's data may break keys this release's us3.sql has; they are put back after it.
+        list( $relaxed, $why ) = row_version_import_relax( $db_handle, $db );
+        if ( !$relaxed ) {
+            error_exit( "could not prepare $db for import: $why" );
         }
 
         $cmds = [
@@ -318,6 +316,21 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
             if ( trim( $res ) != '' ) {
                 echo "command returns: $res\n";
             }
+        }
+
+        ## The repairs, the counter reset and the triggers, then the routines and triggers recorded as
+        ## loaded, as the instance account, which reads them as uslims_upgrade.php's check does
+        check_db();
+        $inst_link = @mysqli_connect( $dbhost, $dbuser, $dbpasswd, $db );
+        $error = row_version_import_complete( $db_handle, $db, $limsdbpath, "mysql --defaults-file=$cwd/my.cnf -u root $db", $inst_link );
+        if ( $inst_link ) {
+            mysqli_close( $inst_link );
+        }
+        ## The old database is already gone, so the import carries on with this instance's
+        ## remaining steps and the other instances, and lists what is left at the end
+        if ( $error !== '' ) {
+            echo "ERROR: $db: $error\n";
+            $row_version_failures[ $db ] = $error;
         }
 
         # The writer's own zone, captured at export time (stage1), not
@@ -353,4 +366,14 @@ foreach ( $dbnames_used as $db => $val ) {
         echo "$cmd :\n";
         echo run_cmd( $cmd, false );
     }
+}
+
+if ( !empty( $row_version_failures ) ) {
+    echoline();
+    echo "Row versions are not complete in " . count( $row_version_failures ) . " instance(s); fix each as named,"
+       . " then run uslims_upgrade.php, whose step 9 finishes them:\n";
+    foreach ( $row_version_failures as $db => $error ) {
+        echo "  $db: $error\n";
+    }
+    exit( 1 );
 }

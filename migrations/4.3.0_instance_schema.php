@@ -1,4 +1,5 @@
 <?php
+require_once dirname( __DIR__ ) . '/row_versions.php';
 ## Checks that an instance has every table, column and enum value us3_sql's us3.sql defines. An in-place
 ## upgrade adds only this release's own objects; anything else needs dbupgrade's stage1 and stage2.
 return [
@@ -16,9 +17,10 @@ return [
             report( 'FAIL', "$label: {$context['sql_dir']}/us3.sql (or a file it loads) cannot be read; update the us3_sql checkout first" );
             return;
         }
-        ## Added in place by people_audit_utc and dispatch_instance_tables.
+        ## Added in place by people_audit_utc, dispatch_instance_tables and instance_row_versions.
         $missing = instance_schema_mismatches( $conn, $db, $schema,
-                                               array_merge( dispatch_tables_newer_than_schema_revs(), [ 'people_audit.created_at_utc' ] ) );
+                                               array_merge( dispatch_tables_newer_than_schema_revs(), row_version_added_objects(),
+                                                            [ 'people_audit.created_at_utc' ] ) );
         if ( $missing === null ) {
             report( 'FAIL', "$label ($db): could not read its columns: " . reason( mysqli_error( $conn ) ) );
             return;
