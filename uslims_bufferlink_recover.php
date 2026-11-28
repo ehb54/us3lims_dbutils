@@ -193,7 +193,7 @@ CREATE TABLE bufferLink (
   bufferID int(11) NOT NULL ,
   bufferComponentID int(11) NOT NULL ,
   concentration FLOAT NULL ,
-  INDEX ndx_bufferLink_bufferID (bufferID ASC) ,
+__ROW_VERSION_COLUMNS__  INDEX ndx_bufferLink_bufferID (bufferID ASC) ,
   INDEX ndx_bufferLink_bufferComponentID (bufferComponentID ASC) ,
   CONSTRAINT fk_bufferLink_bufferID
     FOREIGN KEY (bufferID )
@@ -246,7 +246,14 @@ foreach ( $bl_ibds as $v ) {
     ## the bufferLink-create.sql is needed by the undrop code to extract data from the ibd
     
     $bufferLink_create_file = "bufferLink-create.sql";
-    if ( !file_put_contents( "$newfile_dir/$bufferLink_create_file", $bufferLink_create_contents ) ) {
+    ## A backup from after row versions has their four columns; its .frm next to the .ibd names them
+    $frm = preg_replace( '/\.ibd$/', '.frm', $v );
+    $row_version_columns = is_readable( $frm ) && strpos( (string) file_get_contents( $frm ), 'rowVersion' ) !== false
+        ? "  rowVersion BIGINT UNSIGNED NOT NULL DEFAULT 0 ,\n  rowUpdatedAt TIMESTAMP NULL DEFAULT NULL ,\n"
+          . "  rowUpdatedBy INT NULL ,\n  rowUpdatedVia VARCHAR(64) NULL ,\n"
+        : '';
+    $create = str_replace( "__ROW_VERSION_COLUMNS__", $row_version_columns, $bufferLink_create_contents );
+    if ( !file_put_contents( "$newfile_dir/$bufferLink_create_file", $create ) ) {
         error_exit( "error creating $newfile_dir/$bufferLink_create_file" );
     }
 
@@ -382,7 +389,7 @@ if ( $update ) {
     echo "Updating database $db\n";
     foreach ( $addrecs as $bufferID => $v ) {
         foreach ( $v as $bufferComponentID => $concentration ) {
-            $query = "insert into $db.bufferLink values ($bufferID,$bufferComponentID,$concentration);";
+            $query = "insert into $db.bufferLink ( bufferID, bufferComponentID, concentration ) values ($bufferID,$bufferComponentID,$concentration);";
             $res = mysqli_query( $db_handle, $query );
             if ( !$res ) {
                 error_exit( "db query failed : $query\ndb query error: " . mysqli_error($db_handle) );
