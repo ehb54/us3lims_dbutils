@@ -317,6 +317,7 @@ if ( $close_job !== false ) {
     if ( !$db_handle ) {
         error_exit( "could not connect to $dbhost as $user" );
     }
+    set_unattended_attribution( $db_handle );
     $close = jobs_close_row( $db_handle, 'gfac', (int) $close_job, $reqid === false ? null : (int) $reqid, active_jobmonitors(),
         function ( $to, $subject, $body ) {
             return mail( $to, $subject, $body );

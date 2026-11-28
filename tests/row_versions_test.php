@@ -253,6 +253,17 @@ must( $conn, "INSERT INTO autoflow ( protName, runName, status, corrRadii, expAb
 check( mysqli_insert_id( $conn ) > 41, "a new run's ID is above the history runs" );
 mysqli_close( $conn );
 
+## A dbutils tool's writes record no person, even after a procedure call set @US3_ID
+$conn = instance_link( 'rv_up' );
+must( $conn, "SET @US3_ID = 2" );
+check( set_unattended_attribution( $conn ), "set_unattended_attribution" );
+must( $conn, "UPDATE lab SET name = 'by a tool' WHERE labID = 1" );
+$tool = mysqli_fetch_assoc( must( $conn, "SELECT rowUpdatedBy, rowUpdatedVia FROM lab WHERE labID = 1" ) );
+check( $tool[ 'rowUpdatedBy' ] === null && strpos( $tool[ 'rowUpdatedVia' ], 'dbutils/row_versions_test' ) === 0,
+       "a dbutils tool's change records no person and the tool", json_encode( $tool ) );
+mysqli_close( $conn );
+$row = mysqli_fetch_assoc( must( $root, "SELECT rowVersion, rowUpdatedBy, rowUpdatedVia FROM rv_up.lab WHERE labID = 1" ) );
+
 ## A rerun changes nothing
 $changes = 0;
 upgrade( 'rv_up', true );

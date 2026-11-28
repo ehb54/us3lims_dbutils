@@ -578,6 +578,16 @@ function open_db() {
         write_logl( "could not connect to mysql: $dbhost, $user. exiting\n" );
         exit(-1);
     }
+    set_unattended_attribution( $db_handle );
+}
+
+## Marks $link's writes to row-versioned instance tables as an unattended dbutils tool's: no person,
+## and the tool as the client. Without it, a leftover @US3_ID from a procedure call would be recorded.
+function set_unattended_attribution( $link ) {
+    $version = trim( (string) @file_get_contents( __DIR__ . '/VERSION' ) );
+    $client  = substr( 'dbutils/' . basename( $_SERVER[ 'SCRIPT_NAME' ] ?? 'dbutils', '.php' ) . ( $version !== '' ? " $version" : '' ), 0, 64 );
+    return mysqli_query( $link, "SET @US3_ACTING_ID = 0, @US3_ID = NULL, @US3_CLIENT = '"
+                              . mysqli_real_escape_string( $link, $client ) . "'" );
 }    
     
 ## mysqldump command for the named gfac dispatch tables (uslims_daily_backup.php).
