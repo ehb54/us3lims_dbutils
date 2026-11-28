@@ -737,8 +737,8 @@ function unreadable_config_claims( $label, $file, array $databases, array $seen 
     }
     foreach ( $seen as $db => $mapped ) {
         $mapped = (string) $mapped;
-        if ( strpos( $mapped, $label ) === 0 && strspn( substr( $mapped, strlen( $label ), 1 ), '._-' ) === 1
-             || strpos( $label, $mapped ) === 0 && strspn( substr( $label, strlen( $mapped ), 1 ), '._-' ) === 1 ) {
+        if ( strpos( $mapped, $label ) === 0 && strspn( substr( $mapped, strlen( $label ), 1 ), '.-' ) === 1
+             || strpos( $label, $mapped ) === 0 && strspn( substr( $label, strlen( $mapped ), 1 ), '.-' ) === 1 ) {
             return [ [ $db ], "its name is a variant of $mapped, which maps $db" ];
         }
     }

@@ -147,9 +147,10 @@ own config supplies the credentials for its migrations. No new grants or passwor
 A leftover docroot is reported as a note and left untouched: its config names a database that
 does not exist, its config cannot be read and nothing ties it to a tenant database (a retired
 overlay instance, for example), or it has only `VERSION` or loader files. It is not migrated and is not used for base or branch
-selection. `uslims_git_info.php` lists every checkout and reports inventory problems in every
-mode; `--update-pull` and `--update-branch` update the others and leave the checkouts
-concerned alone. With no
+selection. `uslims_git_info.php` omits leftover docroots from its checkout listing and
+reports inventory problems in every mode. Use the checkout record in upgrade step 2
+to see local changes in leftover checkouts. `--update-pull` and `--update-branch`
+update the other checkouts and leave those with inventory problems alone. With no
 tenants, the base-contract fallback is kept. Backup/export membership comes from
 `existing_dbs()` and does not depend on website files.
 
