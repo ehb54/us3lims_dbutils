@@ -1356,14 +1356,19 @@ function self_ssh_cluster_entries( array $here ) {
     } ) );
 }
 
-## Groups of this_host_cluster_entries() that take the same jobs in the same partition: one queue
-## under two names. An unset queue is $default_partition. A -gamc entry shares its partition but
-## takes only PMG jobs, so pmgonly sets it apart. Pure.
+## Groups of local entries with the same partition, eligibility and resource settings.
+## An unset queue uses the local default partition. Pure.
 function duplicate_cluster_entries( array $here, $default_partition ) {
     $groups = [];
+    $resource_keys = array_flip( [ 'sbatch_directives', 'mempercore', 'account', 'qos', 'constraint',
+                                  'reservation', 'exclusive', 'sharing', 'ppn', 'ppbj', 'maxproc',
+                                  'fixed_capacity', 'single_node', 'maxtime', 'usemaxtime', 'pmg' ] );
     foreach ( $here as $name => $c ) {
         $queue = $c[ 'queue' ] ?? $default_partition;
-        $groups[ json_encode( [ $queue, cluster_entry_is_local( $c[ 'pmgonly' ] ?? false ) ] ) ][] = (string) $name;
+        $resources = array_intersect_key( $c, $resource_keys );
+        ksort( $resources );
+        $key = json_encode( [ $queue, cluster_entry_is_local( $c[ 'pmgonly' ] ?? false ), $resources ] );
+        $groups[ $key ][] = (string) $name;
     }
     return array_values( array_filter( $groups, function ( $g ) { return count( $g ) > 1; } ) );
 }
@@ -1443,13 +1448,15 @@ function retired_cluster_entries( array $clusters, array $final_active, callable
 
 ## $text with the entries $names taken out of the array literal assigned to $var (each with
 ## the comma that separates it from its neighbour), and every top-level "$var[ 'name' ]...;"
-## statement for them removed. $removed lists the names whose literal entry was found. Pure.
-function remove_array_entries( $text, $var, array $names, &$removed = null ) {
+## statement for them removed. When a replacement is given, replace the literal
+## value in place. $removed lists the names whose literal entry was found. Pure.
+function remove_array_entries( $text, $var, array $names, &$removed = null, array $replacements = [] ) {
     $removed = [];
     $tokens  = token_get_all( $text );
     $count   = count( $tokens );
     $want    = array_flip( $names );
     $drop    = [];
+    $replace_at = [];
     $tx      = function ( $i ) use ( $tokens ) { return is_array( $tokens[ $i ] ) ? $tokens[ $i ][ 1 ] : $tokens[ $i ]; };
     $blank   = function ( $i ) use ( $tokens ) {
         return is_array( $tokens[ $i ] ) && in_array( $tokens[ $i ][ 0 ], [ T_WHITESPACE, T_COMMENT, T_DOC_COMMENT ], true );
@@ -1500,6 +1507,15 @@ function remove_array_entries( $text, $var, array $names, &$removed = null ) {
                 if ( $tx( $value ) === 'array' ) { $value = $next( $value ); }
                 $end = in_array( $tx( $value ), [ '[', '(' ], true ) ? $closing( $value ) : null;
                 if ( $end === null ) { $kept = true; continue; }
+                if ( array_key_exists( $key, $replacements ) ) {
+                    $start = $next( $arrow );
+                    $replace_at[ $start ] = php_value( $replacements[ $key ] );
+                    for ( $d = $start + 1; $d <= $end; $d++ ) { $drop[ $d ] = true; }
+                    $removed[] = $key;
+                    $kept = true;
+                    $k = $end;
+                    continue;
+                }
                 $before = $prev( $k );
                 if ( $kept && $tx( $before ) === ',' ) {
                     $from = $before;
@@ -1541,7 +1557,7 @@ function remove_array_entries( $text, $var, array $names, &$removed = null ) {
     }
     $out = '';
     for ( $i = 0; $i < $count; $i++ ) {
-        if ( !isset( $drop[ $i ] ) ) { $out .= $tx( $i ); }
+        if ( !isset( $drop[ $i ] ) ) { $out .= $replace_at[ $i ] ?? $tx( $i ); }
     }
     $removed = array_values( array_unique( $removed ) );
     return $out;
@@ -1817,12 +1833,11 @@ function rewrite_problem( $file, $old, $new, $var, array $expected ) {
     return $differ ? 'it would not leave ' . implode( ', ', $differ ) . ' as intended' : '';
 }
 
-## Assignments that turn the named clusters' status probes on or off. A block line, not an edit of
-## the entry: sites write their entries in many forms. Pure.
-function probe_lines( array $names, $on ) {
-    return array_map( function ( $name ) use ( $on ) {
-        return '$cluster_configuration[ ' . var_export( (string) $name, true ) . " ][ 'active' ] = " . ( $on ? 'true' : 'false' ) . ';';
-    }, $names );
+## Keep the active flag in the editable entry. Rewrite validation rejects configs
+## whose probe values cannot be represented by these literal entries.
+function rewrite_probe_entries( $text, array $probes, array $names ) {
+    return remove_array_entries( $text, 'cluster_configuration', $names, $found,
+                                 array_intersect_key( $probes, array_flip( $names ) ) );
 }
 
 ## The names a cluster entry on this host may use for it.
@@ -3538,7 +3553,7 @@ foreach ( $activate_want as $name ) {
     $todo = array_filter( [ 'login', 'workdir' ], function ( $key ) use ( $c ) { return placeholder_value( $c[ $key ] ?? '' ); } );
     if ( $todo ) {
         report( 'input', "--activate: '$name' still carries the template's TODO for " . implode( ' and ', $todo )
-                        . "; set it with --cluster-values" );
+                        . "; edit $global_config or set it with --cluster-values" );
         continue;
     }
     $login = $c[ 'login' ] ?? ( 'us3@' . ( $c[ 'name' ] ?? '' ) );
@@ -3707,7 +3722,10 @@ if ( $activated ) {
                 $turned[] = $name;
             }
         }
-        $cc_text = managed_block_text( $cc_text, probe_lines( $turned, true ) );
+        foreach ( $turned as $name ) {
+            $cc_probes[ $name ][ 'active' ] = true;
+        }
+        $cc_new = rewrite_probe_entries( $cc_text, $cc_probes, $turned );
         if ( $absent ) {
             report( 'note', "$cluster_config has no entry for " . implode( ', ', $absent )
                             . "; add one from " . basename( $cluster_config ) . ".template"
@@ -3718,8 +3736,11 @@ if ( $activated ) {
         } else {
             report( 'todo', "activate the status probe for " . implode( ', ', $turned )
                             . " in $cluster_config" );
-            if ( $apply && confirm( "Activate those status probes in $cluster_config?" ) ) {
-                write_file( $cluster_config, $cc_text );
+            $problem = rewrite_problem( $cluster_config, $cc_text, $cc_new, 'cluster_configuration', $cc_probes );
+            if ( $problem !== '' ) {
+                report( 'FAIL', "$cluster_config was left as it is: $problem. Activate the probes by hand" );
+            } elseif ( $apply && confirm( "Activate those status probes in $cluster_config?" ) ) {
+                write_file( $cluster_config, $cc_new );
                 report( 'done', "$cluster_config updated (original in "
                                 . backup_path( $cluster_config ) . ")" );
             }
@@ -3825,8 +3846,7 @@ if ( !$apply && $managed ) {
 $gc_new   = remove_array_entries( $gc_text, 'cluster_details', $removing );
 $cc_text  = is_file( $cluster_config ) ? (string) file_get_contents( $cluster_config ) : '';
 $cc_off   = array_values( array_diff( $probes_off, $activated ) );
-$cc_new   = remove_array_entries( $cc_text, 'cluster_configuration', $probe_drop );
-$cc_new   = $cc_off ? managed_block_text( $cc_new, probe_lines( $cc_off, false ) ) : $cc_new;
+$cc_new   = rewrite_probe_entries( $cc_text, $probes_after, array_merge( $probe_drop, $cc_off ) );
 $gc_now   = $removing ? ( config_text_vars( $global_config, $gc_text )[ 'cluster_details' ] ?? [] ) : [];
 $problems = [];
 if ( $removing ) {
