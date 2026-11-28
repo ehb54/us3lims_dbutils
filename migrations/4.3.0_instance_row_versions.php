@@ -49,13 +49,13 @@ return [
             return;
         }
         if ( !$pending ) {
-            $problems = row_version_problems( $conn, $db, $manifest, false );
-            if ( $problems ) {
-                report( 'FAIL', "$label ($db): row-version schema recorded as done but incomplete: " . implode( '; ', $problems ) );
+            if ( !row_version_problems( $conn, $db, $manifest, false ) ) {
+                report( 'ok', "$label ($db): has the row-version schema" );
                 return;
             }
-            report( 'ok', "$label ($db): has the row-version schema" );
-            return;
+            ## A later release's manifest names tables this one did not: they get their columns,
+            ## and the counters are raised again. Anything else still missing is reported below.
+            $pending = array_intersect_key( row_version_steps(), [ 'columns' => true, 'counters' => true ] );
         }
 
         ## Before the first change, the whole preflight; on a rerun the backup from before the first
@@ -73,7 +73,7 @@ return [
             return;
         }
 
-        report( 'todo', "$label ($db): " . ( $done ? 'resume adding' : 'add' ) . " row versions: "
+        report( 'todo', "$label ($db): " . ( $done ? 'continue adding' : 'add' ) . " row versions: "
                       . implode( '; ', array_values( $pending ) ) );
         if ( !$apply ) {
             return;

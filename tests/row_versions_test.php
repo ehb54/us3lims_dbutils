@@ -302,6 +302,27 @@ $changes = 0;
 upgrade( 'rv_up', true );
 check( !reports_with( 'FAIL' ) && !reports_with( 'todo' ) && $changes === 0, "rerun: ok, nothing to change", report_text() );
 
+## ------------------------------------------------------------------ a later release versions another table
+## Its manifest names abstractChannel too; the upgraded instance gets the columns and the triggers
+## without a migration of its own.
+sh( "rm -rf /var/tmp/us3_sql_later && cp -r " . escapeshellarg( $sql_dir ) . " /var/tmp/us3_sql_later" );
+file_put_contents( '/var/tmp/us3_sql_later/us3_row_version_tables.tsv',
+                   "abstractChannel\tabstractChannel\treference\tabstractChannelID\tabstractChannelID = ?\t-\n", FILE_APPEND );
+$excluded = preg_replace( '/^abstractChannel\t.*\n/m', '', file_get_contents( '/var/tmp/us3_sql_later/us3_row_version_excluded.tsv' ) );
+file_put_contents( '/var/tmp/us3_sql_later/us3_row_version_excluded.tsv', $excluded );
+sh( "php /var/tmp/us3_sql_later/tools/generate_row_versions.php" );
+$earlier = $sql_dir;
+$sql_dir = '/var/tmp/us3_sql_later';
+$changes = 0;
+upgrade( 'rv_up', true );
+check( !reports_with( 'FAIL' ) && $changes > 0, "a later manifest's table: columns added and triggers loaded", report_text() );
+check( value( $root, "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = 'rv_up' AND EVENT_OBJECT_TABLE = 'abstractChannel'" ) == 2,
+       "the later table has both triggers" );
+$changes = 0;
+upgrade( 'rv_up', true );
+check( !reports_with( 'FAIL' ) && $changes === 0, "and a rerun changes nothing", report_text() );
+$sql_dir = $earlier;
+
 ## ------------------------------------------------------------------ resume after a failed step
 old_instance( 'rv_resume' );
 take_backup( 'rv_resume' );
