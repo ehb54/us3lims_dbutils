@@ -39,8 +39,8 @@ return [
             report( 'FAIL', "$label ($db): this release's stored procedures cannot be loaded: $blocker" );
             return;
         }
-        report( 'todo', "$label ($db): load this release's stored procedures (us3_procedures.sql); local changes to"
-                      . " them are replaced" );
+        report( 'todo', "$label ($db): load this release's stored procedures (us3_procedures.sql) and row-version"
+                      . " triggers (us3_row_version_triggers.sql); local changes to them are replaced" );
         if ( !$apply ) {
             return;
         }
@@ -60,6 +60,15 @@ return [
             return;
         }
         $changes++;
-        report( 'done', "$label ($db): loaded this release's stored procedures" );
+        report( 'done', "$label ($db): loaded this release's stored procedures"
+                      . ( release_triggers_file( $context[ 'sql_dir' ] ) !== null ? ' and row-version triggers' : '' ) );
+        ## Every manifest table has its columns and both triggers, live and history tables match
+        $manifest = function_exists( 'row_version_manifest' ) ? row_version_manifest( $context[ 'sql_dir' ] ) : null;
+        if ( $manifest !== null ) {
+            $problems = row_version_problems( $conn, $db, $manifest, true );
+            if ( $problems ) {
+                report( 'FAIL', "$label ($db): row versions incomplete after loading the triggers: " . implode( '; ', $problems ) );
+            }
+        }
     },
 ];

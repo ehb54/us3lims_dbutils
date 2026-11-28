@@ -126,10 +126,15 @@ Steps
     gfac.analysis.HPCAnalysisRequestID, listing any row from before it; then, in each dbinstance, using the running
     config.php (or overlay) it already connects with: migrates people_audit.created_at to
     UTC if not already done (idempotent, so a host dbupgrade/stage1+stage2 already migrated
-    is reported 'ok' here), creates the dispatch tables (us3_dispatch.sql), checks that it has
+    is reported 'ok' here), creates the dispatch tables (us3_dispatch.sql), adds row versions
+    and the schema fixes coordinated writes need (after a read-only preflight that changes
+    nothing when it fails, including a check for a backup of the instance taken after its last
+    write; each step is recorded, so a rerun resumes), checks that it has
     every table, column and enum value us3.sql defines (FAIL otherwise: an in-place upgrade
-    doesn't change the schema, so dbupgrade's stage1 and stage2 rebuild it), and then loads the
-    release's stored procedures (us3_procedures.sql) when they are not this release's
+    doesn't change the rest of the schema, so dbupgrade's stage1 and stage2 rebuild it), and then
+    loads the release's stored procedures (us3_procedures.sql) and row-version triggers
+    (us3_row_version_triggers.sql) when they are not this release's, and checks every
+    row-version table has its columns and triggers
 10: runs dbinst's tools/check_installation.php and reports what it finds as notes
 
 Undoing it
@@ -4107,7 +4112,7 @@ if ( $verify_all ) {
         }
     }
 
-step( "9. Per-instance catch-up (\$common_dir, people_audit UTC migration, dispatch tables)" );
+step( "9. Per-instance catch-up (\$common_dir, people_audit UTC migration, dispatch tables, row versions)" );
 
 ## Unlike dbupgrade/stage2_import_dbinsts.php (which imports a 4.2.0
 ## dbinstance wholesale onto a new host), this upgrade runs against the
@@ -4146,6 +4151,9 @@ run_host_migrations( null, $required_version, $apply,
 
 ## us3_sql's checkout: the dispatch tables' definitions.
 $sql_dir = "$us3_home/lims/database/sql";
+## uslims_daily_backup.php's dump directory, where row versions look for a backup of each instance.
+$dbutils_config = config_vars( __DIR__ . '/db_config.php' );
+$backup_dir = is_array( $dbutils_config ) ? (string) ( $dbutils_config[ 'backup_dir' ] ?? '' ) : '';
 run_host_migrations( $gdb, $required_version, $apply, [ 'wwwpath' => $wwwpath, 'sql_dir' => $sql_dir ],
                      [ 'dispatch_gfac_tables', 'gfac_analysis_request_id' ] );
 $dispatch_gfac_server = function_exists( 'dispatch_server_identity' ) ? dispatch_server_identity( $gdb ) : '';
@@ -4155,7 +4163,8 @@ if ( !$instance_configs ) {
 } else {
     ## The release's instance SQL is checked once: missing, it is the host's failure, not each instance's.
     $sql_missing = [];
-    foreach ( [ 'us3.sql', 'us3_dispatch.sql', 'us3_procedures.sql' ] as $instance_sql ) {
+    foreach ( [ 'us3.sql', 'us3_dispatch.sql', 'us3_procedures.sql', 'us3_row_version_tables.tsv', 'us3_row_versions.sql',
+               'us3_counter_reset.sql', 'us3_row_version_triggers.sql' ] as $instance_sql ) {
         if ( !is_readable( "$sql_dir/$instance_sql" ) ) {
             report( 'FAIL', "$sql_dir/$instance_sql cannot be read; update the us3_sql checkout first" );
             $sql_missing[] = $instance_sql;
@@ -4176,6 +4185,7 @@ if ( !$instance_configs ) {
             'wwwpath'       => $wwwpath,
             'gfac_server'   => $dispatch_gfac_server,
             'sql_dir'       => $sql_dir,
+            'backup_dir'    => $backup_dir,
             ## Reported once above, not again for each instance.
             'sql_missing'   => $sql_missing,
         ];
@@ -4215,8 +4225,10 @@ if ( !$instance_configs ) {
                                   [ 'people_audit_utc' ] );
         run_instance_migrations( $conn, $cfg[ 'dbname' ], $required_version, $apply, $context,
                                   [ 'dispatch_instance_tables' ] );
-        ## Procedures are loaded only onto the release's schema.
+        ## Procedures and triggers are loaded only onto the release's schema, row versions included.
         $schema_mark = $failures;
+        run_instance_migrations( $conn, $cfg[ 'dbname' ], $required_version, $apply, $context,
+                                  [ 'instance_row_versions' ] );
         run_instance_migrations( $conn, $cfg[ 'dbname' ], $required_version, $apply, $context,
                                   [ 'instance_schema' ] );
         if ( $failures === $schema_mark && !in_array( 'us3.sql', $sql_missing, true ) ) {
