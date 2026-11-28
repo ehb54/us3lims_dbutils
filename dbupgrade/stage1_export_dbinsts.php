@@ -198,7 +198,8 @@ foreach ( $dbnames_used as $db => $val ) {
     run_cmd( $cmd );
 
     $dumpfile = "export-$use_dbhost-$db.sql";
-    $cmd = "mysqldump --defaults-file=../my.cnf -u root --no-create-info --complete-insert";
+    ## No triggers: stage2 loads them after the data and the counter reset.
+    $cmd = "mysqldump --defaults-file=../my.cnf -u root --no-create-info --complete-insert --skip-triggers";
 
     $schema_file = "../../schema_rev_tmp_$db.sql";
     if ( !file_exists( $schema_file ) ) {

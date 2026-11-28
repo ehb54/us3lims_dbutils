@@ -313,15 +313,6 @@ if ( get_yn_answer( "create dbinstances" ) ) {
                 echo "command returns: $res\n";
             }
         }
-        ## So the next uslims_upgrade.php --apply does not load them again. Recorded as the instance
-        ## account, which reads the routines as that check does (a non-definer sees no bodies).
-        $inst_link = @mysqli_connect( $dbhost, $dbuser, $dbpasswd, $db );
-        if ( !$inst_link || !record_instance_procedures_marker( $inst_link, $db, $limsdbpath ) ) {
-            echo "note: could not record $db's stored procedures as this release's; the next uslims_upgrade.php --apply reloads them\n";
-        }
-        if ( $inst_link ) {
-            mysqli_close( $inst_link );
-        }
         $querys = [
     "delete from $db.abstractCenterpiece"
     ,"delete from $db.abstractRotor"
@@ -354,6 +345,30 @@ if ( get_yn_answer( "create dbinstances" ) ) {
             if ( trim( $res ) != '' ) {
                 echo "command returns: $res\n";
             }
+        }
+
+        ## Then the loading order's last two steps: counters above the imported rows, then the
+        ## row-version triggers, so imported versions and attribution are kept as they were.
+        foreach ( [ 'us3_counter_reset.sql', 'us3_row_version_triggers.sql' ] as $file ) {
+            if ( !file_exists( "$limsdbpath/$file" ) ) {
+                continue;
+            }
+            $c = "cd $limsdbpath && mysql --defaults-file=$cwd/my.cnf -u root $db < $file";
+            echo "running: $c\n";
+            $res = run_cmd( $c );
+            if ( trim( $res ) != '' ) {
+                echo "command returns: $res\n";
+            }
+        }
+
+        ## So the next uslims_upgrade.php --apply does not load them again. Recorded as the instance
+        ## account, which reads the routines as that check does (a non-definer sees no bodies).
+        $inst_link = @mysqli_connect( $dbhost, $dbuser, $dbpasswd, $db );
+        if ( !$inst_link || !record_instance_procedures_marker( $inst_link, $db, $limsdbpath ) ) {
+            echo "note: could not record $db's stored procedures and triggers as this release's; the next uslims_upgrade.php --apply reloads them\n";
+        }
+        if ( $inst_link ) {
+            mysqli_close( $inst_link );
         }
         if ( $create_php ) {
             $cmds = [
