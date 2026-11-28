@@ -495,7 +495,7 @@ function row_version_run_step( $conn, $db, $step, array $manifest, $sql_dir, cal
                     $add[] = "ADD COLUMN IF NOT EXISTS $c $type";
                 }
                 $sql = "ALTER TABLE `$db`.`$t` " . implode( ', ', $add );
-                if ( !mysqli_query( $conn, "$sql, ALGORITHM=INSTANT" ) ) {
+                if ( !mysqli_query( $conn, "$sql, ALGORITHM=INSTANT" ) ) { // NOSONAR $db is a validated instance name, $t a manifest table
                     ## The preflight planned for this: a row format or index that rules out an instant add
                     $run( $sql );
                     $copy[] = $t;
@@ -597,11 +597,11 @@ function row_version_problems( $conn, $db, array $manifest, $with_triggers ) {
 ## which put the keys back, then every step recorded as done. [ ok, error ].
 function row_version_import_relax( $conn, $db ) {
     foreach ( array_keys( row_version_link_keys() ) as $t ) {
-        if ( rv_has_primary_key( $conn, $db, $t ) && !mysqli_query( $conn, "ALTER TABLE `$db`.`$t` DROP PRIMARY KEY" ) ) {
+        if ( rv_has_primary_key( $conn, $db, $t ) && !mysqli_query( $conn, "ALTER TABLE `$db`.`$t` DROP PRIMARY KEY" ) ) { // NOSONAR $db is a validated instance name, $t one of this file's table names
             return [ false, mysqli_error( $conn ) ];
         }
     }
-    if ( !mysqli_query( $conn, "ALTER TABLE `$db`.solution MODIFY solutionGUID CHAR(36) NULL, DROP INDEX IF EXISTS solutionGUID" ) ) {
+    if ( !mysqli_query( $conn, "ALTER TABLE `$db`.solution MODIFY solutionGUID CHAR(36) NULL, DROP INDEX IF EXISTS solutionGUID" ) ) { // NOSONAR $db is a validated instance name, $t one of this file's table names
         return [ false, mysqli_error( $conn ) ];
     }
     return [ true, '' ];
@@ -630,4 +630,30 @@ function row_version_import_finish( $conn, $db, $sql_dir ) {
 ## was given (an import made before row_version_import_finish() existed). Safe to repeat.
 function row_version_data_steps() {
     return [ 'report-links', 'run-reservations', 'history-stages' ];
+}
+
+## The rest of an import after its data, as dbupgrade's stage2 and dbmigrate's stage3 run it:
+## the repairs and backfills, the counter reset and the triggers ($mysql: the mysql command line
+## for $db, run in $sql_dir), then a check of every versioned table before the routines and
+## triggers are recorded as loaded, as $instance_link (the instance account). '' or the error.
+function row_version_import_complete( $conn, $db, $sql_dir, $mysql, $instance_link ) {
+    list( $finished, $why ) = row_version_import_finish( $conn, $db, $sql_dir );
+    if ( !$finished ) {
+        return "the imported data needs repair before its keys can be restored ($why). Fix those rows in $db,"
+             . " then run uslims_upgrade.php, whose step 9 finishes its row versions";
+    }
+    foreach ( [ 'us3_counter_reset.sql', 'us3_row_version_triggers.sql' ] as $file ) {
+        list( , $err, $rc ) = capture( 'cd ' . escapeshellarg( $sql_dir ) . " && $mysql < $file" );
+        if ( $rc !== 0 ) {
+            return "loading $file failed: " . trim( $err );
+        }
+    }
+    $problems = row_version_problems( $conn, $db, row_version_manifest( $sql_dir ), true );
+    if ( $problems ) {
+        return "row versions incomplete after the import: " . implode( '; ', $problems );
+    }
+    if ( !$instance_link || !record_instance_procedures_marker( $instance_link, $db, $sql_dir ) ) {
+        echo "note: could not record $db's stored procedures and triggers as this release's; the next uslims_upgrade.php --apply reloads them\n";
+    }
+    return '';
 }

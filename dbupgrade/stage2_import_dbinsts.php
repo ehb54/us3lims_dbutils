@@ -317,44 +317,16 @@ if ( get_yn_answer( "create dbinstances?" ) ) {
             }
         }
 
-        ## The repairs and backfills an in-place upgrade makes, which also put the keys back
+        ## The repairs, the counter reset and the triggers, then the routines and triggers recorded as
+        ## loaded, as the instance account, which reads them as uslims_upgrade.php's check does
         check_db();
-        list( $finished, $why ) = row_version_import_finish( $db_handle, $db, $limsdbpath );
-        if ( !$finished ) {
-            error_exit( "$db: the imported data needs repair before its keys can be restored ($why). Fix those rows in $db,"
-                      . " then run uslims_upgrade.php, whose step 9 finishes its row versions" );
-        }
-
-        ## Then the loading order's last two steps: counters above the imported rows, then the
-        ## row-version triggers, so imported versions and attribution are kept as they were.
-        foreach ( [ 'us3_counter_reset.sql', 'us3_row_version_triggers.sql' ] as $file ) {
-            if ( !file_exists( "$limsdbpath/$file" ) ) {
-                continue;
-            }
-            $c = "cd $limsdbpath && mysql --defaults-file=$cwd/my.cnf -u root $db < $file";
-            echo "running: $c\n";
-            $res = run_cmd( $c );
-            if ( trim( $res ) != '' ) {
-                echo "command returns: $res\n";
-            }
-        }
-
-        ## Every versioned table has its columns and both triggers before they are recorded as loaded
-        $manifest = row_version_manifest( $limsdbpath );
-        $problems = $manifest === null ? [ "$limsdbpath/us3_row_version_tables.tsv cannot be read" ]
-                                       : row_version_problems( $db_handle, $db, $manifest, true );
-        if ( $problems ) {
-            error_exit( "$db: row versions incomplete after the import: " . implode( '; ', $problems ) );
-        }
-
-        ## So the next uslims_upgrade.php --apply does not load them again. Recorded as the instance
-        ## account, which reads the routines as that check does (a non-definer sees no bodies).
         $inst_link = @mysqli_connect( $dbhost, $dbuser, $dbpasswd, $db );
-        if ( !$inst_link || !record_instance_procedures_marker( $inst_link, $db, $limsdbpath ) ) {
-            echo "note: could not record $db's stored procedures and triggers as this release's; the next uslims_upgrade.php --apply reloads them\n";
-        }
+        $error = row_version_import_complete( $db_handle, $db, $limsdbpath, "mysql --defaults-file=$cwd/my.cnf -u root $db", $inst_link );
         if ( $inst_link ) {
             mysqli_close( $inst_link );
+        }
+        if ( $error !== '' ) {
+            error_exit( "$db: $error" );
         }
 
         # The writer's own zone, captured at export time (stage1), not

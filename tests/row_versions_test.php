@@ -79,7 +79,7 @@ if ( !$sql_dir || !$base_dir || !is_file( "$sql_dir/us3_row_version_tables.tsv" 
     exit( 0 );
 }
 
-$root = mysqli_connect( 'localhost', 'root', '', '', 0, $sock );
+$root = mysqli_connect( 'localhost', 'root', '', '', 0, $sock ); // NOSONAR a throwaway test server's root, as in-container.sh makes it
 $backup_dir = '/var/tmp/rv-backups';
 @mkdir( $backup_dir );
 
@@ -217,7 +217,7 @@ check( count( preg_grep( '/share GUID/', $problems ) ) === 1, "preflight: duplic
 check( count( preg_grep( '/other session/', $problems ) ) === 1, "preflight: another session refuses", implode( "\n", $problems ) );
 mysqli_close( $other );
 ## Another account's session, seen through a connection with PROCESS
-$desktop_link = mysqli_connect( 'localhost', 'root', '', 'rv_pre', 0, $sock );
+$desktop_link = mysqli_connect( 'localhost', 'root', '', 'rv_pre', 0, $sock ); // NOSONAR a throwaway test server's root, as in-container.sh makes it
 $problems = row_version_preflight( $conn, 'rv_pre', $manifest, [ 'backup_dir' => $backup_dir, 'process_conn' => $root ] );
 check( count( preg_grep( '/other session/', $problems ) ) === 1, "preflight: another account's session refuses through process_conn", implode( "\n", $problems ) );
 mysqli_close( $desktop_link );
@@ -366,10 +366,8 @@ foreach ( [ 'abstractCenterpiece', 'abstractRotor', 'bufferComponent', 'editedDa
     must( $root, "DELETE FROM rv_import2.$t" );
 }
 sh( "mysql --no-defaults -S $sock -u root rv_import2 < /var/tmp/rv_old.sql" );
-list( $ok, $why ) = row_version_import_finish( $root, 'rv_import2', $sql_dir );
-check( $ok, "row_version_import_finish", $why );
-load( $sql_dir, 'rv_import2', 'us3_counter_reset.sql' );
-load( $sql_dir, 'rv_import2', 'us3_row_version_triggers.sql' );
+$error = row_version_import_complete( $root, 'rv_import2', $sql_dir, "mysql --no-defaults -S $sock -u root rv_import2", $root );
+check( $error === '', "row_version_import_complete, as stage2 and stage3 run it", $error );
 check( value( $root, "SELECT COUNT(*) FROM rv_import2.protocolPerson" ) == 2, "import: identical duplicate link rows reduced to one" );
 check( value( $root, "SELECT GROUP_CONCAT( reportID, ':', COALESCE( aprofileID, '-' ) ORDER BY reportID ) FROM rv_import2.autoflowReport" ) === '11:1,12:1,13:-,14:-',
        "import: reports linked" );

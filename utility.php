@@ -586,7 +586,7 @@ function open_db() {
 function set_unattended_attribution( $link ) {
     $version = trim( (string) @file_get_contents( __DIR__ . '/VERSION' ) );
     $client  = substr( 'dbutils/' . basename( $_SERVER[ 'SCRIPT_NAME' ] ?? 'dbutils', '.php' ) . ( $version !== '' ? " $version" : '' ), 0, 64 );
-    return mysqli_query( $link, "SET @US3_ACTING_ID = 0, @US3_ID = NULL, @US3_CLIENT = '"
+    return mysqli_query( $link, "SET @US3_ACTING_ID = 0, @US3_ID = NULL, @US3_CLIENT = '" // NOSONAR the one value is escaped
                               . mysqli_real_escape_string( $link, $client ) . "'" );
 }    
     
