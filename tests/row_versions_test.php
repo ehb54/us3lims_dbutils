@@ -176,7 +176,7 @@ function schema_shape( $db ) {
     }
     foreach ( rows( $root, "SELECT TRIGGER_NAME n, EVENT_OBJECT_TABLE t, ACTION_TIMING a, EVENT_MANIPULATION e, ACTION_STATEMENT s
                             FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = '$db' ORDER BY n" ) as $r ) {
-        $shape[] = "trigger {$r['n']} {$r['t']} {$r['a']} {$r['e']} " . md5( $r[ 's' ] );
+        $shape[] = "trigger {$r['n']} {$r['t']} {$r['a']} {$r['e']} " . hash( 'sha256', $r[ 's' ] );
     }
     foreach ( rows( $root, "SELECT TABLE_NAME t FROM information_schema.TABLES WHERE TABLE_SCHEMA = '$db' AND TABLE_TYPE = 'SEQUENCE'" ) as $r ) {
         $shape[] = "sequence {$r['t']}";
