@@ -323,7 +323,7 @@ function check_cluster_status() {
     }
 }
 
-function check_db_config( $use_db ) {
+function check_db_config( $use_db, $full_path ) {
     global $class_dir;
     global $errors;
     global $fmt;
@@ -333,8 +333,6 @@ function check_db_config( $use_db ) {
     if ( !isset( $errors ) ) {
         $errors = '';
     }
-
-    $full_path = "/srv/www/htdocs/uslims3/$use_db";
 
     $error_msg = function( $msg ) {
         global $errors;
@@ -566,10 +564,27 @@ if ( !count( $use_dbs ) ) {
     }
 }
 
+## Each database's docroot comes from the instance inventory, not from its name.
+$inventory = lims_instance_inventory( '/srv/www/htdocs', exec( 'ls -d ~us3' ), $use_config_file );
+foreach ( $inventory[ 'notes' ] as $note ) {
+    echo "note: $note\n";
+}
+foreach ( $inventory[ 'errors' ] as $error ) {
+    echo "instance inventory: $error\n";
+}
+$instance_dir = [];
+foreach ( $inventory[ 'configs' ] as $label => $cfg ) {
+    $instance_dir[ $cfg[ 'dbname' ] ] = $inventory[ 'dirs' ][ $label ];
+}
+
 foreach ( $use_dbs as $use_db ) {
     echoline( '-', $flen );
     echo "dbinst: $use_db\n";
-    check_db_config( $use_db );
+    if ( !isset( $instance_dir[ $use_db ] ) ) {
+        echo "no readable instance config under /srv/www/htdocs/uslims3 names $use_db; not checked\n";
+        continue;
+    }
+    check_db_config( $use_db, $instance_dir[ $use_db ] );
     if ( strlen( $errors ) ) {
         echo $errors;
         $errors = '';

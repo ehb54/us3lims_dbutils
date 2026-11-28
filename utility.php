@@ -316,12 +316,13 @@ function config_vars( $file, &$why = null ) {
     return null;
 }
 
-## Every LIMS instance's database config on this host: single-tenant
+## Candidate database configs on this host, before database membership reconciliation:
+## single-tenant
 ## ($wwwpath/uslims3/config.php) and/or multi-tenant ($wwwpath/uslims3/<name>/config.php),
 ## resolving a migrated instance's generated shim to its real overlay file the
 ## same way uslims_domain_info.php's instance_overlay() does. Shared by
-## uslims_upgrade.php's step 9 and migrate_people_audit_utc.php so the two
-## agree on what "every instance on this host" means.
+## lims_instance_inventory(), which reconciles these candidates with existing databases
+## for uslims_upgrade.php, migrate_people_audit_utc.php and uslims_git_info.php.
 ##
 ## Returns [ label => [ 'dbname'|'dbhost'|'dbusername'|'dbpasswd' => ..., ... ]
 ## or [ 'error' => string ], ... ]. A per-instance error does not stop the
@@ -592,27 +593,300 @@ function dispatch_backup_command( $myconf, array $tables, $dumpfile, $logf ) {
          . escapeshellarg( $dumpfile ) . " 2>> $logf";
 }
 
+## The same database membership used by backup/export. null is an error, not an empty host.
+function lims_database_names( $link, $include_global = false, &$error = null ) {
+    $error = null;
+    $res = mysqli_query( $link, "SHOW DATABASES LIKE 'uslims3_%'" );
+    if ( !$res ) {
+        $error = 'could not list LIMS databases: ' . mysqli_error( $link );
+        return null;
+    }
+    $names = [];
+    while ( $row = mysqli_fetch_row( $res ) ) {
+        if ( $row[ 0 ] !== 'uslims3_global' || $include_global ) {
+            $names[] = $row[ 0 ];
+        }
+    }
+    mysqli_free_result( $res );
+    sort( $names );
+    return $names;
+}
+
+## Absence is only meaningful with a complete database view. db_config.php is already
+## provisioned with the host's root credentials. Do not infer absence from tenant grants.
+function lims_inventory_visible( $link ) {
+    $res = mysqli_query( $link, 'SHOW GRANTS' );
+    if ( !$res ) {
+        return false;
+    }
+    while ( $row = mysqli_fetch_row( $res ) ) {
+        if ( preg_match( '/^GRANT (.*?) ON \*\.\* TO /', $row[ 0 ], $m )
+             && preg_match( '/(?:^|, )(ALL PRIVILEGES|SHOW DATABASES)(?:,|$)/', $m[ 1 ] ) ) {
+            mysqli_free_result( $res );
+            return true;
+        }
+    }
+    mysqli_free_result( $res );
+    return false;
+}
+
+function lims_database_server( $link ) {
+    $res = mysqli_query( $link, 'SELECT @@hostname, @@port' );
+    if ( !$res ) { return null; }
+    $server = mysqli_fetch_row( $res );
+    mysqli_free_result( $res );
+    return $server;
+}
+
+## Join database membership to existing paths; never drop a database because its files
+## are missing. The scanner remains responsible for single-instance and overlay resolution.
+## A config that cannot be read is a leftover (a note) only when nothing ties it to a live database.
+function reconcile_lims_instances( array $databases, array $configs, array $paths, $wwwpath ) {
+    $result = [ 'databases' => $databases, 'configs' => [], 'paths' => [], 'dirs' => [],
+                'notes' => [], 'errors' => [], 'ignored_dirs' => [], 'unmapped' => [], 'problem_dirs' => [] ];
+    $docroot = function ( $label ) use ( $wwwpath ) {
+        return rtrim( $wwwpath, '/' ) . '/uslims3' . ( $label === 'default' ? '' : "/$label" );
+    };
+    $seen = [];
+    $unread = [];
+    foreach ( $configs as $label => $cfg ) {
+        $label = (string) $label;
+        if ( isset( $cfg[ 'endpoint_error' ] ) ) {
+            ## Possibly a live instance on another server: never skipped on a note.
+            $result[ 'errors' ][] = "$label: " . $cfg[ 'endpoint_error' ] . '; correct the configuration, or move the directory out of uslims3/ if it is retired';
+            $result[ 'problem_dirs' ][] = $docroot( $label );
+            continue;
+        }
+        if ( isset( $cfg[ 'error' ] ) ) {
+            $unread[ $label ] = $cfg[ 'error' ];
+            continue;
+        }
+        $db = (string) $cfg[ 'dbname' ];
+        if ( !in_array( $db, $databases, true ) ) {
+            $result[ 'ignored_dirs' ][] = $docroot( $label );
+            $result[ 'notes' ][] = "$label: config names '$db', which is not a tenant database on the inventory server; skipped, files left untouched";
+            continue;
+        }
+        if ( isset( $seen[ $db ] ) ) {
+            $result[ 'errors' ][] = "$db: multiple instance configs ($seen[$db], $label); resolve the duplicate mapping before upgrading";
+            $result[ 'problem_dirs' ][] = $docroot( $label );
+            continue;
+        }
+        $seen[ $db ] = $label;
+        $result[ 'configs' ][ $label ] = $cfg;
+        $result[ 'paths' ][ $label ] = $paths[ $label ];
+        $result[ 'dirs' ][ $label ] = $docroot( $label );
+    }
+    $leftover = [];
+    $claimed = [];
+    foreach ( $unread as $label => $error ) {
+        $why = unreadable_config_claims( $label, $docroot( $label ) . '/config.php', $databases, $seen );
+        if ( $why === null ) {
+            $leftover[ $label ] = $error;
+            $result[ 'ignored_dirs' ][] = $docroot( $label );
+            $result[ 'notes' ][] = "$label: $error; not used as a tenant, files left untouched";
+            continue;
+        }
+        ## Possibly a live docroot: no other copy may stand in for it.
+        $result[ 'errors' ][] = "$label: $error; $why[1], so it may be a live docroot; restore or correct its config, or move it out of uslims3/ if it is retired";
+        $result[ 'problem_dirs' ][] = $docroot( $label );
+        foreach ( $why[ 0 ] as $db ) {
+            $claimed[ $db ] = true;
+            if ( isset( $seen[ $db ] ) ) {
+                $mapped = $seen[ $db ];
+                unset( $result[ 'configs' ][ $mapped ], $result[ 'paths' ][ $mapped ], $result[ 'dirs' ][ $mapped ] );
+                $result[ 'problem_dirs' ][] = $docroot( $mapped );
+            }
+        }
+    }
+    foreach ( array_diff( $databases, array_keys( $seen ), array_keys( $claimed ) ) as $db ) {
+        $why = "$db: database exists but no readable instance config maps to it under $wwwpath/uslims3";
+        if ( $leftover ) {
+            $list = [];
+            foreach ( $leftover as $label => $error ) { $list[] = "$label ($error)"; }
+            $why .= '; configs that could not be read: ' . implode( ', ', $list );
+        }
+        $result[ 'errors' ][] = "$why; restore or correct its docroot/config before upgrading";
+        $result[ 'unmapped' ][] = $db;
+        $result[ 'problem_dirs' ][] = rtrim( $wwwpath, '/' ) . "/uslims3/$db";
+        foreach ( array_keys( $leftover ) as $label ) {
+            $result[ 'problem_dirs' ][] = $docroot( $label );
+        }
+    }
+    $result[ 'problem_dirs' ] = array_values( array_unique( $result[ 'problem_dirs' ] ) );
+    return $result;
+}
+
+## What ties an unreadable config to a live database: [ [ database, ... ], reason ], or null for none.
+## $seen maps each database to the label of the readable config that names it.
+function unreadable_config_claims( $label, $file, array $databases, array $seen ) {
+    if ( $label === 'default' ) {
+        ## Which tenant it serves can't be told, so every mapped instance waits for it.
+        return [ array_keys( $seen ), 'it is the uslims3/ root config' ];
+    }
+    if ( in_array( $label, $databases, true ) ) {
+        return [ [ $label ], "$label is a tenant database" ];
+    }
+    $text = @file_get_contents( $file );
+    if ( $text !== false ) {
+        foreach ( $databases as $db ) {
+            if ( preg_match( '/(?<![A-Za-z0-9_])' . preg_quote( $db, '/' ) . '(?![A-Za-z0-9_])/', $text ) ) {
+                return [ [ $db ], "it names tenant database $db" ];
+            }
+        }
+    }
+    foreach ( $seen as $db => $mapped ) {
+        $mapped = (string) $mapped;
+        if ( strpos( $mapped, $label ) === 0 && strspn( substr( $mapped, strlen( $label ), 1 ), '._-' ) === 1
+             || strpos( $label, $mapped ) === 0 && strspn( substr( $label, strlen( $mapped ), 1 ), '._-' ) === 1 ) {
+            return [ [ $db ], "its name is a variant of $mapped, which maps $db" ];
+        }
+    }
+    return null;
+}
+
+## [ host, port ] of a mysqli host string ("host" or "host:port"); port 3306 when absent.
+function lims_db_endpoint( $host ) {
+    $host = strtolower( trim( (string) $host ) );
+    $port = 3306;
+    if ( preg_match( '/^\[(.*)\](?::(\d+))?$/', $host, $m ) ) {
+        $host = $m[ 1 ];
+        $port = isset( $m[ 2 ] ) ? (int) $m[ 2 ] : 3306;
+    } elseif ( substr_count( $host, ':' ) === 1 ) {
+        list( $host, $p ) = explode( ':', $host );
+        $port = (int) $p;
+    }
+    return [ $host, $port ];
+}
+
+function lims_db_host_is_local( $host ) {
+    if ( in_array( $host, [ 'localhost', 'localhost.localdomain', '127.0.0.1', '::1' ], true ) ) {
+        return true;
+    }
+    $self = strtolower( (string) gethostname() );
+    if ( $host === $self || strpos( $self, "$host." ) === 0 ) {
+        return true;
+    }
+    $ip = gethostbyname( $host );
+    return $ip !== $host && ( strpos( $ip, '127.' ) === 0 || $ip === gethostbyname( $self ) );
+}
+
+## Same port, and the same name, the same address, or both this host: the same endpoint, no login needed.
+function lims_same_db_endpoint( $a, $b ) {
+    list( $ha, $pa ) = lims_db_endpoint( $a );
+    list( $hb, $pb ) = lims_db_endpoint( $b );
+    if ( $pa !== $pb ) {
+        return false;
+    }
+    if ( $ha === $hb || ( lims_db_host_is_local( $ha ) && lims_db_host_is_local( $hb ) ) ) {
+        return true;
+    }
+    $ia = gethostbyname( $ha );
+    return filter_var( $ia, FILTER_VALIDATE_IP ) && $ia === gethostbyname( $hb );
+}
+
+## Read one host inventory using the existing dbutils account. No grants, prompts or writes.
+## A config naming another endpoint is checked with that config's own account, never
+## db_config.php's, rather than treating an unreachable remote DB as deleted.
+function lims_instance_inventory( $wwwpath, $us3_home, $db_config ) {
+    ## Failures are reported in the result, whatever the caller's mysqli report mode.
+    $driver = new mysqli_driver();
+    $report_mode = $driver->report_mode;
+    mysqli_report( MYSQLI_REPORT_OFF );
+    try {
+        return lims_instance_inventory_read( $wwwpath, $us3_home, $db_config );
+    } finally {
+        mysqli_report( $report_mode );
+    }
+}
+
+function lims_instance_inventory_read( $wwwpath, $us3_home, $db_config ) {
+    $empty = [ 'databases' => [], 'configs' => [], 'paths' => [], 'dirs' => [],
+               'host_configs' => [], 'host_dirs' => [], 'notes' => [], 'errors' => [], 'ignored_dirs' => [],
+               'unmapped' => [], 'problem_dirs' => [], 'membership_known' => false ];
+    $login = config_vars( $db_config );
+    if ( !isset( $login[ 'dbhost' ], $login[ 'user' ], $login[ 'passwd' ] ) ) {
+        $empty[ 'errors' ][] = "cannot read inventory credentials from $db_config; use the existing dbutils configuration";
+        return $empty;
+    }
+    $link = @mysqli_connect( $login[ 'dbhost' ], $login[ 'user' ], $login[ 'passwd' ] );
+    if ( !$link ) {
+        $empty[ 'errors' ][] = "cannot connect to the inventory server " . $login[ 'dbhost' ] . " from $db_config ("
+                             . mysqli_connect_error() . "); instance membership is unknown";
+        return $empty;
+    }
+    try {
+        if ( !lims_inventory_visible( $link ) ) {
+            $empty[ 'errors' ][] = "$db_config: inventory account needs an existing complete database view (global SHOW DATABASES or ALL PRIVILEGES); instance membership is unknown";
+            return $empty;
+        }
+        $databases = lims_database_names( $link, false, $error );
+        if ( $databases === null ) {
+            $empty[ 'errors' ][] = $error;
+            return $empty;
+        }
+        $configs = discover_lims_instance_configs( $wwwpath, $us3_home, $paths, $host_configs );
+        $server = lims_database_server( $link );
+        foreach ( $configs as $label => &$cfg ) {
+            if ( isset( $cfg[ 'error' ] ) || lims_same_db_endpoint( $cfg[ 'dbhost' ], $login[ 'dbhost' ] ) ) {
+                continue;
+            }
+            $other = @mysqli_connect( $cfg[ 'dbhost' ], $cfg[ 'dbusername' ], $cfg[ 'dbpasswd' ] );
+            $why = $other ? '' : mysqli_connect_error();
+            $same = $other && $server !== null && lims_database_server( $other ) === $server;
+            if ( $other ) {
+                mysqli_close( $other );
+            }
+            if ( !$same ) {
+                $cfg = [ 'endpoint_error' => "config database endpoint " . $cfg[ 'dbhost' ] . " cannot be verified as the inventory server "
+                                  . $login[ 'dbhost' ] . ( $why !== '' ? " ($why)" : ' (a different server answered)' ) ];
+            }
+        }
+        unset( $cfg );
+        $result = reconcile_lims_instances( $databases, $configs, $paths, $wwwpath );
+        $result[ 'membership_known' ] = true;
+        $result[ 'host_configs' ] = $host_configs;
+        $result[ 'host_dirs' ] = [];
+        foreach ( $host_configs as $label => $entry ) {
+            $result[ 'host_dirs' ][ $label ] = rtrim( $wwwpath, '/' ) . '/uslims3' . ( $label === 'default' ? '' : "/$label" );
+        }
+        ## The standard newinst checkout is a host component even before its config
+        ## has been generated. Keep its version check independent of tenant membership.
+        $newinst_dir = rtrim( $wwwpath, '/' ) . '/uslims3/uslims3_newlims';
+        if ( is_dir( $newinst_dir ) && !isset( $result[ 'dirs' ][ 'uslims3_newlims' ] ) ) {
+            $result[ 'host_dirs' ][ 'uslims3_newlims' ] = $newinst_dir;
+        }
+        ## VERSION/loader-only remnants are not instances either. Report them, but do not
+        ## let them supply a branch or base contract merely because their files survived.
+        $candidates = array_merge( glob( "$wwwpath/uslims3/*/VERSION" ) ?: [],
+                                   glob( "$wwwpath/uslims3/*/lib/dbinst_config_loader.php" ) ?: [] );
+        $reported = [];
+        foreach ( $candidates as $file ) {
+            $dir = basename( $file ) === 'VERSION' ? dirname( $file ) : dirname( $file, 2 );
+            $label = basename( $dir );
+            if ( !array_key_exists( $label, $configs ) && !isset( $result[ 'host_dirs' ][ $label ] ) && !isset( $reported[ $label ] ) ) {
+                $result[ 'ignored_dirs' ][] = $dir;
+                $result[ 'notes' ][] = "$label: checkout has no instance config; not used as a tenant, files left untouched";
+                $reported[ $label ] = true;
+            }
+        }
+        return $result;
+    } finally {
+        mysqli_close( $link );
+    }
+}
+
 function existing_dbs( $include_global = false ) {
     global $db_handle;
     if ( $db_handle === NULL ) {
         open_db();
     }
-    $res = db_obj_result( $db_handle, "show databases like 'uslims3_%'", True, True );
-    $existing_dbs = [];
-    if ( !$res ) {
-        if ( mysqli_errno( $db_handle ) ) {
-            write_logl( "db query failed : show databases like 'uslims3_%'\ndb query error: " . mysqli_error( $db_handle ) . "\n" );
-            exit( 1 );
-        }
-        return $existing_dbs; # no instance databases visible; not a fatal condition
+    $names = lims_database_names( $db_handle, $include_global, $error );
+    if ( $names === null ) {
+        write_logl( "$error\n" );
+        exit( 1 );
     }
-    while( $row = mysqli_fetch_array($res) ) {
-        $this_db = (string)$row[0];
-        if ( $this_db != "uslims3_global" || $include_global ) {
-            $existing_dbs[] = $this_db;
-        }
-    }
-    return $existing_dbs;
+    return $names;
 }
 
 function existing_stash_dbs() {

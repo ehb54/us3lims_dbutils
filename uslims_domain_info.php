@@ -235,14 +235,23 @@ if ( count( $uniqhosts ) != 1 ) {
 flush_warnings();
 # check dbs
 
-$res = db_obj_result( $db_handle, "show databases like 'uslims3_%'", True );
-$mysql_dbs = [];
-while( $row = mysqli_fetch_array($res) ) {
-    $this_db = (string)$row[0];
-    if ( $this_db != "uslims3_global" ) {
-        $mysql_dbs[ $this_db ] = 1;
-    }
+$mysql_dbs = array_fill_keys( existing_dbs(), 1 );
+
+## Each database's docroot comes from the instance inventory, not from its name.
+$inventory = lims_instance_inventory( $wwwpath, dirname( $configroot, 3 ), $use_config_file );
+foreach ( $inventory[ 'notes' ] as $note ) {
+    echo "NOTE: $note\n";
 }
+foreach ( $inventory[ 'errors' ] as $error ) {
+    $warnings .= "WARNING: instance inventory: $error\n";
+}
+$instance_label = [];
+foreach ( $inventory[ 'configs' ] as $label => $cfg ) {
+    $instance_label[ $cfg[ 'dbname' ] ] = $label;
+}
+## A single-instance root is uslims3/config.php itself, checked and updated as $srvconfig.
+$single_instance = array_search( 'default', $instance_label, true );
+flush_warnings();
 
 # make sure they match
 foreach ( $meta_dbs as $k => $v ) {
@@ -270,8 +279,16 @@ $check_names[ "$listenconfig: \$host_name" ] = trim( run_cmd( "grep -e '^\s*\$ho
 $class_dirs = [];
 
 $check_names[ "$srvconfig: \$org_site"     ] = trim( run_cmd( "grep -e '^\s*\$org_site\s*=' $srvconfig  | tail -1 | awk -F\\' '{ print \$2 }'" ) );
-foreach ( $mysql_dbs as $k => $v ) {
-    $instpath = "$wwwpath/uslims3/$k/config.php";
+foreach ( $mysql_dbs as $db => $v ) {
+    if ( $db === $single_instance ) {
+        continue;
+    }
+    if ( !isset( $instance_label[ $db ] ) ) {
+        $warnings .= "WARNING: db $db has no readable instance config under $wwwpath/uslims3; its config is not checked\n";
+        continue;
+    }
+    $k        = $instance_label[ $db ];
+    $instpath = $inventory[ 'dirs' ][ $k ] . '/config.php';
     $tmp_key  = "$instpath: \$org_site";
     if ( $overlay = instance_overlay( $instpath, $k ) ) {
         $contract = returned_config( $overlay );
@@ -435,8 +452,17 @@ if ( get_yn_answer( "Update php variables?" ) ) {
             echo "UPDATED: $srvconfig\n";
         }
     }
-    foreach ( $mysql_dbs as $k => $v ) {
-        $instpath = "$wwwpath/uslims3/$k/config.php";
+    foreach ( $mysql_dbs as $db => $v ) {
+        if ( $db === $single_instance ) {
+            continue;
+        }
+        if ( !isset( $instance_label[ $db ] ) ) {
+            echoline();
+            echo "NOTICE: db $db has no readable instance config under $wwwpath/uslims3, not updated\n";
+            continue;
+        }
+        $k        = $instance_label[ $db ];
+        $instpath = $inventory[ 'dirs' ][ $k ] . '/config.php';
         echoline();
         echo "Checking '$instpath'\n";
         if ( $overlay = instance_overlay( $instpath, $k ) ) {

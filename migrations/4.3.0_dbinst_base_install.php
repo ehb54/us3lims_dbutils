@@ -261,8 +261,9 @@ return [
         ## The contract comes from a dbinst checkout; README step 5 moved every one to this release.
         ## With none, a temporary clone at db_config.php's dbinst entry, as newinst's LIMS script would clone.
         $loader = '';
-        foreach ( glob( rtrim( $wwwpath, '/' ) . '/uslims3/*/lib/dbinst_config_loader.php' ) ?: [] as $candidate ) {
-            if ( is_file( dirname( $candidate, 2 ) . '/config-base.v1.php.template' ) ) {
+        foreach ( $context[ 'instance_dirs' ] as $instance_dir ) {
+            $candidate = "$instance_dir/lib/dbinst_config_loader.php";
+            if ( is_file( $candidate ) && is_file( dirname( $candidate, 2 ) . '/config-base.v1.php.template' ) ) {
                 $loader = $candidate;
                 break;
             }

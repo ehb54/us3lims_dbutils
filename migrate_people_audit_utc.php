@@ -36,7 +36,8 @@ same as both of the above -- already-migrated dbinstances are reported
 
 Default mode discovers every LIMS instance on this host under --www
 (single-tenant and multi-tenant, same detection as uslims_upgrade.php step 9),
-and connects with each instance's own config.php -- no new credentials.
+using db_config.php's existing database-wide account to reconcile database membership,
+and connects with each instance's own config.php for the migration.
 
 --db-host/--db-name/--db-user/--db-pass together migrate one dbinstance
 directly instead, with credentials of the caller's choosing: a dbinstance
@@ -126,23 +127,24 @@ if ( $explicit_given ) {
 }
 
 ## [ label => [ 'dbname'|'dbhost'|'dbusername'|'dbpasswd' => ... ] | [ 'error' => string ] ]
+if ( !$explicit_given ) {
+    $inventory = lims_instance_inventory( $wwwpath, $us3_home, __DIR__ . '/db_config.php' );
+    foreach ( $inventory[ 'notes' ] as $note ) { echo "[note] $note\n"; }
+    foreach ( $inventory[ 'errors' ] as $error ) { echo "[FAIL] $error\n"; }
+    if ( $inventory[ 'errors' ] ) { exit( 1 ); }
+}
 $targets = $explicit_given
          ? [ $db_name => [ 'dbhost' => $db_host, 'dbname' => $db_name,
                            'dbusername' => $db_user, 'dbpasswd' => $db_pass ] ]
-         : discover_lims_instance_configs( $wwwpath, $us3_home );
+         : $inventory[ 'configs' ];
 
 if ( !$targets ) {
-    echo "no LIMS instance found under $wwwpath/uslims3; nothing to migrate\n";
+    echo "no tenant databases on the inventory server; nothing to migrate\n";
     exit( 0 );
 }
 
 $failures = 0;
 foreach ( $targets as $label => $cfg ) {
-    if ( isset( $cfg[ 'error' ] ) ) {
-        echo "[note] $label: {$cfg['error']}; convert people_audit by hand\n";
-        continue;
-    }
-
     ## Checked here, not left to migrate_people_audit_created_at_to_utc()'s
     ## own sql_identifier_or_die(): that one is fatal, which in discovery
     ## mode would stop this loop over one instance's malformed config and
