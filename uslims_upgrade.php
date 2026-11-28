@@ -144,7 +144,8 @@ ones it created; move dbupgrade/export-* aside before a next attempt; then resta
 Every file this script rewrites, appends to or removes is copied first, once per run, into one
 directory per run, ~us3/lims/etc/uslims_upgrade-backup-<time>-pid<pid>, named when it is first
 used and again at the end. Every file it creates is listed in that directory's created.txt,
-except those item 3 lets stay. To
+except those item 3 lets stay. Every --apply makes that directory and keeps its full report
+there as report-<time>-pid<pid>.log: software versions, each checkout's commit, every step, and how it ended. To
 roll back, with the services stopped, use only the directories newer than
 pre-upgrade-checkouts.txt; for each file, the oldest of them that names it decides,
 except db_config.php, which the backout put back from pre-upgrade-db_config.php:
@@ -195,6 +196,9 @@ Options
 
 --help                       : print this information and exit
 --check                      : dry run: report what would change, change nothing
+--status                     : --check on a running host: step 1's idle checks are reported as
+                               [busy] instead of stopping the run, so an upgraded host can be
+                               checked for what is still open without stopping it
 --apply                      : make the changes (each changed file is backed up first)
 --yes                        : no longer needed: --apply makes the changes --check lists
                                without asking. Settings with no value to propose are reported
@@ -207,9 +211,20 @@ Options
                                or its cluster_config.php probe, deliberately: only --activate
                                does, once its env_script_lines are supplied and ssh to it
                                succeeds -- only the cluster can say what those are.
+--remove-retired             : remove the inactive cluster entries that are left over from Airavata or
+                               another scheduler, or were dropped from the --cluster-values file, and have
+                               no entry in global_config.php.template, with their probes from
+                               cluster_config.php. Without it they are only listed.
 --www path                   : web root (default $wwwpath)
 --web-user name              : account the web code runs as (default: the PHP-FPM pool user, else apache, else www-data)
 --env cluster=lines          : env_script_lines for a cluster ('' for none); sets or changes it; repeatable
+--cluster-values file        : take cluster settings from a private JSON file (root-owned, 0600):
+                               'clusters' holds the complete entry of each remote cluster and replaces
+                               the whole of it in global_config.php; 'local' holds only env_script_lines,
+                               maxtime, usemaxtime and tier of this host's own clusters. Never activates an
+                               entry. Reports name the keys that change, never their values. An entry
+                               that is not as the file last left it is not changed but reported as [input].
+--overwrite-edited cluster[,cluster] : with --cluster-values, overwrite these clusters' hand edits
 --local-cluster name         : cluster used for GUI requests naming 'localhost'; sets or changes it
 --site-admin-email address   : who receives the site's submission-failure and outage notices
                                (\$global_site_admin_email); sets or changes it. Needed when listen-config.php
@@ -233,7 +248,8 @@ Options
                                turns on its cluster_config.php probe, together, once its env_script_lines
                                are real and ssh to it succeeds. Still 'http', already active, no usable
                                env_script_lines, or ssh failing are each reported and nothing is changed
-                               for that entry.
+                               for that entry. Every instance whose own cluster_config.php still hides the
+                               cluster from its submission page is reported; that list is not changed.
                                --activate checks ssh before step 4 (above, in the numbered steps), which
                                records the host key (and, for the host's own cluster, authorizes the
                                key). So the first --apply --activate for a cluster records its host
@@ -277,7 +293,11 @@ $local_cluster = null;
 $single_tenant = null;
 $site_admin_email = null;
 $convert_http  = false;
+$status_mode   = false;
+$remove_retired = false;
 $activate_want = [];
+$cluster_values_file = null;
+$overwrite_edited    = [];   ## --cluster-values: clusters whose hand edits it may overwrite
 $advisory_source     = null;
 $advisory_off        = false;
 $prediction_clusters = [];
@@ -313,6 +333,9 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             ## The default already, but an operator has to be able to ask for it:
             ## a bare invocation prints the help rather than running anything.
             break;
+        case "--status":
+            $status_mode = true;
+            break;
         case "--apply":
             $apply = true;
             break;
@@ -324,6 +347,9 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
             break;
         case "--convert-http":
             $convert_http = true;
+            break;
+        case "--remove-retired":
+            $remove_retired = true;
             break;
         case "--www":
             $wwwpath = rtrim( opt_value( $u_argv, $opt ), '/' );
@@ -347,6 +373,19 @@ while ( count( $u_argv ) && substr( $u_argv[ 0 ], 0, 1 ) == "-" ) {
                 error_exit( "--env needs a cluster name before the '='" );
             }
             $env_values[ $k ] = $v;
+            break;
+        case "--cluster-values":
+            $cluster_values_file = opt_value( $u_argv, $opt );
+            if ( $cluster_values_file === '' ) {
+                error_exit( "--cluster-values needs a file" );
+            }
+            break;
+        case "--overwrite-edited":
+            $names = array_filter( array_map( 'trim', explode( ',', (string) opt_value( $u_argv, $opt ) ) ), 'strlen' );
+            if ( !$names ) {
+                error_exit( "--overwrite-edited needs at least one cluster name" );
+            }
+            $overwrite_edited = array_merge( $overwrite_edited, array_values( $names ) );
             break;
         case "--local-cluster":
             $local_cluster = opt_value( $u_argv, $opt );
@@ -420,8 +459,33 @@ if ( count( $u_argv ) ) {
     error_exit( $notes );
 }
 
+if ( $status_mode && $apply ) {
+    error_exit( "--status only reports; it cannot be combined with --apply" );
+}
+
 if ( !is_admin() ) {
     error_exit( "you must be root to run $self" );
+}
+
+$cluster_values = [ 'clusters' => [], 'local' => [] ];
+if ( $overwrite_edited && $cluster_values_file === null ) {
+    error_exit( "--overwrite-edited needs --cluster-values" );
+}
+if ( $cluster_values_file !== null ) {
+    $cluster_values = cluster_values_load( $cluster_values_file, $values_errors );
+    foreach ( array_keys( $env_values ) as $name ) {
+        if ( isset( $cluster_values[ 'clusters' ][ $name ] ) || isset( $cluster_values[ 'local' ][ $name ] ) ) {
+            $values_errors[] = "--env $name: the file already sets its env_script_lines";
+        }
+    }
+    foreach ( $values_errors ? [] : $overwrite_edited as $name ) {
+        if ( !isset( $cluster_values[ 'clusters' ][ $name ] ) && !isset( $cluster_values[ 'local' ][ $name ] ) ) {
+            $values_errors[] = "--overwrite-edited $name: the file has no such cluster";
+        }
+    }
+    if ( $values_errors ) {
+        error_exit( "$cluster_values_file was not used:\n  " . implode( "\n  ", $values_errors ) );
+    }
 }
 
 ## --apply first runs the same checks without --apply and refuses, before any change, while an
@@ -488,7 +552,83 @@ $declined    = 0;
 ## so a dry run still creates nothing.
 $backup_prefix = "$us3_home/lims/etc/uslims_upgrade-backup";
 
+## Every --apply keeps its full report, check pass included, in its backup directory, named
+## report-<time>-pid<pid>.log after that directory so a copy taken elsewhere still names its run.
+if ( $apply ) {
+    $apply_log_path = ensure_backup_dir() . '/report-'
+                    . substr( basename( $util_backup_dir ), strlen( basename( $backup_prefix ) ) + 1 ) . '.log';
+    ## Created 0600, not chmod'ed after: the backup directory is world-readable.
+    $old_umask = umask( 077 );
+    $apply_log = @fopen( $apply_log_path, 'x' );
+    umask( $old_umask );
+    if ( $apply_log === false ) {
+        error_exit( "could not create $apply_log_path; nothing was changed" );
+    }
+    ## Owned by the operator who ran sudo, so they can read it without sudo.
+    $operator = getenv( 'SUDO_USER' );
+    if ( $operator !== false && $operator !== '' && posix_getpwnam( $operator ) ) {
+        @chown( $apply_log_path, $operator );
+    }
+    $util_error_log = $apply_log;
+    fwrite( $apply_log, apply_log_header( $argv ) );
+    if ( isset( $check ) ) {
+        fwrite( $apply_log, "\n---- check pass ----\n" . $check[ 0 ] . "\n"
+                            . ( $check[ 1 ] !== '' ? $check[ 1 ] . "\n" : '' ) . "---- apply ----\n" );
+    }
+    ob_start( function ( $buffer ) use ( $apply_log ) {
+        fwrite( $apply_log, $buffer );
+        return $buffer;
+    }, 1 );
+    register_shutdown_function( 'apply_log_close' );
+}
+
 ## ------------------------------------------------------------- helpers
+
+## When, where, how and with what software this --apply ran.
+function apply_log_header( array $argv ) {
+    $os = @parse_ini_file( '/etc/os-release' );
+    $first_line = function ( $cmd ) {
+        $out = trim( (string) shell_exec( "$cmd 2>/dev/null" ) );
+        return $out === '' ? 'not found' : strtok( $out, "\n" );
+    };
+    return "uslims_upgrade.php --apply\n"
+         . 'started:  ' . gmdate( 'Y-m-d H:i:s' ) . " UTC\n"
+         . 'host:     ' . php_uname( 'n' ) . "\n"
+         . 'operator: ' . ( getenv( 'SUDO_USER' ) ?: ( posix_getpwuid( posix_geteuid() )['name'] ?? '?' ) ) . "\n"
+         . 'command:  ' . implode( ' ', array_map( 'escapeshellarg', $argv ) ) . "\n"
+         . 'backups:  ' . $GLOBALS[ 'util_backup_dir' ] . "\n"
+         . 'os:       ' . ( $os[ 'PRETTY_NAME' ] ?? php_uname( 's' ) ) . ', kernel ' . php_uname( 'r' ) . "\n"
+         . 'php:      ' . PHP_VERSION . "\n"
+         . 'mariadb:  ' . $first_line( 'mysql --version' ) . "\n"
+         . 'apache:   ' . $first_line( '( httpd -v || apache2 -v ) | head -1' ) . "\n"
+         . 'slurm:    ' . $first_line( 'sinfo --version' ) . "\n";
+}
+
+## A line for the log only, such as an answer typed at a prompt, which readline does not echo through PHP.
+function apply_log_line( $line ) {
+    global $apply_log;
+    if ( isset( $apply_log ) && is_resource( $apply_log ) ) {
+        fwrite( $apply_log, "$line\n" );
+    }
+}
+
+## Flushes the output into the log and records how the run ended, including an error_exit() or a fatal error.
+function apply_log_close() {
+    global $apply_log, $apply_exit_code;
+    while ( ob_get_level() ) {
+        ob_end_flush();
+    }
+    if ( !is_resource( $apply_log ) ) {
+        return;
+    }
+    $error = error_get_last();
+    if ( $error && in_array( $error[ 'type' ], [ E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR ], true ) ) {
+        fwrite( $apply_log, "PHP fatal error: {$error['message']} in {$error['file']}:{$error['line']}\n" );
+    }
+    fwrite( $apply_log, "\nended:    " . gmdate( 'Y-m-d H:i:s' ) . " UTC, exit "
+                        . ( isset( $apply_exit_code ) ? $apply_exit_code : '255 (stopped before the end)' ) . "\n" );
+    fclose( $apply_log );
+}
 
 function step( $title ) {
     echo "\n";
@@ -510,6 +650,12 @@ function report( $status, $msg ) {
         $needs_input++;
     }
     printf( "  [%-5s] %s\n", $status, $msg );
+}
+
+## A step 1 FAIL that only says the host is in use: under --status a running host is expected.
+function report_in_use( $msg ) {
+    global $status_mode;
+    report( !empty( $status_mode ) ? 'busy' : 'FAIL', $msg );
 }
 
 ## An [input] that --apply asks for at a terminal ($asked_on_apply) is a todo in the check pass an
@@ -697,7 +843,7 @@ function backup_append_target( $path, $label ) {
 
     $dest = ensure_backup_dir() . '/' . $label;
 
-    return $append_backups[ $path ] = @copy( $path, $dest ) ? $dest : '';
+    return $append_backups[ $path ] = ( @copy( $path, $dest ) && chmod( $dest, 0600 ) ) ? $dest : '';
 }
 
 ## capture() and config_vars() now live in utility.php: migrate_people_audit_utc.php
@@ -732,6 +878,7 @@ function ask_yn( $question, $hint = 'rerun with --yes to accept' ) {
         }
         $answer = strtolower( trim( $answer ) );
         if ( $answer === 'y' || $answer === 'n' ) {
+            apply_log_line( "$question (y or n) : $answer" );
             return $answer === 'y';
         }
     }
@@ -1138,20 +1285,632 @@ function template_cluster( $name, &$why = null ) {
     return $entries[ $name ];
 }
 
+## The inactive 'http' entries --convert-http still has to convert: not active, and not one the
+## active-entry loop already deactivated and reported. Pure.
+function inactive_http_entries( array $clusters, array $active, array $handled ) {
+    $names = [];
+    foreach ( $clusters as $name => $c ) {
+        if ( is_array( $c ) && !isset( $active[ $name ] ) && !isset( $handled[ $name ] )
+             && strtolower( (string) ( $c[ 'submittype' ] ?? '' ) ) === 'http' ) {
+            $names[] = (string) $name;
+        }
+    }
+    return $names;
+}
+
+## The cluster_config.php probes that are on for a cluster whose global_config.php entry is,
+## or after this run will be, inactive. cluster_status.php probes whatever is on there,
+## so such a probe keeps reporting a cluster nobody can submit to. Pure.
+function probes_to_turn_off( array $probes, array $clusters, array $final_active ) {
+    $off = [];
+    foreach ( $probes as $name => $probe ) {
+        if ( is_array( $probe ) && !empty( $probe[ 'active' ] )
+             && is_array( $clusters[ $name ] ?? null ) && array_key_exists( 'active', $clusters[ $name ] )
+             && !isset( $final_active[ $name ] ) ) {
+            $off[] = (string) $name;
+        }
+    }
+    return $off;
+}
+
+## The gfac.cluster_status rows of clusters with no active probe once this run is done. Nothing
+## refreshes such a row, and dbinst logs a stale-row warning for it on every page load. Pure.
+function status_rows_to_drop( array $row_clusters, array $probes_after ) {
+    $drop = [];
+    foreach ( $row_clusters as $name ) {
+        if ( empty( $probes_after[ $name ][ 'active' ] ) ) {
+            $drop[] = (string) $name;
+        }
+    }
+    return $drop;
+}
+
+## Whether an entry reaches this host's Slurm: marked local, or its login host is one of $this_host.
+function entry_reaches_this_host( array $c, array $this_host ) {
+    if ( cluster_entry_is_local( $c[ 'localhost' ] ?? false ) ) {
+        return true;
+    }
+    $login = (string) ( $c[ 'login' ] ?? ( 'us3@' . ( $c[ 'name' ] ?? '' ) ) );
+    $at = strrpos( $login, '@' );
+    return in_array( strtolower( $at === false ? $login : substr( $login, $at + 1 ) ), $this_host, true );
+}
+
+## The active Slurm entries, other than pools, that reach this host. Pure.
+function this_host_cluster_entries( array $clusters, array $final_active, array $this_host ) {
+    $here = [];
+    foreach ( array_keys( $final_active ) as $name ) {
+        $c = $clusters[ $name ] ?? null;
+        if ( is_array( $c ) && !is_metascheduler_pool_entry( $c )
+             && strtolower( (string) ( $c[ 'submittype' ] ?? 'slurm' ) ) === 'slurm'
+             && entry_reaches_this_host( $c, $this_host ) ) {
+            $here[ (string) $name ] = $c;
+        }
+    }
+    return $here;
+}
+
+## Of this_host_cluster_entries(), those that go over ssh to this host for every submit and poll. Pure.
+function self_ssh_cluster_entries( array $here ) {
+    return array_keys( array_filter( $here, function ( $c ) {
+        return !cluster_entry_is_local( $c[ 'localhost' ] ?? false );
+    } ) );
+}
+
+## Groups of local entries with the same partition, eligibility and resource settings.
+## An unset queue uses the local default partition. Pure.
+function duplicate_cluster_entries( array $here, $default_partition ) {
+    $groups = [];
+    $resource_keys = array_flip( [ 'sbatch_directives', 'mempercore', 'account', 'qos', 'constraint',
+                                  'reservation', 'exclusive', 'sharing', 'ppn', 'ppbj', 'maxproc',
+                                  'fixed_capacity', 'single_node', 'maxtime', 'usemaxtime', 'pmg' ] );
+    foreach ( $here as $name => $c ) {
+        $queue = $c[ 'queue' ] ?? $default_partition;
+        $resources = array_intersect_key( $c, $resource_keys );
+        ksort( $resources );
+        $key = json_encode( [ $queue, cluster_entry_is_local( $c[ 'pmgonly' ] ?? false ), $resources ] );
+        $groups[ $key ][] = (string) $name;
+    }
+    return array_values( array_filter( $groups, function ( $g ) { return count( $g ) > 1; } ) );
+}
+
+## This host's default Slurm partition, or null when sinfo does not name one.
+function local_default_partition() {
+    list( $out, , $rc ) = capture( 'sinfo -h -o %P' );
+    foreach ( $rc === 0 ? explode( "\n", $out ) : [] as $line ) {
+        if ( substr( trim( $line ), -1 ) === '*' ) {
+            return substr( trim( $line ), 0, -1 );
+        }
+    }
+    return null;
+}
+
+## The cluster_config.php each LIMS instance's submission page reads, by instance: its own, else the
+## site's, else uslims3_newlims'. The first that exists is used and they are not merged. null when
+## there is none. Consistent with dbinst's lib/utility.php.
+function instance_cluster_lists( $wwwpath ) {
+    $lists = [];
+    foreach ( glob( "$wwwpath/uslims3/*/lib/utility.php" ) ?: [] as $utility ) {
+        $docroot  = dirname( dirname( $utility ) );
+        $instance = basename( $docroot );
+        if ( in_array( $instance, [ 'uslims3_newlims', 'uslims3_data' ], true ) ) {
+            continue;
+        }
+        $lists[ $instance ] = null;
+        foreach ( [ "$docroot/cluster_config.php", "$wwwpath/uslims3/cluster_config.php",
+                    "$wwwpath/uslims3/uslims3_newlims/cluster_config.php" ] as $file ) {
+            if ( is_file( $file ) ) {
+                $lists[ $instance ] = $file;
+                break;
+            }
+        }
+    }
+    return $lists;
+}
+
+## Which of $names each cluster_config.php keeps off the submission page, by file: [ file =>
+## [ 'instances' => [ ... ], 'names' => [ ... ] ] ]. $lists is instance_cluster_lists()' result and
+## $configs each file's $cluster_configuration, null when it could not be read. Pure.
+function clusters_hidden_by_lists( array $names, array $lists, array $configs ) {
+    $hidden = [];
+    foreach ( $lists as $instance => $file ) {
+        if ( $file === null || !is_array( $configs[ $file ] ?? null ) ) {
+            continue;
+        }
+        foreach ( $names as $name ) {
+            if ( empty( $configs[ $file ][ $name ][ 'active' ] ) ) {
+                $hidden[ $file ][ 'instances' ][ $instance ] = $instance;
+                $hidden[ $file ][ 'names' ][ $name ]         = $name;
+            }
+        }
+    }
+    return $hidden;
+}
+
+## The inactive entries left over from Airavata or another scheduler that $in_template says the
+## template does not have: nothing can convert them. A site's own Slurm entry is not one, nor is an
+## entry with no 'active' key, which the web code treats as active. $file_clusters is the
+## --cluster-values file's entries, or null on a run without it, when every entry it wrote counts
+## as still wanted. Pure.
+function retired_cluster_entries( array $clusters, array $final_active, callable $in_template, $file_clusters = null ) {
+    $retired = [];
+    foreach ( $clusters as $name => $c ) {
+        if ( !is_array( $c ) || isset( $final_active[ $name ] ) || !array_key_exists( 'active', $c ) ) {
+            continue;
+        }
+        $leftover = !empty( $c[ 'airavata' ] ) || strtolower( (string) ( $c[ 'submittype' ] ?? 'slurm' ) ) !== 'slurm';
+        $dropped  = $file_clusters !== null && !empty( $c[ 'from_cluster_values' ] ) && !isset( $file_clusters[ $name ] );
+        if ( ( $leftover || $dropped ) && !$in_template( (string) $name ) ) {
+            $retired[] = (string) $name;
+        }
+    }
+    return $retired;
+}
+
+## $text with the entries $names taken out of the array literal assigned to $var (each with
+## the comma that separates it from its neighbour), and every top-level "$var[ 'name' ]...;"
+## statement for them removed. When a replacement is given, replace the literal
+## value in place. $removed lists the names whose literal entry was found. Pure.
+function remove_array_entries( $text, $var, array $names, &$removed = null, array $replacements = [] ) {
+    $removed = [];
+    $tokens  = token_get_all( $text );
+    $count   = count( $tokens );
+    $want    = array_flip( $names );
+    $drop    = [];
+    $replace_at = [];
+    $tx      = function ( $i ) use ( $tokens ) { return is_array( $tokens[ $i ] ) ? $tokens[ $i ][ 1 ] : $tokens[ $i ]; };
+    $blank   = function ( $i ) use ( $tokens ) {
+        return is_array( $tokens[ $i ] ) && in_array( $tokens[ $i ][ 0 ], [ T_WHITESPACE, T_COMMENT, T_DOC_COMMENT ], true );
+    };
+    $next    = function ( $i ) use ( $count, $blank ) { for ( $i++; $i < $count && $blank( $i ); $i++ ); return $i; };
+    $prev    = function ( $i ) use ( $blank ) { for ( $i--; $i >= 0 && $blank( $i ); $i-- ); return $i; };
+    $closing = function ( $i ) use ( $count, $tx ) {
+        $depth = 0;
+        for ( ; $i < $count; $i++ ) {
+            $t = $tx( $i );
+            if ( $t === '[' || $t === '(' ) { $depth++; }
+            if ( $t === ']' || $t === ')' ) { if ( --$depth === 0 ) { return $i; } }
+        }
+        return null;
+    };
+    $name_at = function ( $i ) use ( $tokens ) {
+        return is_array( $tokens[ $i ] ) && $tokens[ $i ][ 0 ] === T_CONSTANT_ENCAPSED_STRING
+            ? stripcslashes( substr( $tokens[ $i ][ 1 ], 1, -1 ) ) : null;
+    };
+    $depth = 0;
+    for ( $i = 0; $i < $count; $i++ ) {
+        $t = $tx( $i );
+        if ( $t === '[' || $t === '(' ) { $depth++; continue; }
+        if ( $t === ']' || $t === ')' ) { $depth--; continue; }
+        if ( $depth !== 0 || !is_array( $tokens[ $i ] ) || $tokens[ $i ][ 0 ] !== T_VARIABLE || $t !== "\$$var" ) {
+            continue;
+        }
+        $j = $next( $i );
+        if ( $j < $count && $tx( $j ) === '=' ) {
+            ## The literal itself: drop the named top-level entries.
+            $open = $next( $j );
+            if ( $open >= $count || !in_array( $tx( $open ), [ '[', 'array' ], true ) ) { continue; }
+            if ( $tx( $open ) === 'array' ) { $open = $next( $open ); }
+            $close = $closing( $open );
+            if ( $close === null ) { continue; }
+            $inner = 0;
+            $kept  = false;   ## an earlier entry stays, so a removed one takes the comma before it
+            for ( $k = $open + 1; $k < $close; $k++ ) {
+                $u = $tx( $k );
+                if ( $u === '[' || $u === '(' ) { $inner++; continue; }
+                if ( $u === ']' || $u === ')' ) { $inner--; continue; }
+                $key = $inner === 0 ? $name_at( $k ) : null;
+                if ( $key === null ) { continue; }
+                $arrow = $next( $k );
+                if ( $arrow >= $close || !is_array( $tokens[ $arrow ] ) || $tokens[ $arrow ][ 0 ] !== T_DOUBLE_ARROW ) { continue; }
+                if ( !isset( $want[ $key ] ) ) { $kept = true; continue; }
+                $value = $next( $arrow );
+                if ( $tx( $value ) === 'array' ) { $value = $next( $value ); }
+                $end = in_array( $tx( $value ), [ '[', '(' ], true ) ? $closing( $value ) : null;
+                if ( $end === null ) { $kept = true; continue; }
+                if ( array_key_exists( $key, $replacements ) ) {
+                    $start = $next( $arrow );
+                    $replace_at[ $start ] = php_value( $replacements[ $key ] );
+                    for ( $d = $start + 1; $d <= $end; $d++ ) { $drop[ $d ] = true; }
+                    $removed[] = $key;
+                    $kept = true;
+                    $k = $end;
+                    continue;
+                }
+                $before = $prev( $k );
+                if ( $kept && $tx( $before ) === ',' ) {
+                    $from = $before;
+                } else {
+                    $from  = $k;
+                    $after = $next( $end );
+                    if ( $after < $close && $tx( $after ) === ',' ) { $end = $after; }
+                }
+                for ( $d = $from; $d <= $end; $d++ ) { $drop[ $d ] = true; }
+                $removed[] = $key;
+                $k = $end;
+            }
+            $i = $close;
+            continue;
+        }
+        if ( $j < $count && $tx( $j ) === '[' ) {
+            ## A later "$var[ 'name' ]... = ...;" for a removed entry: a whole statement, not a read of it
+            ## or the body of an if without braces.
+            $key = $name_at( $next( $j ) );
+            if ( $key === null || !isset( $want[ $key ] ) ) { continue; }
+            $before = $prev( $i );
+            $starts = $before < 0 || in_array( $tx( $before ), [ ';', '{', '}' ], true )
+                      || ( is_array( $tokens[ $before ] ) && $tokens[ $before ][ 0 ] === T_OPEN_TAG );
+            for ( $after = $j; $after < $count && $tx( $after ) === '['; $after = $next( $closing( $after ) ) );
+            if ( !$starts || $after >= $count || $tx( $after ) !== '=' ) { continue; }
+            $end = $i;
+            for ( $level = 0; $end < $count; $end++ ) {
+                $u = $tx( $end );
+                if ( $u === '[' || $u === '(' ) { $level++; }
+                if ( $u === ']' || $u === ')' ) { $level--; }
+                if ( $u === ';' && $level === 0 ) { break; }
+            }
+            if ( $end + 1 < $count && is_array( $tokens[ $end + 1 ] ) && $tokens[ $end + 1 ][ 0 ] === T_WHITESPACE ) {
+                $end++;
+            }
+            for ( $d = $i; $d <= $end; $d++ ) { $drop[ $d ] = true; }
+            $i = $end;
+        }
+    }
+    $out = '';
+    for ( $i = 0; $i < $count; $i++ ) {
+        if ( !isset( $drop[ $i ] ) ) { $out .= $replace_at[ $i ] ?? $tx( $i ); }
+    }
+    $removed = array_values( array_unique( $removed ) );
+    return $out;
+}
+
+## The keys a --cluster-values entry may hold and the check each value passes. 'active' and
+## 'prediction_cluster_name' are the host's own and never come from the file.
+function cluster_value_rules() {
+    $match    = function ( $re ) { return function ( $v ) use ( $re ) { return is_string( $v ) && preg_match( $re, $v ) === 1; }; };
+    $int_from = function ( $min ) { return function ( $v ) use ( $min ) { return is_int( $v ) && $v >= $min; }; };
+    $word     = $match( '/^[A-Za-z0-9][A-Za-z0-9_.:-]*\z/' );
+    $list     = function ( $v ) {
+        return is_array( $v ) && array_keys( $v ) === array_keys( array_keys( $v ) )
+               && count( array_filter( $v, 'is_string' ) ) === count( $v );
+    };
+    $env      = function ( $v ) {
+        return is_string( $v ) && strpbrk( $v, "\r\0" ) === false;
+    };
+    ## The limits are common's remote_exec's, which refuses anything else.
+    $overrides = function ( $v ) {
+        $limits = [ 'connect_timeout_seconds' => 300, 'command_timeout_seconds' => 3600, 'copy_timeout_seconds' => 86400 ];
+        return is_array( $v ) && $v && !array_filter( array_keys( $v ), function ( $key ) use ( $v, $limits ) {
+            return !isset( $limits[ $key ] ) || !is_int( $v[ $key ] ) || $v[ $key ] < 1 || $v[ $key ] > $limits[ $key ];
+        } );
+    };
+    $number   = function ( $v ) { return ( is_int( $v ) || is_float( $v ) ) && $v > 0; };
+    return [
+        'name'                   => $match( '/^[A-Za-z0-9][A-Za-z0-9.-]*\z/' ),
+        'login'                  => $match( '/^[A-Za-z_][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9.-]*\z/' ),
+        'workdir'                => function ( $v ) {
+            return is_string( $v ) && preg_match( '#^/[A-Za-z0-9._/-]+\z#', $v ) && !preg_match( '#(^|/)\.\.(/|\z)#', $v );
+        },
+        'sshport'                => function ( $v ) { return is_int( $v ) && $v >= 1 && $v <= 65535; },
+        'queue'                  => $word,
+        'maxtime'                => $int_from( 0 ),
+        'ppn'                    => $int_from( 1 ),
+        'ppbj'                   => $int_from( 1 ),
+        'maxproc'                => $int_from( 1 ),
+        'env_script_lines'       => $env,
+        'mpi_launcher'           => $match( '/^(mpirun|srun|ibrun)\z/' ),
+        'ssh_host_key_policy'    => $match( '/^yes\z/' ),
+        'sbatch_directives'      => $list,
+        'account'                => $word,
+        'qos'                    => $word,
+        'constraint'             => $word,
+        'reservation'            => $word,
+        'sharing'                => $match( '/^(shared|exclusive)\z/' ),
+        'tier'                   => $match( '/^(local|national)\z/' ),
+        'controller'             => $word,
+        'exclusive'              => 'is_bool',
+        'usemaxtime'             => 'is_bool',
+        'single_node'            => 'is_bool',
+        'fixed_capacity'         => 'is_bool',
+        'pmg'                    => 'is_bool',
+        'pmgonly'                => 'is_bool',
+        'wall_override'          => $int_from( 1 ),
+        'mempercore'             => $int_from( 1 ),
+        'procs_per_mgroup'       => $int_from( 1 ),
+        'sbatch_timeout_seconds' => $int_from( 1 ),
+        'cg_time_multiplier'     => $number,
+        'remote_exec_overrides'  => $overrides,
+    ];
+}
+
+## What is wrong with a decoded --cluster-values document; empty when it can be used. Names the
+## entry and key only: the values are private and these lines reach logs. Pure.
+function cluster_values_errors( $doc ) {
+    if ( !is_array( $doc ) || !$doc ) {
+        return [ "it is not a JSON object with 'clusters' and/or 'local'" ];
+    }
+    $errors   = [];
+    $rules    = cluster_value_rules();
+    $sections = [
+        'clusters' => [ array_keys( $rules ), [ 'name', 'login', 'workdir', 'sshport', 'queue', 'maxtime', 'ppn', 'ppbj',
+                                                'maxproc', 'env_script_lines' ] ],
+        'local'    => [ array_keys( local_values_settings( $rules ) ), [ 'env_script_lines' ] ],
+    ];
+    foreach ( array_diff( array_keys( $doc ), array_keys( $sections ) ) as $other ) {
+        $errors[] = "unknown section '$other'";
+    }
+    foreach ( $sections as $section => list( $allowed, $required ) ) {
+        $entries = array_key_exists( $section, $doc ) ? $doc[ $section ] : [];
+        if ( !is_array( $entries ) ) {
+            $errors[] = "'$section' is not an object";
+            continue;
+        }
+        foreach ( $entries as $name => $entry ) {
+            if ( !preg_match( '/^[A-Za-z][A-Za-z0-9_.-]*\z/', (string) $name ) ) {
+                $errors[] = "$section has an entry whose name is not a cluster name";
+                continue;
+            }
+            if ( !is_array( $entry ) ) {
+                $errors[] = "$section.$name is not an object";
+                continue;
+            }
+            foreach ( array_diff( $required, array_keys( $entry ) ) as $key ) {
+                $errors[] = "$section.$name has no $key";
+            }
+            foreach ( $entry as $key => $value ) {
+                if ( !in_array( $key, $allowed, true ) ) {
+                    $errors[] = "$section.$name: '$key' cannot be set here";
+                } elseif ( placeholder_value( $value ) || !call_user_func( $rules[ $key ], $value ) ) {
+                    $errors[] = "$section.$name: $key has a value that is not allowed";
+                }
+            }
+            if ( !empty( $entry[ 'single_node' ] ) && is_int( $entry[ 'maxproc' ] ?? null ) && is_int( $entry[ 'ppn' ] ?? null )
+                 && $entry[ 'maxproc' ] > $entry[ 'ppn' ] ) {
+                $errors[] = "$section.$name is single_node with maxproc over ppn";
+            }
+            if ( !empty( $entry[ 'pmgonly' ] ) && empty( $entry[ 'pmg' ] ) ) {
+                $errors[] = "$section.$name is pmgonly without pmg";
+            }
+        }
+    }
+    foreach ( array_intersect_key( is_array( $doc[ 'clusters' ] ?? null ) ? $doc[ 'clusters' ] : [],
+                                   is_array( $doc[ 'local' ] ?? null ) ? $doc[ 'local' ] : [] ) as $name => $unused ) {
+        $errors[] = "$name is in both clusters and local";
+    }
+    return $errors;
+}
+
+## The --cluster-values file as [ 'clusters' => ..., 'local' => ... ], with $errors saying why it
+## cannot be used. $owner is the only account that may own it.
+function cluster_values_load( $path, &$errors = null, $owner = 0 ) {
+    $errors = [];
+    $none   = [ 'clusters' => [], 'local' => [] ];
+    if ( is_link( $path ) || !is_file( $path ) ) {
+        $errors[] = 'it is not a regular file';
+        return $none;
+    }
+    if ( fileowner( $path ) !== $owner || ( fileperms( $path ) & 0077 ) !== 0 ) {
+        $errors[] = 'it must be owned by root and readable by root only (chmod 0600)';
+        return $none;
+    }
+    $doc    = json_decode( (string) file_get_contents( $path ), true );
+    $errors = json_last_error() !== JSON_ERROR_NONE ? [ 'it is not valid JSON: ' . json_last_error_msg() ]
+                                                   : cluster_values_errors( $doc );
+    return $errors ? $none : $doc + $none;
+}
+
+## A remote entry as written: the file's, plus what the host itself decides. An entry that was not
+## already a Slurm one stays off, as with --convert-http. Pure.
+function cluster_values_entry( array $want, $have ) {
+    $have  = is_array( $have ) ? $have : [];
+    $slurm = strtolower( (string) ( $have[ 'submittype' ] ?? 'slurm' ) ) === 'slurm';
+    ## from_cluster_values: --remove-retired leaves it alone on a run without the file, and a later
+    ## run with the file sees a hand edit by it.
+    $entry = [ 'active' => $slurm && !empty( $have[ 'active' ] ),
+               'from_cluster_values' => cluster_values_fingerprint( $want ) ] + $want;
+    if ( isset( $have[ 'prediction_cluster_name' ] ) ) {
+        $entry[ 'prediction_cluster_name' ] = $have[ 'prediction_cluster_name' ];
+    }
+    return $entry;
+}
+
+## What an entry's settings are recognized by, without the keys the host decides. Pure.
+function cluster_values_fingerprint( array $entry ) {
+    unset( $entry[ 'active' ], $entry[ 'prediction_cluster_name' ], $entry[ 'from_cluster_values' ] );
+    ksort( $entry );
+    return hash( 'sha256', serialize( $entry ) );
+}
+
+## The keys of a remote entry the file would change although the entry is not as the file last
+## left it, so someone may have set them by hand. A missing entry, or an Airavata one, has nothing
+## of the site's to lose. Pure.
+function cluster_edited_keys( $have, array $want ) {
+    if ( !is_array( $have ) || strtolower( (string) ( $have[ 'submittype' ] ?? 'slurm' ) ) !== 'slurm'
+         || ( $have[ 'from_cluster_values' ] ?? null ) === cluster_values_fingerprint( $have ) ) {
+        return [];
+    }
+    $host = [ 'active' => 1, 'prediction_cluster_name' => 1, 'from_cluster_values' => 1 ];
+    return cluster_entry_changes( array_diff_key( $have, $host ), $want );
+}
+
+## The settings of a local entry that the file may hold. Pure.
+function local_values_settings( array $entry ) {
+    return array_intersect_key( $entry, [ 'env_script_lines' => 1, 'maxtime' => 1, 'usemaxtime' => 1, 'tier' => 1 ] );
+}
+
+## A local entry with the file's settings and their fingerprint. Pure.
+function local_values_entry( array $have, array $want ) {
+    $entry = $want + $have;
+    $entry[ 'local_cluster_values' ] = cluster_values_fingerprint( local_values_settings( $entry ) );
+    return $entry;
+}
+
+## As cluster_edited_keys(), for a local entry: a setting it lacks is not an edit. Pure.
+function local_edited_keys( array $have, array $want ) {
+    $now = local_values_settings( $have );
+    if ( ( $have[ 'local_cluster_values' ] ?? null ) === cluster_values_fingerprint( $now ) ) {
+        return [];
+    }
+    return array_keys( array_filter( $now, function ( $v, $k ) use ( $want ) {
+        return array_key_exists( $k, $want ) && $want[ $k ] !== $v;
+    }, ARRAY_FILTER_USE_BOTH ) );
+}
+
+## The keys whose values differ between two entries, in either direction. Pure.
+function cluster_entry_changes( $have, array $want ) {
+    $have    = is_array( $have ) ? $have : [];
+    $changed = [];
+    foreach ( array_keys( $have + $want ) as $key ) {
+        if ( !array_key_exists( $key, $have ) || !array_key_exists( $key, $want )
+             || json_encode( $have[ $key ] ) !== json_encode( $want[ $key ] ) ) {
+            $changed[] = (string) $key;
+        }
+    }
+    return $changed;
+}
+
+## $text with $managed merged into its managed block, which goes at the end: a new value replaces
+## the earlier line for the same setting. Pure.
+function managed_block_text( $text, array $managed ) {
+    $begin    = "## BEGIN uslims_upgrade.php settings (rerun the script rather than editing by hand)";
+    $end      = "## END uslims_upgrade.php settings";
+    $settings = [];
+    if ( preg_match( '/' . preg_quote( $begin, '/' ) . '\n(.*?)' . preg_quote( $end, '/' ) . '\n?/s', $text, $m ) ) {
+        $settings = block_settings( $m[ 1 ] );
+        $text     = str_replace( $m[ 0 ], '', $text );
+    }
+    $settings = array_merge( $settings, block_settings( implode( "\n", $managed ) ) );
+    $stripped = preg_replace( '/\?>\s*$/', '', rtrim( $text ) );
+    if ( $stripped === null ) {
+        error_exit( "could not rewrite the settings block: preg error " . preg_last_error() );
+    }
+    return $stripped . "\n\n$begin\n" . implode( "\n", $settings ) . "\n$end\n";
+}
+
+## $text with each of $entries replacing everything it holds for that cluster: the literal entry
+## and every later line, so no older setting shows through. Pure.
+function replace_cluster_entries( $text, array $entries ) {
+    $lines = [];
+    foreach ( $entries as $name => $entry ) {
+        $lines[] = '$cluster_details[ ' . var_export( (string) $name, true ) . ' ] = ' . php_value( $entry ) . ';';
+    }
+    return managed_block_text( remove_array_entries( $text, 'cluster_details', array_map( 'strval', array_keys( $entries ) ) ), $lines );
+}
+
+## The variables a config file's $text defines, read from a temporary copy with __DIR__ and
+## __FILE__ standing for $file, so an include beside it still resolves.
+function config_text_vars( $file, $text, &$why = null ) {
+    $copy = '';
+    foreach ( token_get_all( $text ) as $token ) {
+        $id    = is_array( $token ) ? $token[ 0 ] : null;
+        $copy .= $id === T_DIR ? var_export( dirname( $file ), true )
+               : ( $id === T_FILE ? var_export( $file, true ) : ( is_array( $token ) ? $token[ 1 ] : $token ) );
+    }
+    $tmp = tempnam( sys_get_temp_dir(), 'us3up' );
+    if ( $tmp === false || file_put_contents( $tmp, $copy ) === false ) {
+        $why = 'no temporary copy could be written';
+        return null;
+    }
+    $vars = config_vars( $tmp, $why );
+    @unlink( $tmp );
+    return $vars;
+}
+
+## Why $new must not replace $old in $file: loaded, it has to define the same variables, with $var
+## holding exactly $expected. Empty when it may.
+function rewrite_problem( $file, $old, $new, $var, array $expected ) {
+    $before = config_text_vars( $file, $old, $why );
+    $after  = config_text_vars( $file, $new, $why_new );
+    if ( !is_array( $before ) || !is_array( $after ) ) {
+        return 'it could not be loaded: ' . reason( is_array( $before ) ? $why_new : $why );
+    }
+    $before[ $var ] = $expected;
+    $differ = [];
+    foreach ( array_keys( $before + $after ) as $name ) {
+        if ( json_encode( $before[ $name ] ?? null ) !== json_encode( $after[ $name ] ?? null ) ) {
+            $differ[] = "\$$name";
+        }
+    }
+    return $differ ? 'it would not leave ' . implode( ', ', $differ ) . ' as intended' : '';
+}
+
+## Keep the active flag in the editable entry. Rewrite validation rejects configs
+## whose probe values cannot be represented by these literal entries.
+function rewrite_probe_entries( $text, array $probes, array $names ) {
+    return remove_array_entries( $text, 'cluster_configuration', $names, $found,
+                                 array_intersect_key( $probes, array_flip( $names ) ) );
+}
+
+## The names a cluster entry on this host may use for it.
+function this_host_names( $node ) {
+    $node = strtolower( $node );
+    return [ 'localhost', '127.0.0.1', '::1', $node, explode( '.', $node )[ 0 ] ];
+}
+
+## Entries of a --cluster-values file that are in the wrong section for this host. Pure.
+function cluster_values_misplaced( array $values, array $clusters, $host_cluster, array $this_host ) {
+    $errors = [];
+    foreach ( $values[ 'clusters' ] as $name => $entry ) {
+        $have = $clusters[ $name ] ?? null;
+        if ( is_metascheduler_pool_entry( $have ) ) {
+            $errors[] = "$name is a metascheduler pool on this host, not a cluster";
+        } elseif ( (string) $name === (string) $host_cluster || entry_reaches_this_host( $entry, $this_host )
+             || ( is_array( $have ) && !empty( $have[ 'active' ] ) && entry_reaches_this_host( $have, $this_host ) ) ) {
+            $errors[] = "$name is this host's own cluster: its env_script_lines, maxtime, usemaxtime and tier go in 'local'";
+        }
+    }
+    foreach ( $values[ 'local' ] as $name => $entry ) {
+        if ( !is_array( $clusters[ $name ] ?? null ) ) {
+            $errors[] = "$name is in 'local' but has no entry in global_config.php";
+        } elseif ( (string) $name !== (string) $host_cluster && !entry_reaches_this_host( $clusters[ $name ], $this_host ) ) {
+            $errors[] = "$name is in 'local' but is not this host's own cluster; its complete entry goes in 'clusters'";
+        }
+    }
+    return $errors;
+}
+
+## Whether a config value is one of the template's placeholders.
+function placeholder_value( $value ) {
+    if ( is_array( $value ) ) {
+        return count( array_filter( $value, 'placeholder_value' ) ) > 0;
+    }
+    return is_string( $value ) && preg_match( '/\bTODO\b/', $value ) === 1;
+}
+
+## The template's values conversion writes over a host's entry: those that differ, except 'active',
+## which conversion never sets, and a placeholder where the host has its own value. Pure.
+function conversion_values( array $want, array $have ) {
+    $values = [];
+    foreach ( $want as $key => $value ) {
+        $own = $have[ $key ] ?? null;
+        if ( $key === 'active' || ( array_key_exists( $key, $have ) && $own === $value )
+             || ( placeholder_value( $value ) && is_string( $own ) && trim( $own ) !== '' ) ) {
+            continue;
+        }
+        $values[ $key ] = $value;
+    }
+    return $values;
+}
+
 ## What still stands between a converted entry and activation. env_script_lines is
 ## the one the cluster alone can answer: the template carries a TODO for the clusters
 ## whose module names were never confirmed.
 function conversion_blockers( $want, $have ) {
     $blockers = [];
-    $env      = (string) ( $want[ 'env_script_lines' ] ?? ( $have[ 'env_script_lines' ] ?? '' ) );
+    $final    = conversion_values( $want, (array) $have ) + (array) $have;
+    $env      = (string) ( $final[ 'env_script_lines' ] ?? '' );
     if ( trim( $env ) === '' ) {
         $blockers[] = "env_script_lines is empty, so no modules would be loaded";
-    } elseif ( stripos( $env, 'TODO' ) !== false ) {
+    } elseif ( placeholder_value( $env ) ) {
         $blockers[] = "env_script_lines still carries the template's TODO; ask the cluster"
                       . " for its module lines";
     }
-    if ( trim( (string) ( $want[ 'login' ] ?? ( $have[ 'login' ] ?? '' ) ) ) === '' ) {
+    if ( trim( (string) ( $final[ 'login' ] ?? '' ) ) === '' ) {
         $blockers[] = "no login account";
+    }
+    foreach ( [ 'login', 'workdir' ] as $key ) {
+        if ( placeholder_value( $final[ $key ] ?? '' ) ) {
+            $blockers[] = "$key still carries the template's TODO";
+        }
     }
     $blockers[] = "SSH keys and an account on the cluster stay an operator step";
     return $blockers;
@@ -1281,18 +2040,24 @@ function cluster_env_script_lines( $name, $host_cluster, $lines ) {
 function block_settings( $block ) {
     $settings = [];
     $current  = '';
+    $target   = '';   ## without whitespace, comments or a choice of quotes
+    $assigned = false;
     foreach ( token_get_all( "<?php\n$block" ) as $token ) {
         if ( is_array( $token ) && $token[ 0 ] === T_OPEN_TAG ) {
             continue;
         }
         $text = is_array( $token ) ? $token[ 1 ] : $token;
         if ( $text === ';' ) {
-            $statement = trim( $current ) . ';';
-            $target    = preg_replace( '/\s+/', '', strstr( $statement, '=', true ) );
-            $settings[ $target ] = $statement;
-            $current = '';
+            $settings[ $target ] = trim( $current ) . ';';
+            $current  = '';
+            $target   = '';
+            $assigned = false;
         } else {
             $current .= $text;
+            $assigned = $assigned || $text === '=';
+            if ( !$assigned && !( is_array( $token ) && in_array( $token[ 0 ], [ T_WHITESPACE, T_COMMENT, T_DOC_COMMENT ], true ) ) ) {
+                $target .= str_replace( '"', "'", $text );
+            }
         }
     }
     return $settings;
@@ -1468,6 +2233,12 @@ function reason( $text ) {
     return $text === '' ? '' : ( strlen( $text ) > 200 ? substr( $text, 0, 197 ) . '...' : $text );
 }
 
+## reason() for an ssh failure: ssh names the account it tried, which stays out of the report. Pure.
+function ssh_reason( $text, $login ) {
+    $account = explode( '@', (string) $login )[ 0 ];
+    return reason( str_replace( [ (string) $login, "$account@", " for $account" ], [ 'its login', '', ' for its login' ], (string) $text ) );
+}
+
 ## ------------------------------------------------------------- 0. stack code
 
 ## Every later step assumes the new code is already deployed: step 2 carries the
@@ -1486,6 +2257,21 @@ function repo_version( $dir ) {
     }
     $text = trim( (string) @file_get_contents( $file ) );
     return $text === '' ? null : $text;
+}
+
+## " (<commit>)", or " (<commit>, modified)" when tracked files differ from it: on a dev host
+## every checkout's VERSION reads the same, so the commit is what identifies the code.
+function repo_commit( $dir ) {
+    ## --no-optional-locks: run as root, a plain status could rewrite a us3 checkout's index.
+    $git    = 'git --no-optional-locks -c core.fsmonitor=false -c safe.directory=* -C ' . escapeshellarg( $dir );
+    ## An instance copied into webinfo's tree would otherwise report webinfo's commit.
+    $top    = trim( (string) shell_exec( "$git rev-parse --show-toplevel 2>/dev/null" ) );
+    if ( $top === '' || realpath( $top ) !== realpath( $dir ) ) {
+        return ' (not a git checkout)';
+    }
+    $commit   = trim( (string) shell_exec( "$git rev-parse --short HEAD 2>/dev/null" ) );
+    $modified = trim( (string) shell_exec( "$git status --porcelain --untracked-files=no 2>/dev/null" ) ) !== '';
+    return " ($commit" . ( $modified ? ', modified' : '' ) . ')';
 }
 
 ## "4.3.0-dev" is the 4.3.0 contract, but version_compare() ranks a -dev suffix
@@ -1559,14 +2345,15 @@ function stale_checkout_remedy( array $dirs, $db_config ) {
 $stale = [];
 foreach ( $stack as $label => $dir ) {
     $version = repo_version( $dir );
+    $commit  = repo_commit( $dir );
     if ( $version === null ) {
         report( 'FAIL', "$label ($dir) has no readable VERSION; cannot tell which release is deployed" );
         $stale[] = $label;
     } elseif ( !version_at_least( $version, $required_version ) ) {
-        report( 'FAIL', "$label ($dir) is $version" );
+        report( 'FAIL', "$label ($dir) is $version$commit" );
         $stale[] = $label;
     } else {
-        report( 'ok', "$label is $version" );
+        report( 'ok', "$label is $version$commit" );
     }
 }
 if ( $stale ) {
@@ -1728,7 +2515,7 @@ if ( $listeners === null ) {
            . " listen-config.php is still the pre-upgrade format, which the new"
            . " code refuses. Stopping the services before pulling the new code"
            . " avoids this entirely)";
-    report( 'FAIL', "a gridctl service is still running (pid "
+    report_in_use( "a gridctl service is still running (pid "
                     . implode( ', ', array_keys( $listeners ) ) . "); stop it with: $how" );
     $busy[] = 'gridctl service running';
 } else {
@@ -1792,7 +2579,7 @@ if ( $jm_error !== '' ) {
     $busy[] = 'jobmonitors unreadable';
 } elseif ( $monitors ) {
     foreach ( $monitors as $pid => $jm ) {
-        report( 'FAIL', "jobmonitor pid $pid is still running for job {$jm['gfacID']} ({$jm['db']})" );
+        report_in_use( "jobmonitor pid $pid is still running for job {$jm['gfacID']} ({$jm['db']})" );
     }
     $busy[] = count( $monitors ) . ' jobmonitor(s) running';
 } else {
@@ -1802,7 +2589,7 @@ if ( $jm_error !== '' ) {
 ## -- analysis binaries. A job running outside Slurm's view still writes results.
 $analysis = processes( '#^\s*(\d+)\s+/opt/ultrascan3/bin/#' );
 if ( $analysis ) {
-    report( 'FAIL', "an UltraScan binary is running from /opt/ultrascan3/bin (pid "
+    report_in_use( "an UltraScan binary is running from /opt/ultrascan3/bin (pid "
                     . implode( ', ', array_keys( $analysis ) ) . ")" );
     $busy[] = 'analysis binary running';
 } elseif ( $analysis !== null ) {
@@ -1864,7 +2651,7 @@ if ( $row === null ) {
         $busy[] = "$stranded job(s) not finished";
     }
     if ( $unfinished ) {
-        report( 'FAIL', "$unfinished job(s) in gfac.analysis are not in a terminal status; "
+        report_in_use( "$unfinished job(s) in gfac.analysis are not in a terminal status; "
                         . ( gridctl_moved_early( $us3bin ) ? gridctl_early_move_recovery() . ". php uslims_jobs.php --busy lists each and what to do, then rerun"
                             : "php uslims_jobs.php --busy lists each and what to do, then rerun" ) );
         $busy[] = "$unfinished unfinished job(s)";
@@ -1881,7 +2668,7 @@ if ( $dispatch_link ) {
 }
 if ( $dispatch_busy ) {
     foreach ( $dispatch_busy as $line ) {
-        report( 'FAIL', "$line; let the dispatch worker settle them or cancel them on the dispatch dashboard, then rerun."
+        report_in_use( "$line; let the dispatch worker settle them or cancel them on the dispatch dashboard, then rerun."
                         . " A submission held as uncertain only settles by Resolve or Close on the dashboard, with the services running" );
     }
     $busy[] = 'dispatch work in flight';
@@ -1892,7 +2679,7 @@ if ( $dispatch_busy ) {
 ## -- cleanup claims. A live claim means a cleanup is mid-import.
 $claims = cleanup_claims( $us3_home );
 if ( $claims ) {
-    report( 'FAIL', count( $claims ) . " job(s) hold a cleanup claim: " . implode( ', ', $claims ) );
+    report_in_use( count( $claims ) . " job(s) hold a cleanup claim: " . implode( ', ', $claims ) );
     $busy[] = 'cleanup claim held';
 } else {
     report( 'ok', "no job holds a cleanup claim" );
@@ -1917,7 +2704,7 @@ if ( $sq_rc !== 0 ) {
         $busy[] = 'squeue failed';
     } elseif ( trim( $q_out ) !== '' ) {
         $jobs = count( array_filter( explode( "\n", trim( $q_out ) ) ) );
-        report( 'FAIL', "$jobs us3 job(s) are still in the local Slurm queue" );
+        report_in_use( "$jobs us3 job(s) are still in the local Slurm queue" );
         $busy[] = "$jobs job(s) queued";
     } else {
         report( 'ok', "us3's local Slurm queue is empty" );
@@ -1959,7 +2746,7 @@ if ( $sq_rc !== 0 ) {
                 report( 'note', count( $working ) . " node(s) running work, on a shared cluster where that"
                                 . " may not be us3's: " . implode( ', ', $working ) );
             } else {
-                report( 'FAIL', count( $working ) . " node(s) still running work: "
+                report_in_use( count( $working ) . " node(s) still running work: "
                                 . implode( ', ', $working )
                                 . " (on a shared, multi-tenant host, pass --single-tenant no to"
                                 . " downgrade this to a note)" );
@@ -1997,7 +2784,7 @@ if ( !$res ) {
     }
     $others = other_db_connections( $processlist_rows );
     if ( $others ) {
-        report( 'FAIL', count( $others ) . " active database connection(s): "
+        report_in_use( count( $others ) . " active database connection(s): "
                         . implode( ', ', $others ) );
         $busy[] = 'database in use';
     } elseif ( !$has_process_priv ) {
@@ -2134,7 +2921,7 @@ if ( $who_rc !== 0 ) {
                         . " terminal could not be identified, so one of them may be this one: "
                         . implode( ', ', $sessions ) );
     } elseif ( $sessions ) {
-        report( 'FAIL', count( $sessions ) . " other login session(s): "
+        report_in_use( count( $sessions ) . " other login session(s): "
                         . implode( ', ', $sessions )
                         . " (for a login that has to stay, such as a console autologin or a monitor,"
                         . " name its user with --allow-login)" );
@@ -2150,7 +2937,7 @@ if ( $who_rc !== 0 ) {
 $live_crons = lims_cron_blocking( live_lims_crontabs(), $cron_jobs_elsewhere_ok );
 if ( $live_crons ) {
     foreach ( $live_crons as $where => $lines ) {
-        report( 'FAIL', "$where still has " . count( $lines ) . " active LIMS cron entr"
+        report_in_use( "$where still has " . count( $lines ) . " active LIMS cron entr"
                         . ( count( $lines ) === 1 ? 'y' : 'ies' ) . ": " . reason( implode( ' | ', $lines ) ) );
     }
     $busy[] = 'LIMS cron entries active';
@@ -2158,7 +2945,9 @@ if ( $live_crons ) {
     report( 'ok', "no LIMS cron entry is active" );
 }
 
-if ( $busy ) {
+if ( $busy && $status_mode ) {
+    report( 'note', "--status: the host is running (" . implode( '; ', $busy ) . "); continuing read-only" );
+} elseif ( $busy ) {
     error_exit( "the host is not idle (" . implode( '; ', $busy ) . ").\n"
                 . "php uslims_jobs.php --busy lists each job and what to do."
                 . " Quiet it down and rerun. Nothing was changed" );
@@ -2202,7 +2991,120 @@ if ( $configured_breaker !== '' ) {
 }
 
 $managed = [];     ## PHP assignments for the managed block, in order
+$handled_http = []; ## active 'http' entries step 3's first loop already reported
 $clusters = is_array( $gc[ 'cluster_details' ] ?? null ) ? $gc[ 'cluster_details' ] : [];
+
+## --cluster-values comes first, so the conversion, sizing, SSH and activation checks below see
+## the entries it sets.
+if ( $cluster_values_file !== null ) {
+    $marked_here  = marked_local_clusters( array_filter( $clusters, function ( $c ) { return is_array( $c ) && !empty( $c[ 'active' ] ); } ) );
+    $values_host  = $local_cluster ?? $gc[ 'default_local_cluster' ] ?? ( count( $marked_here ) === 1 ? $marked_here[ 0 ] : '' );
+    $values_wrong = cluster_values_misplaced( $cluster_values, $clusters, $values_host, this_host_names( php_uname( 'n' ) ) );
+    $directives   = rtrim( common_dir_default( $wwwpath ), '/' ) . '/class/jobsubmit.php';
+    if ( is_file( $directives ) ) {
+        require_once $directives;
+    }
+    if ( method_exists( 'jobsubmit', 'site_directive_error' ) ) {
+        foreach ( $cluster_values[ 'clusters' ] as $name => $entry ) {
+            if ( jobsubmit::site_directive_error( $name, $entry ) !== '' ) {
+                $values_wrong[] = "$name: submission would refuse its sbatch_directives or their structured keys";
+            }
+        }
+    }
+    if ( $values_wrong ) {
+        error_exit( "$cluster_values_file was not used:\n  " . implode( "\n  ", $values_wrong ) );
+    }
+    $replace = [];
+    $held    = function ( $name, array $keys ) use ( $overwrite_edited ) {
+        if ( !$keys || in_array( (string) $name, $overwrite_edited, true ) ) {
+            return false;
+        }
+        report( 'input', "$name differs from the cluster values file in " . implode( ', ', $keys ) . " and is not as the file last"
+                         . " left it, so it may be edited by hand; put the change in the file, or pass --overwrite-edited $name" );
+        return true;
+    };
+    foreach ( $cluster_values[ 'clusters' ] as $name => $want ) {
+        if ( $held( $name, cluster_edited_keys( $clusters[ $name ] ?? null, $want ) ) ) {
+            continue;
+        }
+        $entry   = cluster_values_entry( $want, $clusters[ $name ] ?? null );
+        $changed = cluster_entry_changes( $clusters[ $name ] ?? null, $entry );
+        if ( !$changed ) {
+            report( 'ok', "$name matches the cluster values file" );
+            continue;
+        }
+        report( 'todo', ( isset( $clusters[ $name ] ) ? "replace cluster '$name'" : "add cluster '$name'" )
+                        . " from the cluster values file (" . implode( ', ', $changed ) . "), left "
+                        . ( $entry[ 'active' ] ? 'active' : 'inactive' ) );
+        $replace[ $name ] = $entry;
+    }
+    $after = array_diff_key( $clusters, $replace ) + $replace;
+    $gc_text = (string) file_get_contents( $global_config );
+    if ( $replace ) {
+        $gc_new  = replace_cluster_entries( $gc_text, $replace );
+        $problem = rewrite_problem( $global_config, $gc_text, $gc_new, 'cluster_details', $after );
+        if ( $problem !== '' ) {
+            error_exit( "$global_config cannot take the cluster values: $problem. Nothing in it was changed" );
+        }
+        $gc_text = $gc_new;
+    }
+    if ( $replace && $apply && confirm( "Write those clusters to $global_config?" ) ) {
+        write_file( $global_config, $gc_text );
+        report( 'done', "$global_config updated (original in " . backup_path( $global_config ) . ")" );
+    }
+    $clusters = $after;
+    foreach ( $cluster_values[ 'local' ] as $name => $entry ) {
+        $local_want = [ 'env_script_lines' => cluster_env_script_lines( $name, $values_host, $entry[ 'env_script_lines' ] ) ] + $entry;
+        if ( $held( $name, local_edited_keys( $clusters[ $name ], $local_want ) ) ) {
+            unset( $cluster_values[ 'local' ][ $name ] );   ## step 3's env_script_lines check leaves it alone too
+            continue;
+        }
+        $mark = local_values_entry( $clusters[ $name ], $local_want )[ 'local_cluster_values' ];
+        if ( ( $clusters[ $name ][ 'local_cluster_values' ] ?? null ) !== $mark ) {
+            report( 'todo', "record $name's settings from the cluster values file, so a later run can see a hand edit" );
+            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'local_cluster_values\' ] = ' . php_value( $mark ) . ';';
+            $clusters[ $name ][ 'local_cluster_values' ] = $mark;
+        }
+        foreach ( array_diff_key( $entry, [ 'env_script_lines' => 1 ] ) as $key => $value ) {
+            if ( array_key_exists( $key, $clusters[ $name ] ) && $clusters[ $name ][ $key ] === $value ) {
+                continue;
+            }
+            report( 'todo', "set $key for $name from the cluster values file" );
+            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ ' . var_export( $key, true ) . ' ] = '
+                       . php_value( $value ) . ';';
+            $clusters[ $name ][ $key ] = $value;
+        }
+        ## An active entry's are set with every other active cluster's, below.
+        $lines = cluster_env_script_lines( $name, $values_host, $entry[ 'env_script_lines' ] );
+        if ( empty( $clusters[ $name ][ 'active' ] ) && ( $clusters[ $name ][ 'env_script_lines' ] ?? null ) !== $lines ) {
+            report( 'todo', "set env_script_lines for $name from the cluster values file" );
+            $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = ' . php_string( $lines ) . ';';
+            $clusters[ $name ][ 'env_script_lines' ] = $lines;
+        }
+    }
+    $gc[ 'cluster_details' ] = $clusters;
+    ## The entries name accounts and paths at other sites: no other account on this host reads them.
+    $gc_mode = fileperms( $global_config ) & 07777;
+    if ( $gc_mode & 0027 ) {
+        $web_groups = array_merge( [ $web_entry[ 'gid' ] ], array_column( array_filter( array_map( 'posix_getgrnam',
+            preg_split( '/\s+/', capture( 'id -nG ' . escapeshellarg( $web_user ) )[ 0 ], -1, PREG_SPLIT_NO_EMPTY ) ) ), 'gid' ) );
+        if ( fileowner( $global_config ) !== $us3_entry[ 'uid' ]
+             || ( $web_user !== 'us3' && !in_array( filegroup( $global_config ), $web_groups, true ) ) ) {
+            report( 'note', "$global_config is readable by other accounts; it is not owned by us3 and readable through the"
+                            . " web account's group, so its mode was left as it is" );
+        } else {
+            report( 'todo', "make $global_config unreadable to other accounts and writable by us3 only" );
+            if ( $apply && confirm( "Change the mode of $global_config?" ) ) {
+                if ( chmod( $global_config, $gc_mode & ~0027 ) ) {
+                    $changes++;
+                    report( 'done', sprintf( "%s is %04o", $global_config, $gc_mode & ~0027 ) );
+                } else {
+                    report( 'FAIL', "could not change the mode of $global_config" );
+                }
+            }
+        }
+    }
+}
 $active   = array_filter( $clusters, function ( $c ) { return is_array( $c ) && ( $c[ 'active' ] ?? false ); } );
 
 ## The active clusters flagged as the host's own node.
@@ -2287,17 +3189,11 @@ foreach ( $active as $name => $c ) {
                             . reason( $tpl_why ) . ", so there is nothing to convert it to" );
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'active\' ] = false;';
             unset( $active[ $name ] );
+            $handled_http[ $name ] = true;
             continue;
         }
         $changed = [];
-        foreach ( $want as $key => $value ) {
-            ## active is handled below, deliberately: conversion never activates.
-            if ( $key === 'active' ) {
-                continue;
-            }
-            if ( array_key_exists( $key, $c ) && $c[ $key ] === $value ) {
-                continue;
-            }
+        foreach ( conversion_values( $want, $c ) as $key => $value ) {
             $changed[] = $key;
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ '
                        . var_export( $key, true ) . ' ] = ' . php_value( $value ) . ';';
@@ -2346,14 +3242,8 @@ foreach ( $active as $name => $c ) {
 ## of them. Same conversion, minus the active-entry bookkeeping (there is no
 ## 'active' flag to turn off, and nothing here turns one on).
 if ( $convert_http ) {
-    foreach ( $clusters as $name => $c ) {
-        if ( isset( $active[ $name ] ) || !is_array( $c ) ) {
-            continue;
-        }
-        $is_http = isset( $c[ 'submittype' ] ) && strtolower( (string) $c[ 'submittype' ] ) === 'http';
-        if ( !$is_http ) {
-            continue;
-        }
+    foreach ( inactive_http_entries( $clusters, $active, $handled_http ) as $name ) {
+        $c = $clusters[ $name ];
         $want = template_cluster( $name, $tpl_why );
         if ( $want === null ) {
             report( 'note', "inactive cluster '$name' is an 'http' entry and " . reason( $tpl_why )
@@ -2361,13 +3251,7 @@ if ( $convert_http ) {
             continue;
         }
         $changed = [];
-        foreach ( $want as $key => $value ) {
-            if ( $key === 'active' ) {
-                continue;
-            }
-            if ( array_key_exists( $key, $c ) && $c[ $key ] === $value ) {
-                continue;
-            }
+        foreach ( conversion_values( $want, $c ) as $key => $value ) {
             $changed[] = $key;
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ '
                        . var_export( $key, true ) . ' ] = ' . php_value( $value ) . ';';
@@ -2503,7 +3387,8 @@ $host_cluster = $proposal ?? $gc[ 'default_local_cluster' ] ?? null;
 ## Every active cluster needs the env_script_lines key ('' when it needs no setup)
 ## -- excluding pools, which have no host of their own to set this on.
 foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
-    $given = isset( $env_values[ $name ] ) ? str_replace( '\n', "\n", $env_values[ $name ] ) : null;
+    $given = isset( $env_values[ $name ] ) ? str_replace( '\n', "\n", $env_values[ $name ] )
+           : ( $cluster_values[ 'local' ][ $name ][ 'env_script_lines' ] ?? null );
     if ( array_key_exists( 'env_script_lines', $c ) ) {
         $lines = $given !== null ? $given : (string) $c[ 'env_script_lines' ];
         ## The host's own MPICH launches through Slurm, as the managed roles set it up.
@@ -2511,7 +3396,7 @@ foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
         if ( $launcher !== $c[ 'env_script_lines' ] ) {
             report( 'todo', $launcher !== $lines
                 ? "add the Slurm launcher settings to env_script_lines for $name, so MPICH ranks stay in the job's allocation"
-                : "change env_script_lines for $name (--env)" );
+                : "change env_script_lines for $name (" . ( isset( $env_values[ $name ] ) ? '--env' : 'the cluster values file' ) . ")" );
             $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'env_script_lines\' ] = ' . php_string( $launcher ) . ';';
         } else {
             report( 'ok', "$name has env_script_lines" );
@@ -2536,6 +3421,19 @@ foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
     }
 }
 
+## The command, run as us3, that lists an entry's Slurm nodes for step 3's sizing. Asks for the
+## effective analysis CPUs per node, not sinfo's configured count: with core specialization
+## Slurm already withholds the reserve. The host's own cluster and any other local entry (a
+## -gamc variant) query this host's Slurm: step 4 records no host key for a local entry.
+function sizing_node_query( $name, array $c, $host_cluster ) {
+    $query = 'scontrol -o show node';
+    if ( $name === $host_cluster || cluster_entry_is_local( $c[ 'localhost' ] ?? false ) ) {
+        return $query;
+    }
+    $login = $c[ 'login' ] ?? ( 'us3@' . ( $c[ 'name' ] ?? '' ) );
+    return 'ssh -n -o BatchMode=yes -o ConnectTimeout=15 ' . escapeshellarg( $login ) . ' ' . escapeshellarg( $query );
+}
+
 ## One-node appliances: resource sizing needs single_node to keep a job on one node,
 ## and no more tasks per node or per job than the node has CPUs. Excluding
 ## pools here too -- sinfo is queried against a real host below, and a pool
@@ -2544,16 +3442,8 @@ foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
     if ( empty( $c[ 'single_node' ] ) && !cluster_entry_is_local( $c[ 'localhost' ] ?? false ) && empty( $c[ 'fixed_capacity' ] ) ) {
         continue;
     }
-    $login = $c[ 'login' ] ?? ( 'us3@' . ( $c[ 'name' ] ?? '' ) );
     $queue = $c[ 'queue' ] ?? '';
-    ## The effective analysis CPUs per node, not sinfo's configured count:
-    ## with core specialization Slurm already withholds the reserve.
-    $query = 'scontrol -o show node';
-    ## The host's own Slurm is queried locally: SSH to it is only set up in step 4.
-    if ( $name !== $host_cluster ) {
-        $query = 'ssh -n -o BatchMode=yes -o ConnectTimeout=15 ' . escapeshellarg( $login ) . ' ' . escapeshellarg( $query );
-    }
-    $rc    = run_as( 'us3', $query, $node_out, $node_err );
+    $rc    = run_as( 'us3', sizing_node_query( $name, $c, $host_cluster ), $node_out, $node_err );
     $nodes = [];
     foreach ( scontrol_partition_nodes( $node_out, $queue ) as $node => $fields ) {
         $effective = effective_node_cpus( $fields );
@@ -2572,14 +3462,23 @@ foreach ( array_diff_key( $active, $pools ) as $name => $c ) {
         continue;
     }
     $cpus = reset( $nodes );
-    if ( !array_key_exists( 'single_node', $c ) ) {
-        report( 'todo', "set single_node for $name (its queue has one node)" );
-        $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'single_node\' ] = true;';
-    }
     ## Sizing itself is single_node_sizing() (pure, unit-tested); see its
     ## docblock for why ppn/maxproc are set to the CPU count outright,
     ## raising or lowering, rather than only ever capped at it.
     $want = single_node_sizing( $c, $cpus );
+    ## A --cluster-values entry is sized by its file, on a run without the file too.
+    if ( isset( $cluster_values[ 'clusters' ][ $name ] ) || !empty( $c[ 'from_cluster_values' ] ) ) {
+        $off = array_keys( array_filter( $want, function ( $v, $k ) use ( $c ) { return (int) ( $c[ $k ] ?? 0 ) !== $v; }, ARRAY_FILTER_USE_BOTH ) );
+        if ( $off ) {
+            report( 'note', "$name has one node with $cpus effective CPUs, which its " . implode( ', ', $off )
+                            . " do not match; correct the cluster values file" );
+        }
+        continue;
+    }
+    if ( !array_key_exists( 'single_node', $c ) ) {
+        report( 'todo', "set single_node for $name (its queue has one node)" );
+        $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'single_node\' ] = true;';
+    }
     foreach ( $want as $key => $value ) {
         $now = isset( $c[ $key ] ) ? (int) $c[ $key ] : null;
         if ( $value === $now ) {
@@ -2646,9 +3545,15 @@ foreach ( $activate_want as $name ) {
         report( 'input', "--activate: '$name' has no env_script_lines yet (pass --env $name=...)" );
         continue;
     }
-    if ( stripos( $env, 'TODO' ) !== false ) {
+    if ( placeholder_value( $env ) ) {
         report( 'input', "--activate: '$name' still carries the template's env_script_lines TODO;"
                         . " ask the cluster for its module lines (--env $name=...)" );
+        continue;
+    }
+    $todo = array_filter( [ 'login', 'workdir' ], function ( $key ) use ( $c ) { return placeholder_value( $c[ $key ] ?? '' ); } );
+    if ( $todo ) {
+        report( 'input', "--activate: '$name' still carries the template's TODO for " . implode( ' and ', $todo )
+                        . "; edit $global_config or set it with --cluster-values" );
         continue;
     }
     $login = $c[ 'login' ] ?? ( 'us3@' . ( $c[ 'name' ] ?? '' ) );
@@ -2669,10 +3574,10 @@ foreach ( $activate_want as $name ) {
         ## authorized_keys on the remote host by hand.
         $advice = $name === $host_cluster
             ? "step 4 below offers to set up the key under --apply, then re-run"
-            : "step 4 below only records $login's host key; create us3's"
-              . " key if missing and have it authorized for $login by hand, then re-run";
-        report( 'input', "--activate: '$name' does not yet ssh as us3 to $login (exit $rc): "
-                        . reason( $ssh_err !== '' ? $ssh_err : $ssh_out )
+            : "step 4 below only records its host key; create us3's"
+              . " key if missing and have it authorized for the entry's login by hand, then re-run";
+        report( 'input', "--activate: '$name' does not yet ssh as us3 to its login (exit $rc): "
+                        . ssh_reason( $ssh_err !== '' ? $ssh_err : $ssh_out, $login )
                         . "; $advice" );
         continue;
     }
@@ -2685,10 +3590,10 @@ foreach ( $activate_want as $name ) {
         if ( $web_rc !== 0 ) {
             $web_advice = $name === $host_cluster
                 ? "step 4 below offers to set up the key under --apply, then re-run"
-                : "step 4 below only records $login's host key; create $web_user's"
-                  . " key if missing and have it authorized for $login by hand, then re-run";
-            report( 'input', "--activate: '$name' does not yet ssh as $web_user to $login (exit $web_rc): "
-                            . reason( $web_ssh_err !== '' ? $web_ssh_err : $web_ssh_out )
+                : "step 4 below only records its host key; create $web_user's"
+                  . " key if missing and have it authorized for the entry's login by hand, then re-run";
+            report( 'input', "--activate: '$name' does not yet ssh as $web_user to its login (exit $web_rc): "
+                            . ssh_reason( $web_ssh_err !== '' ? $web_ssh_err : $web_ssh_out, $login )
                             . "; $web_advice" );
             continue;
         }
@@ -2698,7 +3603,7 @@ foreach ( $activate_want as $name ) {
                    . php_string( $env ) . ';';
     }
     $managed[] = '$cluster_details[ ' . var_export( $name, true ) . ' ][ \'active\' ] = true;';
-    report( 'todo', "activate '$name' (env_script_lines is real, ssh to $login succeeds for us3"
+    report( 'todo', "activate '$name' (env_script_lines is real, ssh to its login succeeds for us3"
                     . ( $web_user !== 'us3' ? " and $web_user" : '' ) . "): sets active = true in"
                     . " $global_config and turns on its status probe in cluster_config.php" );
     $activated[] = $name;
@@ -2783,24 +3688,11 @@ if ( !is_file( "$advisory_classes/runtime_model.php" ) || !is_file( "$advisory_c
 }
 
 if ( $managed && $apply && confirm( "Write these settings to $global_config?" ) ) {
-    $begin = "## BEGIN uslims_upgrade.php settings (rerun the script rather than editing by hand)";
-    $end   = "## END uslims_upgrade.php settings";
     $text  = file_get_contents( $global_config );
     if ( $text === false ) {
         error_exit( "could not read $global_config" );
     }
-    $settings = [];
-    if ( preg_match( '/' . preg_quote( $begin, '/' ) . '\n(.*?)' . preg_quote( $end, '/' ) . '\n?/s', $text, $m ) ) {
-        $settings = block_settings( $m[ 1 ] );
-        $text     = str_replace( $m[ 0 ], '', $text );
-    }
-    ## A new value replaces the earlier line for the same setting.
-    $settings = array_merge( $settings, block_settings( implode( "\n", $managed ) ) );
-    $stripped = preg_replace( '/\?>\s*$/', '', rtrim( $text ) );
-    if ( $stripped === null ) {
-        error_exit( "could not rewrite $global_config: preg error " . preg_last_error() );
-    }
-    $text = $stripped . "\n\n$begin\n" . implode( "\n", $settings ) . "\n$end\n";
+    $text = managed_block_text( $text, $managed );
     ## write_file lints the result and restores the original if it is broken.
     write_file( $global_config, $text );
     report( 'done', "$global_config updated (original in " . backup_path( $global_config ) . ")" );
@@ -2819,23 +3711,21 @@ if ( $activated ) {
         report( 'note', "no $cluster_config, so no status probe could be activated for "
                         . implode( ', ', $activated ) );
     } else {
-        $cc_text = (string) file_get_contents( $cluster_config );
-        $turned  = [];
-        $absent  = [];
+        $cc_text   = (string) file_get_contents( $cluster_config );
+        $cc_probes = config_vars( $cluster_config )[ 'cluster_configuration' ] ?? [];
+        $turned    = [];
+        $absent    = [];
         foreach ( $activated as $name ) {
-            ## Only this entry's own 'active' line: the match is anchored on the key
-            ## and stops at the end of its array literal.
-            $pattern = '/(' . preg_quote( "'$name'", '/' ) . '\s*=>\s*\[)([^\]]*?)(\x27active\x27\s*=>\s*)false/s';
-            if ( !preg_match( '/' . preg_quote( "'$name'", '/' ) . '\s*=>\s*\[/', $cc_text ) ) {
+            if ( !is_array( $cc_probes[ $name ] ?? null ) ) {
                 $absent[] = $name;
-                continue;
-            }
-            $replaced = preg_replace( $pattern, '${1}${2}${3}true', $cc_text, 1, $count );
-            if ( $replaced !== null && $count ) {
-                $cc_text  = $replaced;
+            } elseif ( empty( $cc_probes[ $name ][ 'active' ] ) ) {
                 $turned[] = $name;
             }
         }
+        foreach ( $turned as $name ) {
+            $cc_probes[ $name ][ 'active' ] = true;
+        }
+        $cc_new = rewrite_probe_entries( $cc_text, $cc_probes, $turned );
         if ( $absent ) {
             report( 'note', "$cluster_config has no entry for " . implode( ', ', $absent )
                             . "; add one from " . basename( $cluster_config ) . ".template"
@@ -2846,12 +3736,156 @@ if ( $activated ) {
         } else {
             report( 'todo', "activate the status probe for " . implode( ', ', $turned )
                             . " in $cluster_config" );
-            if ( $apply && confirm( "Activate those status probes in $cluster_config?" ) ) {
-                write_file( $cluster_config, $cc_text );
+            $problem = rewrite_problem( $cluster_config, $cc_text, $cc_new, 'cluster_configuration', $cc_probes );
+            if ( $problem !== '' ) {
+                report( 'FAIL', "$cluster_config was left as it is: $problem. Activate the probes by hand" );
+            } elseif ( $apply && confirm( "Activate those status probes in $cluster_config?" ) ) {
+                write_file( $cluster_config, $cc_new );
                 report( 'done', "$cluster_config updated (original in "
                                 . backup_path( $cluster_config ) . ")" );
             }
         }
+    }
+}
+
+## Probes and entries for clusters that are off. $active no longer holds what this run
+## deactivates or converts, and $activated is what it turns on.
+$final_active = $active;
+foreach ( $activated as $name ) {
+    $final_active[ $name ] = true;
+}
+## --activate turns a cluster on for the host; each instance's own list can still hide it, on purpose
+## or because nobody turned it on there, so that list is only reported.
+$shown = array_values( array_filter( $activate_want, function ( $name ) use ( $final_active ) {
+    return isset( $final_active[ $name ] );
+} ) );
+if ( $shown ) {
+    $instance_lists   = instance_cluster_lists( $wwwpath );
+    $list_configs = [];
+    foreach ( array_unique( array_filter( $instance_lists ) ) as $file ) {
+        $list_configs[ $file ] = config_vars( $file, $list_why )[ 'cluster_configuration' ] ?? null;
+        if ( !is_array( $list_configs[ $file ] ) ) {
+            report( 'note', "could not read $file (" . reason( $list_why ) . "), so which clusters it hides was not checked" );
+        }
+    }
+    foreach ( clusters_hidden_by_lists( $shown, $instance_lists, $list_configs ) as $file => $h ) {
+        report( 'note', "the submission page of " . implode( ', ', $h[ 'instances' ] ) . " does not offer "
+                        . implode( ', ', $h[ 'names' ] ) . ": $file does not have 'active' => true there" );
+    }
+}
+$cluster_config = "$us3bin/cluster_config.php";
+$probes = [];
+if ( is_file( $cluster_config ) ) {
+    $cc_vars = config_vars( $cluster_config, $cc_why );
+    if ( !is_array( $cc_vars[ 'cluster_configuration' ] ?? null ) ) {
+        report( 'note', "could not read $cluster_config (" . reason( $cc_why ) . "), so its probes were not checked" );
+    } else {
+        $probes = $cc_vars[ 'cluster_configuration' ];
+    }
+}
+$here = this_host_cluster_entries( $clusters, $final_active, this_host_names( php_uname( 'n' ) ) );
+foreach ( self_ssh_cluster_entries( $here ) as $name ) {
+    report( 'note', "$name reaches this host's Slurm over ssh on every submit and poll;"
+                    . " set 'localhost' => true on it, or remove it if another entry already covers its queue" );
+}
+foreach ( duplicate_cluster_entries( $here, local_default_partition() ) as $same ) {
+    report( 'note', "the active entries " . implode( ', ', $same ) . " send the same jobs to the same partition"
+                    . " of this host's Slurm; keep one and remove the others from $global_config" );
+}
+$retired = retired_cluster_entries( $clusters, $final_active, function ( $name ) {
+    return template_cluster( $name ) !== null;
+}, $cluster_values_file === null ? null : $cluster_values[ 'clusters' ] );
+if ( template_cluster( '', $tpl_why ) === null && $tpl_why !== "the template has no '' entry" ) {
+    if ( $remove_retired ) {
+        report( 'input', "--remove-retired: $tpl_why, so which entries it lacks is not known" );
+    }
+    $retired = [];
+}
+if ( $retired && !$remove_retired ) {
+    report( 'note', "inactive cluster entries with no template entry, left over from Airavata, another scheduler or the cluster values file: "
+                    . implode( ', ', $retired ) . "; --remove-retired removes them and their probes" );
+}
+$removing = $remove_retired ? $retired : [];
+$probes_off = array_values( array_diff( probes_to_turn_off( $probes, $clusters, $final_active ), $removing ) );
+if ( $probes_off ) {
+    report( 'todo', "turn off the status probe in $cluster_config for " . implode( ', ', $probes_off )
+                    . ": its cluster entry is inactive, so nothing can submit to it" );
+} elseif ( $probes ) {
+    report( 'ok', "no status probe is on for an inactive cluster" );
+}
+if ( $removing ) {
+    report( 'todo', "remove the retired cluster entries " . implode( ', ', $removing ) . " from $global_config"
+                    . ( array_intersect( $removing, array_keys( $probes ) ) ? " and their probes from $cluster_config" : '' ) );
+}
+
+$probe_drop   = array_values( array_intersect( $removing, array_keys( $probes ) ) );
+$probes_after = array_diff_key( $probes, array_flip( $probe_drop ) );
+foreach ( $probes_off as $name ) {
+    $probes_after[ $name ][ 'active' ] = false;
+}
+$status_rows = [];
+if ( $probes && ( $res = mysqli_query( $gdb, "SELECT cluster FROM cluster_status ORDER BY cluster" ) ) ) {
+    foreach ( mysqli_fetch_all( $res ) as $row ) {
+        $status_rows[] = $row[ 0 ];
+    }
+}
+$rows_drop = $probes ? status_rows_to_drop( $status_rows, $probes_after ) : [];
+if ( $rows_drop ) {
+    report( 'todo', "delete the gfac.cluster_status rows of " . implode( ', ', $rows_drop )
+                    . ": no probe refreshes them, and dbinst logs each as stale on every page load" );
+}
+
+## What each file becomes, checked in the check pass too, so --apply does not find out halfway.
+$gc_text  = (string) file_get_contents( $global_config );
+if ( !$apply && $cluster_values_file !== null && $replace ) {
+    $gc_text = replace_cluster_entries( $gc_text, $replace );
+}
+if ( !$apply && $managed ) {
+    $gc_text = managed_block_text( $gc_text, $managed );
+}
+$gc_new   = remove_array_entries( $gc_text, 'cluster_details', $removing );
+$cc_text  = is_file( $cluster_config ) ? (string) file_get_contents( $cluster_config ) : '';
+$cc_off   = array_values( array_diff( $probes_off, $activated ) );
+$cc_new   = rewrite_probe_entries( $cc_text, $probes_after, array_merge( $probe_drop, $cc_off ) );
+$gc_now   = $removing ? ( config_text_vars( $global_config, $gc_text )[ 'cluster_details' ] ?? [] ) : [];
+$problems = [];
+if ( $removing ) {
+    $problems[ $global_config ] = rewrite_problem( $global_config, $gc_text, $gc_new, 'cluster_details',
+                                                   array_diff_key( $gc_now, array_flip( $removing ) ) );
+}
+if ( $cc_off || $probe_drop ) {
+    $problems[ $cluster_config ] = rewrite_problem( $cluster_config, $cc_text, $cc_new, 'cluster_configuration', $probes_after );
+}
+foreach ( array_filter( $problems ) as $file => $problem ) {
+    report( 'FAIL', "$file was left as it is: $problem. Make the changes above in it by hand" );
+}
+if ( $apply && $removing && $problems[ $global_config ] === '' && confirm( "Remove " . implode( ', ', $removing ) . " from $global_config?" ) ) {
+    write_file( $global_config, $gc_new );
+    report( 'done', "$global_config: removed " . implode( ', ', $removing ) . " (original in " . backup_path( $global_config ) . ")" );
+}
+if ( $apply && ( $cc_off || $probe_drop ) && $problems[ $cluster_config ] === ''
+     && confirm( "Update the status probes in $cluster_config?" ) ) {
+    write_file( $cluster_config, $cc_new );
+    report( 'done', "$cluster_config updated (original in " . backup_path( $cluster_config ) . ")" );
+}
+if ( !empty( $problems[ $cluster_config ] ) ) {
+    $rows_drop = [];   ## their probes are still on
+}
+if ( $apply && $rows_drop && confirm( "Delete those gfac.cluster_status rows?" ) ) {
+    $drop_rows  = mysqli_prepare( $gdb, 'DELETE FROM cluster_status WHERE cluster = ?' );
+    $drop_error = $drop_rows ? '' : mysqli_error( $gdb );
+    foreach ( $drop_rows ? $rows_drop : [] as $row_cluster ) {
+        if ( !$drop_rows->bind_param( 's', $row_cluster ) || !$drop_rows->execute() ) {
+            $drop_error = $drop_rows->error;
+            break;
+        }
+    }
+    if ( $drop_rows && $drop_error === '' ) {
+        $changes++;
+        report( 'done', "deleted the gfac.cluster_status rows of " . implode( ', ', $rows_drop ) );
+    } else {
+        report( 'note', "could not delete the gfac.cluster_status rows of " . implode( ', ', $rows_drop )
+                        . ": " . reason( $drop_error ) );
     }
 }
 
@@ -2993,18 +4027,18 @@ foreach ( $ssh_targets as $name => $c ) {
         $ssh = "ssh -n -p $port -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes " . escapeshellarg( $login ) . " true";
         $rc  = run_as( $account, $ssh, $ssh_out, $ssh_err );
         if ( $rc !== 0 && $name === $host_cluster ) {
-            report( 'todo', "$name: authorize $account's key for $login on this host" );
+            report( 'todo', "$name: authorize $account's key for its login on this host" );
             $ssh_pending[ 'authorized key' ] = true;
-            if ( $apply && confirm( "Set up $account's SSH key for $login?" ) ) {
+            if ( $apply && confirm( "Set up $account's SSH key for $name's login?" ) ) {
                 if ( authorize_local_key( $account, $entry, explode( '@', $login )[ 0 ] ) ) {
                     $changes++;
                     $rc = run_as( $account, $ssh, $ssh_out, $ssh_err );
                     if ( $rc === 0 ) {
                         unset( $ssh_pending[ 'authorized key' ] );
                     }
-                    report( $rc === 0 ? 'done' : 'FAIL', "$name: $account's key authorized for $login" );
+                    report( $rc === 0 ? 'done' : 'FAIL', "$name: $account's key authorized for its login" );
                 } else {
-                    report( 'FAIL', "$name: could not authorize $account's key for $login" );
+                    report( 'FAIL', "$name: could not authorize $account's key for its login" );
                 }            }
         }
         if ( $rc !== 0 && $ssh_pending ) {
@@ -3012,13 +4046,13 @@ foreach ( $ssh_targets as $name => $c ) {
             ## dry run on a host that has never had the key reports the consequence
             ## of its own todos. Reported as a FAIL it made every such run exit 1,
             ## which left a genuine FAIL indistinguishable.
-            report( 'todo', "$name: $account can ssh to $login once the "
+            report( 'todo', "$name: $account can ssh to its login once the "
                             . implode( ' and ', array_keys( $ssh_pending ) ) . " above "
                             . ( count( $ssh_pending ) > 1 ? 'are' : 'is' ) . " in place" );
         } else {
-            report( $rc === 0 ? 'ok' : 'FAIL', "$name: $account can ssh to $login"
+            report( $rc === 0 ? 'ok' : 'FAIL', "$name: $account can ssh to its login"
                     . ( $rc === 0 ? '' : " (exit $rc: install the account's key, including for the host itself) "
-                                         . reason( $ssh_err !== '' ? $ssh_err : $ssh_out ) ) );
+                                         . ssh_reason( $ssh_err !== '' ? $ssh_err : $ssh_out, $login ) ) );
         }
     }
 }
@@ -4129,7 +5163,8 @@ run_host_migrations( null, $required_version, $apply,
 
 ## The dbinst base and instances/ newinst needs, made as the roles make them when missing.
 run_host_migrations( null, $required_version, $apply,
-                      [ 'wwwpath' => $wwwpath, 'us3_home' => $us3_home, 'instance_dirs' => $inventory[ 'dirs' ], 'instance_configs' => $instance_configs,
+                      [ 'wwwpath' => $wwwpath, 'us3_home' => $us3_home, 'instance_dirs' => $inventory[ 'dirs' ],
+                        'instance_configs' => $instance_configs, 'instance_paths' => $instance_paths,
                         'newus3_configs' => $newus3_configs, 'owner' => 'us3', 'web_group' => $web_group,
                         'db_config' => __DIR__ . '/db_config.php' ],
                       [ 'dbinst_base_install' ] );
@@ -4319,4 +5354,8 @@ if ( $apply && !$failures && !$needs_input && !$declined ) {
 }
 ## See upgrade_exit_code(). The summary line is for callers that read --check's outcome.
 echo "SUMMARY failures=$failures pending=$pending input=$needs_input changes=$changes instance_failures=$instance_failures\n";
-exit( upgrade_exit_code( $apply, $failures, $needs_input, $declined ) );
+$apply_exit_code = upgrade_exit_code( $apply, $failures, $needs_input, $declined );
+if ( $apply ) {
+    echo "Report of this run: $apply_log_path\n";
+}
+exit( $apply_exit_code );

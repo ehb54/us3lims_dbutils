@@ -4,6 +4,33 @@
 ## alone had neither. Values come from the host's own configs; the contract (file name, keys,
 ## types) from an instance's dbinst checkout, which also validates the result.
 
+## The zone a config file leaves set. A legacy config.php sets it with date_default_timezone_set(),
+## which no variable records; null when it can't be read.
+function legacy_config_timezone( $path ) {
+    list( $out, , $rc ) = capture( escapeshellarg( PHP_BINARY ) . ' -r ' . escapeshellarg(
+        'chdir( ' . var_export( dirname( $path ), true ) . ' ); ob_start(); include ' . var_export( $path, true )
+        . '; ob_end_clean(); echo date_default_timezone_get();' ) );
+    $zone = trim( (string) $out );
+    return $rc === 0 && in_array( $zone, timezone_identifiers_list(), true ) ? $zone : null;
+}
+
+## $configs with each legacy instance's zone added as 'timezone', from its config.php in $paths.
+## An overlay instance's zone is the base's, so it is left out.
+function dbinst_base_with_timezones( array $configs, array $paths, callable $zone_of ) {
+    foreach ( $paths as $label => $path ) {
+        $cfg = $configs[ $label ] ?? null;
+        if ( !is_array( $cfg ) || isset( $cfg[ 'error' ] ) || array_key_exists( 'timezone', $cfg )
+             || basename( (string) $path ) !== 'config.php' ) {
+            continue;
+        }
+        $zone = $zone_of( $path );
+        if ( $zone !== null ) {
+            $configs[ $label ][ 'timezone' ] = $zone;
+        }
+    }
+    return $configs;
+}
+
 ## Each base key's value: the one every legacy instance agrees on, else newinst's, else a host default.
 function dbinst_base_values_from_host( array $types, array $template, array $instances, array $newinst,
                                        $wwwpath, &$problems, &$notes ) {
@@ -145,8 +172,21 @@ function dbinst_base_install_from( $loader, $temporary, $apply, array $context, 
         return dbinst_base_want_dir( $path, $mode, $apply, $owner, $group );
     };
 
+    $instance_configs = dbinst_base_with_timezones( $context[ 'instance_configs' ], $context[ 'instance_paths' ] ?? [],
+                                                    'legacy_config_timezone' );
     if ( is_file( $base_path ) ) {
         report( 'ok', "$base_path exists" );
+        ## The base's zone is every overlay instance's; a legacy instance that runs on another one
+        ## changes zone when migrated, so migrate_instance_config.php refuses it.
+        $base_zone = config_vars( $base_path )[ 'timezone' ] ?? null;
+        $zones     = array_unique( array_filter( array_map( function ( $c ) {
+            return is_array( $c ) ? ( $c[ 'timezone' ] ?? null ) : null;
+        }, $instance_configs ) ) );
+        if ( $base_zone !== null && $zones && $zones !== [ $base_zone ] && !in_array( $base_zone, $zones, true ) ) {
+            report( 'note', "$base_path sets timezone '$base_zone', but the legacy instances run on '"
+                            . implode( "', '", $zones ) . "'; set the base's 'timezone' to the zone they should"
+                            . " keep before migrating them to overlays" );
+        }
         $want_dir( $instances, 02750 );
         return;
     }
@@ -159,7 +199,7 @@ function dbinst_base_install_from( $loader, $temporary, $apply, array $context, 
             $newinst = $entry[ 'cfg' ];
         }
     }
-    $values = dbinst_base_values_from_host( $types, $template, $context[ 'instance_configs' ], $newinst,
+    $values = dbinst_base_values_from_host( $types, $template, $instance_configs, $newinst,
                                             $wwwpath, $problems, $notes );
     if ( $problems ) {
         report( 'FAIL', "$base_path is missing and can't be made from this host's configs: " . implode( '; ', $problems )

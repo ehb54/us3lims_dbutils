@@ -212,9 +212,13 @@ function run_cmd( $cmd, $die_if_exit = true, $array_result = false ) {
     return $res;
 }
 
+## $util_error_log, when a script sets it to an open stream, gets a copy of the message.
 function error_exit( $msg ) {
-    global $STDERR;
+    global $STDERR, $util_error_log;
     fwrite( $STDERR, "$msg\nTerminating due to errors.\n" );
+    if ( isset( $util_error_log ) && is_resource( $util_error_log ) ) {
+        fwrite( $util_error_log, "$msg\nTerminating due to errors.\n" );
+    }
     exit(-1);
 }
 
@@ -485,6 +489,8 @@ function backup_file( $filename ) {
         backup_dir_init();
     }
     run_cmd( "cp $filename $util_backup_dir" );
+    ## Config copies hold database passwords: readable by root only.
+    chmod( "$util_backup_dir/" . basename( $filename ), 0600 );
     echo "Original $filename backed up in to $util_backup_dir\n";
 }
 
@@ -731,8 +737,8 @@ function unreadable_config_claims( $label, $file, array $databases, array $seen 
     }
     foreach ( $seen as $db => $mapped ) {
         $mapped = (string) $mapped;
-        if ( strpos( $mapped, $label ) === 0 && strspn( substr( $mapped, strlen( $label ), 1 ), '._-' ) === 1
-             || strpos( $label, $mapped ) === 0 && strspn( substr( $label, strlen( $mapped ), 1 ), '._-' ) === 1 ) {
+        if ( strpos( $mapped, $label ) === 0 && strspn( substr( $mapped, strlen( $label ), 1 ), '.-' ) === 1
+             || strpos( $label, $mapped ) === 0 && strspn( substr( $label, strlen( $mapped ), 1 ), '.-' ) === 1 ) {
             return [ [ $db ], "its name is a variant of $mapped, which maps $db" ];
         }
     }
