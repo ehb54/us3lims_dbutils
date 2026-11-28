@@ -93,11 +93,13 @@ if ( isset( $rsync_add ) && $rsync_add ) {
             } 
             $rsync_add_details .= implode( " ", $rsync_add_includes ) . " ";
         }
-        if ( $rsync_add_path == $rsync_path ) {
+        # compare as directories, so /backup-sys is not taken to be under /backup
+        $rsync_path_dir     = rtrim( $rsync_path, '/' ) . '/';
+        $rsync_add_path_dir = rtrim( $rsync_add_path, '/' ) . '/';
+        if ( $rsync_add_path_dir == $rsync_path_dir ) {
             $errors .= "\$rsync_add_path must be different than \$rsync_path in $use_config_file\n";
-        }
-        if ( strncmp( $rsync_path, $rsync_add_path, strlen( $rsync_path ) ) == 0 ) {
-            $errors .= "\$rsync_add_path must not contain \$backup_path in $use_config_file\n";
+        } else if ( strncmp( $rsync_add_path_dir, $rsync_path_dir, strlen( $rsync_path_dir ) ) == 0 ) {
+            $errors .= "\$rsync_add_path must not be a path under \$rsync_path in $use_config_file\n";
         }
     }
     $rsync_add_details .= $rsync_add_delete ? "--delete " : "";
