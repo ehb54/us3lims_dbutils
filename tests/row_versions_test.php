@@ -221,6 +221,14 @@ $desktop_link = mysqli_connect( 'localhost', 'root', '', 'rv_pre', 0, $sock ); /
 $problems = row_version_preflight( $conn, 'rv_pre', $manifest, [ 'backup_dir' => $backup_dir, 'process_conn' => $root ] );
 check( count( preg_grep( '/other session/', $problems ) ) === 1, "preflight: another account's session refuses through process_conn", implode( "\n", $problems ) );
 mysqli_close( $desktop_link );
+## A process_conn without PROCESS sees only its own sessions; the instance account's still count
+must( $root, "CREATE USER IF NOT EXISTS 'rv_noprocess'@'%' IDENTIFIED BY 'pw'" );
+$noprocess = mysqli_connect( '127.0.0.1', 'rv_noprocess', 'pw', '', 3306 );
+$other = instance_link( 'rv_pre' );
+$problems = row_version_preflight( $conn, 'rv_pre', $manifest, [ 'backup_dir' => $backup_dir, 'process_conn' => $noprocess ] );
+check( count( preg_grep( '/other session/', $problems ) ) === 1, "preflight: an instance session counts though process_conn cannot see it", implode( "\n", $problems ) );
+mysqli_close( $other );
+mysqli_close( $noprocess );
 $before = schema_shape( 'rv_pre' );
 $reports = [];
 migration( 'instance_row_versions' )( $conn, 'rv_pre', true, context( 'rv_pre', $backup_dir ) );
@@ -315,6 +323,10 @@ $earlier = $sql_dir;
 $sql_dir = '/var/tmp/us3_sql_later';
 $changes = 0;
 upgrade( 'rv_up', true );
+check( count( preg_grep( '/backup/', array_column( reports_with( 'FAIL' ), 1 ) ) ) > 0 && $changes === 0,
+       "a later manifest's table: refused without a backup newer than the last change", report_text() );
+take_backup( 'rv_up' );
+upgrade( 'rv_up', true );
 check( !reports_with( 'FAIL' ) && $changes > 0, "a later manifest's table: columns added and triggers loaded", report_text() );
 check( value( $root, "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = 'rv_up' AND EVENT_OBJECT_TABLE = 'abstractChannel'" ) == 2,
        "the later table has both triggers" );
@@ -373,6 +385,15 @@ check( $imported == $row, "imported versions and attribution kept", json_encode(
 must( $root, "INSERT INTO rv_import.lab ( labGUID, name ) VALUES ( UUID(), 'after import' )" );
 check( value( $root, "SELECT rowVersion FROM rv_import.lab WHERE name = 'after import'" ) > $row[ 'rowVersion' ], "new versions above the imported ones" );
 
+## An import whose counter reset fails leaves that step for uslims_upgrade.php
+must( $root, "DROP DATABASE IF EXISTS rv_import_fail" );
+must( $root, "CREATE DATABASE rv_import_fail" );
+load( $sql_dir, 'rv_import_fail', 'us3.sql' );
+load( $sql_dir, 'rv_import_fail', 'us3_procedures.sql' );
+$error = row_version_import_complete( $root, 'rv_import_fail', $sql_dir, "false", $root );
+check( strpos( $error, 'us3_counter_reset.sql' ) !== false, "a failed counter reset is reported", $error );
+check( !isset( row_version_steps_done( $root, 'rv_import_fail' )[ 'counters' ] ), "and its step is not recorded as done" );
+
 ## An older instance's dump, with identical duplicate link rows and empty GUIDs, imports, and gets
 ## the same repairs and backfills as in place
 old_instance( 'rv_old' );
@@ -397,7 +418,7 @@ check( value( $root, "SELECT COUNT(*) FROM rv_import2.experimentRunReservation" 
 check( schema_shape( 'rv_import2' ) === $fresh, "import: the instance matches the fresh install" );
 check( count( row_version_steps_done( $root, 'rv_import2' ) ) === count( $steps ), "import: every step recorded" );
 
-foreach ( [ 'rv_fresh', 'rv_pre', 'rv_up', 'rv_resume', 'rv_import', 'rv_import2', 'rv_old', 'rv_off', 'rv_audit' ] as $db ) {
+foreach ( [ 'rv_fresh', 'rv_pre', 'rv_up', 'rv_resume', 'rv_import', 'rv_import2', 'rv_old', 'rv_off', 'rv_audit', 'rv_import_fail' ] as $db ) {
     must( $root, "DROP DATABASE IF EXISTS $db" );
 }
 echo $failures ? "$failures FAILED\n" : "all passed\n";

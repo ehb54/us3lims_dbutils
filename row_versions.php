@@ -280,11 +280,13 @@ function row_version_preflight( $conn, $db, array $manifest, array $context ) {
 
     ## Nobody else connected to the instance. The instance account sees only its own sessions, so
     ## the caller's connection with PROCESS (process_conn) is used when there is one.
-    $own  = (int) rv_value( $conn, 'SELECT CONNECTION_ID()' );
-    $view = $context[ 'process_conn' ] ?? null;
-    $view = $view ?: $conn;
-    $others = rv_value( $view, "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE DB = " . $q( $db )
-                             . " AND ID <> $own AND ID <> CONNECTION_ID() AND COMMAND <> 'Daemon'" );
+    ## Both views count: the instance account sees its own sessions, process_conn (with PROCESS) every account's
+    $own    = (int) rv_value( $conn, 'SELECT CONNECTION_ID()' );
+    $others = 0;
+    foreach ( array_filter( [ $conn, $context[ 'process_conn' ] ?? null ] ) as $view ) {
+        $others = max( $others, (int) rv_value( $view, "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE DB = " . $q( $db )
+                                                    . " AND ID <> $own AND ID <> CONNECTION_ID() AND COMMAND <> 'Daemon'" ) );
+    }
     if ( (int) $others > 0 ) {
         $problems[] = "$others other session(s) are connected to $db; stop every writer first";
     }
@@ -618,7 +620,8 @@ function row_version_import_finish( $conn, $db, $sql_dir ) {
             return [ false, "$step: $why" ];
         }
     }
-    foreach ( array_keys( row_version_steps() ) as $step ) {
+    ## Every step but the counter reset, which the import runs next and records itself
+    foreach ( array_diff( array_keys( row_version_steps() ), [ 'counters' ] ) as $step ) {
         if ( !row_version_mark_done( $conn, $db, $step ) ) {
             return [ false, mysqli_error( $conn ) ];
         }
@@ -645,7 +648,10 @@ function row_version_import_complete( $conn, $db, $sql_dir, $mysql, $instance_li
     foreach ( [ 'us3_counter_reset.sql', 'us3_row_version_triggers.sql' ] as $file ) {
         list( , $err, $rc ) = capture( 'cd ' . escapeshellarg( $sql_dir ) . " && $mysql < $file" );
         if ( $rc !== 0 ) {
-            return "loading $file failed: " . trim( $err );
+            return "loading $file failed: " . trim( $err ) . "; uslims_upgrade.php's step 9 finishes it";
+        }
+        if ( $file === 'us3_counter_reset.sql' && !row_version_mark_done( $conn, $db, 'counters' ) ) {
+            return "could not record the counter reset: " . mysqli_error( $conn );
         }
     }
     $problems = row_version_problems( $conn, $db, row_version_manifest( $sql_dir ), true );

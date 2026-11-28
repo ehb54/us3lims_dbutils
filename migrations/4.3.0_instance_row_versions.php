@@ -54,14 +54,16 @@ return [
                 return;
             }
             ## A later release's manifest names tables this one did not: they get their columns,
-            ## and the counters are raised again. Anything else still missing is reported below.
+            ## and the counters are raised again, after the whole preflight, backup included.
+            ## Anything else still missing is reported below.
             $pending = array_intersect_key( row_version_steps(), [ 'columns' => true, 'counters' => true ] );
+            $later_tables = true;
         }
 
         ## Before the first change, the whole preflight; on a rerun the backup from before the first
         ## change is still the way back, and the steps already done changed the instance since.
         $preflight_context = $context;
-        if ( $done ) {
+        if ( $done && empty( $later_tables ) ) {
             $preflight_context[ 'backup_dir' ] = null;
         }
         $problems = row_version_preflight( $conn, $db, $manifest, $preflight_context );

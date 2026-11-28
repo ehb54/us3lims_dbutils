@@ -69,6 +69,7 @@ and edit with appropriate values
 require "../utility.php";
 require_once "../instance_grants.php";
 require_once "../row_versions.php";
+$row_version_failures = [];
 file_perms_must_be( $use_config_file );
 require $use_config_file;
 
@@ -361,8 +362,11 @@ if ( get_yn_answer( "create dbinstances" ) ) {
         if ( $inst_link ) {
             mysqli_close( $inst_link );
         }
+        ## The old database is already gone, so the import carries on with this instance's
+        ## remaining steps and the other instances, and lists what is left at the end
         if ( $error !== '' ) {
-            error_exit( "$db: $error" );
+            echo "ERROR: $db: $error\n";
+            $row_version_failures[ $db ] = $error;
         }
         if ( $create_php ) {
             $cmds = [
@@ -383,3 +387,12 @@ if ( get_yn_answer( "create dbinstances" ) ) {
     }
 }
 
+if ( !empty( $row_version_failures ) ) {
+    echoline();
+    echo "Row versions are not complete in " . count( $row_version_failures ) . " instance(s); fix each as named,"
+       . " then run uslims_upgrade.php, whose step 9 finishes them:\n";
+    foreach ( $row_version_failures as $db => $error ) {
+        echo "  $db: $error\n";
+    }
+    exit( 1 );
+}
