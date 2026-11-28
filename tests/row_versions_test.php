@@ -196,11 +196,16 @@ old_instance( 'rv_pre' );
 $manifest = row_version_manifest( $sql_dir );
 $conn = instance_link( 'rv_pre' );
 $problems = row_version_preflight( $conn, 'rv_pre', $manifest, [ 'backup_dir' => $backup_dir ] );
-check( count( preg_grep( '/no backup of rv_pre/', $problems ) ) === 1, "preflight: no backup refuses", implode( "\n", $problems ) );
+check( count( preg_grep( '/no backup of rv_pre found/', $problems ) ) === 1, "preflight: no backup refuses", implode( "\n", $problems ) );
 take_backup( 'rv_pre' );
 must( $root, "INSERT INTO rv_pre.lab ( labGUID, name ) VALUES ( UUID(), 'after the backup' )" );
 $problems = row_version_preflight( $conn, 'rv_pre', $manifest, [ 'backup_dir' => $backup_dir ] );
-check( count( preg_grep( '/older than its last change/', $problems ) ) === 1, "preflight: a backup older than the last write refuses", implode( "\n", $problems ) );
+check( count( preg_grep( '/is not later than its last change/', $problems ) ) === 1, "preflight: a backup older than the last write refuses", implode( "\n", $problems ) );
+## A binary backup newer than the last write counts too
+sleep( 1 );
+mkdir( "$backup_dir/mariadb-binary-backup-" . date( 'YmdHis' ) );
+check( !preg_grep( '/backup/', row_version_preflight( $conn, 'rv_pre', $manifest, [ 'backup_dir' => $backup_dir ] ) ),
+       "preflight: a binary backup after the last write is accepted" );
 take_backup( 'rv_pre' );
 must( $root, "CREATE TRIGGER rv_pre.site_trigger BEFORE UPDATE ON rv_pre.lab FOR EACH ROW SET NEW.name = NEW.name" );
 must( $root, "INSERT INTO rv_pre.solution ( solutionGUID, description ) SELECT solutionGUID, 'copy' FROM rv_pre.solution WHERE description = 's-ok'" );

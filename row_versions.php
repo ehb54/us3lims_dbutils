@@ -270,31 +270,52 @@ function row_version_preflight( $conn, $db, array $manifest, array $context ) {
     return $problems;
 }
 
-## Whether a uslims_daily_backup.php dump of $db exists from after its last write: the latest
-## table update the server recorded, or the server's start when it recorded none.
+## Whether a backup of $db exists from after its last write: a uslims_daily_backup.php dump of it in
+## $backup_dir, or a uslims_db_binary_backup.php directory (mariadb-binary-backup-<time>, in
+## $backup_dir or the dbutils directory). The last write is the latest table change the server
+## recorded. When it recorded none since it started, a dump from after the start counts, and so does
+## a binary backup from the day before it, since that backup stopped and restarted the server.
 function row_version_backup_problems( $conn, $db, $backup_dir ) {
-    if ( $backup_dir === '' || !is_dir( $backup_dir ) ) {
-        return [ "no backup directory (\$backup_dir in db_config.php) to check for a backup of $db; take one with"
-               . " uslims_daily_backup.php after stopping the writers, then rerun" ];
+    $remedy = "take one with uslims_daily_backup.php or uslims_db_binary_backup.php after stopping the writers, then rerun";
+    $dumps  = 0;
+    if ( $backup_dir !== '' && is_dir( $backup_dir ) ) {
+        foreach ( (array) glob( rtrim( $backup_dir, '/' ) . "/$db-dump-*.sql*" ) as $f ) {
+            $dumps = max( $dumps, (int) @filemtime( $f ) );
+        }
     }
-    $newest = 0;
-    foreach ( (array) glob( rtrim( $backup_dir, '/' ) . "/$db-dump-*.sql*" ) as $f ) {
-        $newest = max( $newest, (int) @filemtime( $f ) );
+    $binary = 0;
+    foreach ( array_filter( [ $backup_dir, __DIR__ ] ) as $dir ) {
+        foreach ( (array) glob( rtrim( $dir, '/' ) . '/mariadb-binary-backup-*', GLOB_ONLYDIR ) as $d ) {
+            if ( preg_match( '/mariadb-binary-backup-(\d{14})$/', $d, $m ) ) {
+                $t = DateTime::createFromFormat( 'YmdHis', $m[ 1 ] );
+                $binary = max( $binary, $t ? $t->getTimestamp() : 0 );
+            }
+        }
     }
-    $last = rv_value( $conn, "SELECT UNIX_TIMESTAMP( GREATEST( COALESCE( MAX( UPDATE_TIME ), '1970-01-02' ),"
-                           . " NOW() - INTERVAL ( SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS"
-                           . " WHERE VARIABLE_NAME = 'UPTIME' ) SECOND ) )"
+    $state = rv_rows( $conn, "SELECT UNIX_TIMESTAMP( MAX( UPDATE_TIME ) ),"
+                           . " UNIX_TIMESTAMP( NOW() - INTERVAL ( SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS"
+                           . " WHERE VARIABLE_NAME = 'UPTIME' ) SECOND )"
                            . " FROM information_schema.TABLES WHERE TABLE_SCHEMA = " . rv_quote( $conn, $db ) );
-    if ( $newest === 0 ) {
-        return [ "no backup of $db in $backup_dir; take one with uslims_daily_backup.php after stopping the writers, then rerun" ];
+    $last_write = $state && $state[ 0 ][ 0 ] !== null ? (int) $state[ 0 ][ 0 ] : null;
+    $started    = $state ? (int) $state[ 0 ][ 1 ] : time();
+
+    if ( !$dumps && !$binary ) {
+        return [ "no backup of $db found (dumps in " . ( $backup_dir !== '' ? $backup_dir : "db_config.php's \$backup_dir, which is not set" )
+               . ", binary backups there or in " . __DIR__ . "); $remedy" ];
     }
-    ## Within the same second as the last change, the backup may predate it
-    if ( $last !== null && $newest <= (int) $last ) {
-        return [ "the newest backup of $db in $backup_dir (" . date( 'Y-m-d H:i:s', $newest ) . ") is older than its last"
-               . " change or the server's start (" . date( 'Y-m-d H:i:s', (int) $last ) . "); take a new one with"
-               . " uslims_daily_backup.php, then rerun" ];
+    ## Within the same second as the last change, a backup may predate it
+    if ( $last_write !== null ) {
+        if ( max( $dumps, $binary ) > $last_write ) {
+            return [];
+        }
+        return [ "the newest backup of $db (" . date( 'Y-m-d H:i:s', max( $dumps, $binary ) ) . ") is not later than its last"
+               . " change (" . date( 'Y-m-d H:i:s', $last_write ) . "); $remedy" ];
     }
-    return [];
+    if ( $dumps > $started || ( $binary && $binary <= $started && $binary > $started - 86400 ) ) {
+        return [];
+    }
+    return [ "no backup of $db from after its last change: the server has recorded no change since it started at "
+           . date( 'Y-m-d H:i:s', $started ) . ", and there is no dump since then or binary backup from the day before; $remedy" ];
 }
 
 ## Notes about data the migration keeps as it is: reports with no single profile, existing duplicate run IDs.
